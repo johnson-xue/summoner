@@ -1,18 +1,23 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "summoner-marketplace",
   "description": "Summoner — AI Agent Orchestration Framework marketplace",
   "owner": {
-    "name": "Jingshan Xue"
+    "name": "Jingshan Xue",
+    "url": "https://github.com/johnson-xue"
   },
   "plugins": [
     {
       "name": "summoner",
-      "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
+      "source": {
+        "source": "github",
+        "repo": "johnson-xue/summoner"
+      },
+      "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows.",
       "version": "0.1.0",
-      "source": "./",
-      "author": {
-        "name": "Jingshan Xue"
-      }
+      "homepage": "https://github.com/johnson-xue/summoner",
+      "license": "MIT",
+      "keywords": ["orchestration", "workflow", "checkpoint", "code-review", "debugging", "memory"]
     }
   ]
 }
