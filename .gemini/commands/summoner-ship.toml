@@ -1,0 +1,13 @@
+description = "Pre-launch review — adaptive fan-out 1-3 personas, merge reports, go/no-go decision"
+
+prompt = """
+Invoke the summoner skill with workflow 'ship'.
+
+Adaptive fan-out based on diff size:
+- <50 lines: skip fan-out, suggest /summoner:review
+- <200 lines: code-reviewer only
+- <500 lines: code-reviewer + test-engineer
+- >=500 lines or touches auth/data/config: all 3 personas
+
+Run personas in PARALLEL, merge reports, produce go/no-go decision with rollback plan.
+"""

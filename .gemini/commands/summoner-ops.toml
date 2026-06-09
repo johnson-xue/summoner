@@ -1,0 +1,8 @@
+description = "Server operations — delegated to project ops skill"
+
+prompt = """
+Invoke the summoner skill with workflow 'ops'.
+
+Delegate entirely to the project's ops skill (from summoner.yaml).
+Output SUMMONER CHECKPOINT after completion.
+"""

@@ -1,0 +1,18 @@
+description = "Bug fix pipeline — diagnose root cause, reproduce, fix, verify, review"
+
+prompt = """
+Invoke the summoner skill with workflow 'fix'.
+
+Follow the Summoner workflow:
+1. Phase 0: Memory Retrieval — check for relevant past patterns
+2. Phase 1: Diagnose root cause (MANDATORY — iron law, cannot skip)
+3. Phase 2: Reproduce — write failing test (optional per auto-skip)
+4. Phase 3: Fix — apply the fix (freeform)
+5. Phase 4: Verify — run test suite (optional)
+6. Phase 5: Review — code review (optional)
+
+After each phase, output SUMMONER CHECKPOINT and wait for user input.
+User options: continue / skip / done / recall / stop.
+
+At workflow end, trigger Post-Game Review questionnaire.
+"""

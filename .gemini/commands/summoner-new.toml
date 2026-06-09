@@ -1,0 +1,16 @@
+description = "New feature pipeline — define requirements, plan tasks, implement, test, review"
+
+prompt = """
+Invoke the summoner skill with workflow 'new'.
+
+Follow the Summoner workflow:
+1. Phase 0: Memory Retrieval
+2. Phase 1: Define requirements and design (brainstorming)
+3. Phase 2: Plan task decomposition (writing-plans)
+4. Phase 3: Implement (domain skill from summoner.yaml)
+5. Phase 4: Test (verify correctness)
+6. Phase 5: Review (code review)
+
+After each phase, output SUMMONER CHECKPOINT.
+At workflow end, trigger Post-Game Review.
+"""

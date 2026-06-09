@@ -1,0 +1,9 @@
+description = "Standalone code review — 5-axis review via code-reviewer persona"
+
+prompt = """
+Invoke the summoner skill with workflow 'review'.
+
+Use the code-reviewer persona for a standalone 5-axis review:
+correctness, idiom, architecture, security, impact.
+Output Critical/Important/Suggestion tiers with file:line references.
+"""

@@ -1,0 +1,9 @@
+description = "Diagnose only — root cause analysis without making code changes"
+
+prompt = """
+Invoke the summoner skill with workflow 'debug'.
+
+Single phase: diagnose root cause. No code changes. No test creation.
+Output complete diagnostic report: root cause, impact scope, fix suggestion.
+If config-related, trigger config phase from summoner.yaml triggers.
+"""
