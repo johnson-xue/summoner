@@ -29,13 +29,30 @@ AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查�
 
 ## 快速开始
 
+**方式 A — Claude Code 插件（推荐）**
+
 ```bash
+# 作为 Claude Code 插件安装
 git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/
-cd ~/.claude/plugins/summoner/hooks && make build    # 编译 Go hooks
+cd ~/.claude/plugins/summoner/hooks && make build
+
+# 接入你的项目
 cd your-project
-~/.claude/plugins/summoner/scripts/summoner-init.sh    # 创建 summoner.yaml
+~/.claude/plugins/summoner/scripts/summoner-init.sh
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
 ```
+
+`~/.claude/plugins/` 目录下的插件由 Claude Code 自动发现。重启后 SessionStart hook 自动注入 Summoner 上下文。
+
+**方式 B — 任意 AI 工具（手动）**
+
+```bash
+git clone https://github.com/johnson-xue/summoner.git
+cd your-project
+~/summoner/scripts/summoner-init.sh
+```
+
+然后告诉 AI："按照 ~/summoner/summoner.md 中的 Summoner 工作流来排查这个 bug。"
 
 ---
 
