@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/⚡_Summoner-AI_Orchestration-8b5cf6?style=for-the-badge&logo=leagueoflegends&logoColor=white&labelColor=2d1b69">
-    <img src="https://img.shields.io/badge/⚡_Summoner-AI_Orchestration-6d28d9?style=for-the-badge&logo=leagueoflegends&logoColor=white&labelColor=ede9fe" alt="Summoner">
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/⚡_Summoner-AI_Orchestration-8b5cf6?style=for-the-badge&&labelColor=2d1b69">
+    <img src="https://img.shields.io/badge/⚡_Summoner-AI_Orchestration-6d28d9?style=for-the-badge&&labelColor=ede9fe" alt="Summoner">
   </picture>
 </p>
 
