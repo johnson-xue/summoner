@@ -1,0 +1,18 @@
+{
+  "name": "summoner-marketplace",
+  "description": "Summoner — AI Agent Orchestration Framework marketplace",
+  "owner": {
+    "name": "Jingshan Xue"
+  },
+  "plugins": [
+    {
+      "name": "summoner",
+      "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
+      "version": "0.1.0",
+      "source": "./",
+      "author": {
+        "name": "Jingshan Xue"
+      }
+    }
+  ]
+}
