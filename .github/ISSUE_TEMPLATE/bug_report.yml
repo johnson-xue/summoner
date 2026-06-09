@@ -1,0 +1,67 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the information below.
+
+  - type: input
+    id: version
+    attributes:
+      label: Summoner Version
+      description: Which version are you using? (check CHANGELOG.md or `git log --oneline -1`)
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: "macOS 14.0 / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What Happened?
+      description: Describe the bug — what did you expect to happen, and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Provide exact steps so we can reproduce the issue.
+      placeholder: |
+        1. Run `/summoner:fix ...`
+        2. At checkpoint, select 'skip'
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Screenshots
+      description: Paste any error messages, hook output, or screenshots.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - hooks
+        - commands
+        - meta-skill (SKILL.md)
+        - memory (SQLite)
+        - scripts
+        - documentation
+        - other
+    validations:
+      required: true
