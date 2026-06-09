@@ -29,30 +29,28 @@ AI coding agents skip diagnosis, forget reviews, and repeat mistakes. **Summoner
 
 ## Quick Start
 
-**Option A — Claude Code plugin (recommended)**
+**Claude Code — plugin marketplace**
+
+```
+/plugin marketplace add johnson-xue/summoner
+/plugin install summoner
+```
+
+Restart Claude Code. The SessionStart hook auto-injects Summoner context.
+
+Then in your project:
 
 ```bash
-# Install as Claude Code plugin
-git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/
-cd ~/.claude/plugins/summoner/hooks && make build
-
-# Add to your project
-cd your-project
-~/.claude/plugins/summoner/scripts/summoner-init.sh
+~/.claude/plugins/summoner/scripts/summoner-init.sh          # create summoner.yaml
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
 ```
 
-Plugins in `~/.claude/plugins/` are auto-discovered by Claude Code. Restart Claude Code — the SessionStart hook injects Summoner context automatically.
-
-**Option B — Any AI tool (manual)**
+**Other AI tools — manual**
 
 ```bash
-git clone https://github.com/johnson-xue/summoner.git
-cd your-project
-~/summoner/scripts/summoner-init.sh
+git clone https://github.com/johnson-xue/summoner.git ~/summoner
+cd your-project && ~/summoner/scripts/summoner-init.sh
 ```
-
-Then tell your AI: "Follow the Summoner workflow from ~/summoner/summoner.md to fix this bug."
 
 ---
 
