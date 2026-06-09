@@ -29,28 +29,27 @@ AI coding agents skip diagnosis, forget reviews, and repeat mistakes. **Summoner
 
 ## Quick Start
 
-**Claude Code — plugin marketplace**
+In Claude Code:
 
 ```
 /plugin marketplace add johnson-xue/summoner
-/plugin install summoner
 ```
 
-Restart Claude Code. The SessionStart hook auto-injects Summoner context.
+Then run:
+
+```
+/plugin install summoner@johnson-xue/summoner
+```
 
 Then in your project:
 
 ```bash
-~/.claude/plugins/summoner/scripts/summoner-init.sh          # create summoner.yaml
+cd your-project
+~/.claude/plugins/summoner/scripts/summoner-init.sh
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
 ```
 
-**Other AI tools — manual**
-
-```bash
-git clone https://github.com/johnson-xue/summoner.git ~/summoner
-cd your-project && ~/summoner/scripts/summoner-init.sh
-```
+> **Alternative:** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — same result, no marketplace needed. Also works for non-Claude-Code tools.
 
 ---
 

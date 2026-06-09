@@ -29,28 +29,27 @@ AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查�
 
 ## 快速开始
 
-**Claude Code — 插件市场安装**
+在 Claude Code 中：
 
 ```
 /plugin marketplace add johnson-xue/summoner
-/plugin install summoner
 ```
 
-重启 Claude Code。SessionStart hook 自动注入 Summoner 上下文。
+然后运行：
+
+```
+/plugin install summoner@johnson-xue/summoner
+```
 
 然后在你的项目中：
 
 ```bash
-~/.claude/plugins/summoner/scripts/summoner-init.sh          # 创建 summoner.yaml
+cd your-project
+~/.claude/plugins/summoner/scripts/summoner-init.sh
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
 ```
 
-**其他 AI 工具 — 手动安装**
-
-```bash
-git clone https://github.com/johnson-xue/summoner.git ~/summoner
-cd your-project && ~/summoner/scripts/summoner-init.sh
-```
+> **替代方式：** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — 效果相同，无需 marketplace。也适用于非 Claude Code 工具。
 
 ---
 
