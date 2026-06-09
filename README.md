@@ -1,135 +1,194 @@
-# Summoner — AI Agent Orchestration Framework
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Summoner-AI%20Orchestration-8b5cf6?style=for-the-badge&logo=leagueoflegends&logoColor=white">
+    <img src="https://img.shields.io/badge/Summoner-AI%20Orchestration-6d28d9?style=for-the-badge&logo=leagueoflegends&logoColor=white" alt="Summoner">
+  </picture>
+</p>
 
-> 像 Makefile 定义构建步骤一样定义 AI 工作流。框架动词固定，项目 skill 可替换。
+<p align="center">
+  <strong>Define AI workflows like Makefile targets. Framework verbs fixed — project skills replaceable.</strong>
+</p>
 
-Summoner 是一个可移植、项目无关的 Claude Code 插件，为 AI coding agent 提供结构化工作流编排。灵感来自 LoL 的召唤师——选择召唤哪个英雄（skill），知道什么时候进场、什么时候 B 键回城（checkpoint）。
+<p align="center">
+  <a href="https://github.com/johnson-xue/summoner/stargazers"><img src="https://img.shields.io/github/stars/johnson-xue/summoner?style=flat&color=8b5cf6" alt="stars"></a>
+  <a href="https://github.com/johnson-xue/summoner/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat" alt="license"></a>
+  <a href="https://github.com/johnson-xue/summoner/releases"><img src="https://img.shields.io/badge/version-0.1.0-blue?style=flat" alt="version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platform-Claude%20Code-purple?style=flat" alt="platform"></a>
+  <a href="#"><img src="https://img.shields.io/badge/hooks-Go-00ADD8?style=flat&logo=go&logoColor=white" alt="go"></a>
+  <a href="#"><img src="https://img.shields.io/badge/macOS-000000?style=flat&logo=apple&logoColor=white" alt="macOS"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black" alt="Linux"></a>
+</p>
 
-## 核心能力
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README_CN.md">中文</a> ·
+  <a href="https://johnson-xue.github.io/summoner">Documentation</a>
+</p>
 
-- **6 个开箱即用的工作流**: `/summoner:fix` `/summoner:new` `/summoner:ship` `/summoner:debug` `/summoner:ops` `/summoner:review`
-- **中断友好的 Checkpoint**: 每个 Phase 结束暂停，用户可继续/跳过/回城/停止，不丢产物
-- **赛后复盘**: 5 种问卷类型，每次 session 结束自动触发
-- **Memory Chain**: SQLite 驱动的跨 session 记忆检索，Phase 0 自动匹配历史经验
-- **fan-out 并行审查**: `/summoner:ship` 并行启动 code-reviewer + security-auditor + test-engineer
-- **项目无关**: 通过 `summoner.yaml` manifest 声明项目 skill，框架无硬编码
+---
 
-## 架构
+## What is Summoner?
 
-```
-┌──────────────────────────────────────────────┐
-│  summoner.yaml (项目端)                       │
-│  声明: debug→antia-debug, test→antia-test...  │
-├──────────────────────────────────────────────┤
-│  Summoner Plugin (框架端)                     │
-│  commands/  用户入口 (/summoner:*)            │
-│  skills/    路由中枢 (Phase 0→1→...→checkpoint)│
-│  agents/    通用 personas (code-reviewer...)  │
-│  memory/    SQLite 跨 session 记忆            │
-├──────────────────────────────────────────────┤
-│  Existing Skills (不动)                       │
-│  Superpowers + 项目领域 skills                │
-└──────────────────────────────────────────────┘
-```
+AI coding agents are powerful but undisciplined. Without structure, they skip diagnosis, forget reviews, and produce work that passes tests but fails in production.
 
-## 快速开始
+**Summoner is the process layer.** Inspired by League of Legends — choose your champion (skill), know when to engage (execute), and when to B-recall (checkpoint). After every match, review what happened (post-game review). Patterns accumulate. Every session gets better.
 
-### 安装
+### The Problem Summoner Solves
+
+| Without Summoner | With Summoner |
+|------------------|---------------|
+| AI jumps to code before understanding the bug | **Phase 1 Iron Law** — no changes before root cause is confirmed |
+| No way to correct direction mid-flight | **Checkpoint Protocol** — pause at every phase (continue/skip/recall/stop) |
+| Lessons learned are forgotten next session | **Memory Chain** — SQLite Phase 0 retrieval of past patterns |
+| Code review "should happen" but often doesn't | **Post-Game Review** — 5-type questionnaire, hook-enforced |
+| Direct skill invocation misses related skills | **Command Orchestration** — `/summoner:fix` chains debug→test→review |
+| Different projects need different skills | **summoner.yaml Manifest** — each project declares its own skill mapping |
+| Markdown instructions lack consistency | **Go Lifecycle Hooks** — programmatic enforcement, AI writes nothing |
+
+### Token Cost (Honest)
+
+| Scenario | Tokens | vs Direct Skill |
+|----------|:------:|:---:|
+| `/summoner:fix` (complex bug, memory hits) | ~9,300 | +4,300 |
+| `/summoner:fix` (simple, no memory match) | ~8,300 | +3,300 |
+| `/summoner:debug` (diagnose only) | ~4,300 | +1,300 |
+
+> **Rule of thumb:** Use Summoner for multi-step workflows (bugs, features, reviews). Use direct skills for single-step tasks (rename a variable, change a config value).
+
+---
+
+## Platform Support
+
+Summoner's core workflow (SKILL.md routing + checkpoint protocol + post-game review) works on any AI coding platform. Advanced features (hooks, Memory Chain SQLite) are platform-dependent.
+
+### Feature Matrix
+
+| Platform | Commands | Memory Chain | Hooks | Personas | Setup |
+|:---------|:--------:|:------------:|:-----:|:--------:|:-----:|
+| **Claude Code** | ✅ Slash | ✅ SQLite | ✅ Go | ✅ fan-out | `plugin.json` |
+| **Gemini CLI** | ✅ TOML | ✅ bash | — | ✅ | `.gemini/commands/` |
+| **OpenCode** | ✅ AGENTS.md | ✅ bash | — | ✅ | `skills/` |
+| **Cursor** | ✅ Rules | ✅ bash | — | — | `.cursor/rules/` |
+| **Windsurf** | ✅ Rules | ✅ bash | — | — | `.windsurfrules` |
+| **Copilot** | ✅ Instructions | ✅ bash | — | — | `.github/copilot-instructions.md` |
+| **Aider** | ✅ Conventions | ✅ bash | — | — | `CONVENTIONS.md` |
+| **Codex** | ⚠️ Manual | ⚠️ bash | — | — | Prompt |
+
+✅ = native support  ✅ bash = works via shell commands  — = not available
+
+### Operating Systems
+
+| OS | Status | Notes |
+|:---|:------:|:------|
+| **macOS** | ✅ Full | All features supported. Go hooks compile natively. |
+| **Linux** | ✅ Full | All features supported. Requires `sqlite3` in PATH. |
+| **Windows** | ⚠️ WSL | Shell scripts require WSL/Git Bash. Go hooks compile in WSL. Native PowerShell fallback not yet implemented. |
+
+### Feature Tiers by Platform
+
+| Tier | Platforms | What You Get |
+|:-----|:----------|:-------------|
+| **Full** | Claude Code | Slash commands + Go hooks (auto state tracking) + SQLite Memory Chain + Persona fan-out + Checkpoint enforcement |
+| **Standard** | Gemini CLI, OpenCode | Slash commands or intent routing + SQLite Memory Chain (markdown-driven) + Personas |
+| **Basic** | Cursor, Windsurf, Copilot, Aider, Codex | Markdown instructions + SQLite Memory Chain (bash-driven) + Checkpoint protocol |
+
+## Quick Start
 
 ```bash
-git clone <this-repo> ~/.claude/plugins/summoner/
-```
+# 1. Install
+git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/
+cd ~/.claude/plugins/summoner/hooks && make build
 
-### 项目接入
+# 2. Add summoner.yaml to your project
+cd your-project
+~/.claude/plugins/summoner/scripts/summoner-init.sh
 
-在项目根目录创建 `summoner.yaml`：
+# 3. Initialize memory database (optional but recommended)
+~/.claude/plugins/summoner/scripts/init-memory-db.sh your-project-name
 
-```yaml
-version: "1"
-project:
-  name: my-project
-
-phases:
-  debug:
-    skill: my-debug-skill
-  test:
-    skill: my-test-skill
-  ops:
-    skill: my-ops-skill
-  security:
-    skill: none              # 显式无此能力
-
-workflows:
-  bugfix:
-    chain: [debug, reproduce, fix, verify, review]
-    checkpoints: after_each
-  ship:
-    fan_out:
-      - persona: code-reviewer
-      - persona: security-auditor
-      - persona: test-engineer
-    merge: review
-    checkpoints: after_merge
-```
-
-### 初始化 Memory
-
-```bash
-~/.claude/plugins/summoner/scripts/init-memory-db.sh my-project
-```
-
-### 验证 Manifest
-
-```bash
+# 4. Validate
 ~/.claude/plugins/summoner/scripts/validate-manifest.sh summoner.yaml
 ```
 
-## 使用
+---
+
+## Commands
+
+| Command | Pipeline | When to Use |
+|---------|----------|-------------|
+| `/summoner:fix` | diagnosis→reproduce→fix→verify→review | Bug fixing |
+| `/summoner:new` | define→plan→implement→test→review | New features |
+| `/summoner:ship` | fan-out(1-3 personas)→merge→decision | Pre-launch review |
+| `/summoner:debug` | diagnosis only | Quick investigation |
+| `/summoner:ops` | ops skill (delegated) | Server operations |
+| `/summoner:review` | code review only | Standalone review |
+
+---
+
+## Architecture
 
 ```
-/summoner:fix     修 Bug 全链路（诊断→复现→修复→验证→审查）
-/summoner:new     新增功能全链路（定义→计划→实现→测试→审查）
-/summoner:ship    发版前审查（并行 fan-out → go/no-go 决策）
-/summoner:debug   仅诊断，不修复
-/summoner:ops     运维操作
-/summoner:review  独立代码审查
+┌──────────────────────────────────────────────────┐
+│  summoner.yaml  (per project)                     │
+│  debug→my-debug-skill, test→my-test-skill          │
+├──────────────────────────────────────────────────┤
+│  Summoner Plugin                                 │
+│  ┌───────────┐ ┌──────────────┐ ┌─────────────┐  │
+│  │ commands/ │ │ summoner/    │ │ hooks/ (Go) │  │
+│  │ 6 entries │ │ SKILL.md     │ │ SessionStart│  │
+│  │ (/summoner│ │ meta-skill   │ │ PreToolUse  │  │
+│  │ :fix,...) │ │ routing hub  │ │ Stop        │  │
+│  └───────────┘ └──────────────┘ └─────────────┘  │
+│  ┌───────────┐ ┌──────────────┐ ┌─────────────┐  │
+│  │ agents/   │ │ memory/      │ │ references/ │  │
+│  │ 3 personas│ │ SQLite db    │ │ 7 protocols │  │
+│  └───────────┘ └──────────────┘ └─────────────┘  │
+├──────────────────────────────────────────────────┤
+│  Existing Skills (unchanged)                      │
+│  Superpowers + your project domain skills         │
+└──────────────────────────────────────────────────┘
 ```
 
-## 文件结构
+### Best Practices
+
+1. **Prefer `/summoner:fix` over direct skill invocation.** Phase 0 loads relevant past patterns before the first diagnostic step.
+2. **Don't skip Phase 1.** Even obvious bugs benefit from structured diagnosis. The Memory Chain often surfaces non-obvious connections.
+3. **Use the checkpoint.** Wrong direction? `recall`. Already know the fix? `skip` the reproduce phase.
+4. **Complete post-game reviews.** A 1-minute review feeds the Memory Chain and saves 10 minutes the next time.
+5. **Set `project.name` deliberately.** Same name across branches → shared experience. Different name for divergent branches → isolated memory.
+6. **Rebuild hooks after updates.** `cd hooks && make build` after pulling changes.
+
+### File Map
 
 ```
 summoner/
-├── plugin.json                  # Claude Code 插件声明
-├── CLAUDE.md                    # Agent 自举引导
-├── AGENTS.md                    # 开发规范
-├── skills/summoner/SKILL.md     # 路由中枢 (meta-skill)
-├── commands/                    # 6 个 slash commands
-├── agents/                      # 3 个通用 personas
-├── references/                  # 5 个协议规范
-├── scripts/                     # init-memory-db.sh, validate-manifest.sh
-├── memory/                      # SQLite 数据库 (运行时生成)
-└── docs/                        # 设计文档
-```
+├── plugin.json                # Claude Code plugin declaration
+├── hooks/                     # Go lifecycle hooks
+│   ├── bin/                   # Compiled binaries (make build)
+│   ├── shared/                # Shared Go utilities
+│   ├── session-start/         # Context injection
+│   ├── pretooluse-skill/      # State tracking
+│   ├── stop/                  # Review reminder
+│   └── Makefile
+├── skills/summoner/SKILL.md   # Meta-skill: routing hub
+├── commands/    (6 md)        # Slash command definitions
+├── agents/      (3 md)        # Reusable personas
+├── references/  (7 md+json)   # Protocol specs + schema
+├── scripts/     (3 sh)        # init, validate, wizard
+├── memory/                    # SQLite databases (runtime)
+├── .gemini/commands/  (6 toml) # Gemini CLI slash commands
+├── .opencode/                  # OpenCode integration guide
+└── docs/                       # Design docs + Codex setup guide```
 
-## 设计文档
+---
 
-- [Spec](docs/specs/2026-06-08-summoner-framework-design.md) — 完整设计规范
-- [Plan](docs/2026-06-08-summoner-framework.md) — 实现计划 (26 tasks)
+## Related
 
-## 与现有 Skill 体系的关系
-
-Summoner 不与 superpowers 或项目领域 skills 冲突。它是编排层：
-
-```
-用户 → /summoner:fix
-         → Phase 0: Memory 检索
-         → Phase 1: 读 summoner.yaml → 路由到 antia-debug
-         → Phase 2-5: 同样的路由机制
-         → Checkpoint (每个 Phase 暂停)
-         → Post-Game Review
-```
-
-项目原有的直接调用 `antia-debug` 继续可用。Summoner 是可选增强，不是替代。
+- [anthropics/skills](https://github.com/anthropics/skills) — Official Anthropic skill examples
+- [obra/superpowers](https://github.com/obra/superpowers) — General-purpose Claude Code skills
+- [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) — Production-grade engineering skills
+- [claude-mem](https://github.com/yoloshii/ClawMem) — Agent memory with hybrid RAG
 
 ## License
 
-MIT
+MIT © [Jingshan Xue](https://github.com/johnson-xue)
