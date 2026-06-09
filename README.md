@@ -38,7 +38,7 @@ In Claude Code:
 Then run:
 
 ```
-/plugin install summoner@johnson-xue/summoner
+/plugin install summoner
 ```
 
 Then in your project:
