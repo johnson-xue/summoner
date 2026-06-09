@@ -38,7 +38,7 @@ AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查�
 然后运行：
 
 ```
-/plugin install summoner
+/plugin install summoner@summoner-marketplace
 ```
 
 然后在你的项目中：

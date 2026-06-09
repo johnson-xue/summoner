@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
-  "name": "summoner",
+  "name": "summoner-marketplace",
   "description": "Summoner — AI Agent Orchestration Framework marketplace",
   "owner": {
     "name": "Jingshan Xue",
