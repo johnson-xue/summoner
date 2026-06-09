@@ -4,9 +4,15 @@ memory/*.db-wal
 memory/*.db-shm
 memory/_index.json
 
-# Hook binaries (built via 'make build' in hooks/)
+# Hook binaries — only track pre-compiled platform binaries and wrappers
 hooks/bin/*
 !hooks/bin/.gitkeep
+!hooks/bin/session-start
+!hooks/bin/pretooluse-skill
+!hooks/bin/stop
+!hooks/bin/*-darwin-arm64
+!hooks/bin/*-darwin-amd64
+!hooks/bin/*-linux-amd64
 
 # macOS
 .DS_Store

@@ -33,15 +33,10 @@ AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查�
 
 ```
 /plugin marketplace add johnson-xue/summoner
-```
-
-然后运行：
-
-```
 /plugin install summoner@summoner-marketplace
 ```
 
-然后在你的项目中：
+然后在你的项目中（hooks 开箱即用——预编译了 macOS/Linux 二进制）：
 
 ```bash
 cd your-project
@@ -49,7 +44,7 @@ cd your-project
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
 ```
 
-> **替代方式：** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — 效果相同，无需 marketplace。也适用于非 Claude Code 工具。
+> **替代方式：** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — 效果相同，无需 marketplace。非主流平台需编译：`cd ~/.claude/plugins/summoner/hooks && make build`。
 
 ---
 

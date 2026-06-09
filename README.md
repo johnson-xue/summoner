@@ -33,15 +33,10 @@ In Claude Code:
 
 ```
 /plugin marketplace add johnson-xue/summoner
-```
-
-Then run:
-
-```
 /plugin install summoner@summoner-marketplace
 ```
 
-Then in your project:
+Then in your project (hooks work immediately — pre-compiled for macOS/Linux):
 
 ```bash
 cd your-project
@@ -49,7 +44,7 @@ cd your-project
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
 ```
 
-> **Alternative:** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — same result, no marketplace needed. Also works for non-Claude-Code tools.
+> **Alternative:** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — same result, no marketplace needed. If on an unsupported platform: `cd ~/.claude/plugins/summoner/hooks && make build`.
 
 ---
 

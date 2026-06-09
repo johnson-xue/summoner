@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+[ "$ARCH" = "x86_64" ] && ARCH="amd64"
+[ "$ARCH" = "aarch64" ] && ARCH="arm64"
+HOOK=$(basename "$0")
+BIN="${DIR}/${HOOK}-${OS}-${ARCH}"
+if [ -x "$BIN" ]; then exec "$BIN" "$@"; else echo "Summoner: no binary for ${OS}-${ARCH}. Run: make build in hooks/" >&2; exit 0; fi
