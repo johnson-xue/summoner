@@ -1,194 +1,330 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Summoner-AI%20编排框架-8b5cf6?style=for-the-badge&logo=leagueoflegends&logoColor=white">
-    <img src="https://img.shields.io/badge/Summoner-AI%20编排框架-6d28d9?style=for-the-badge&logo=leagueoflegends&logoColor=white" alt="Summoner">
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/⚡_Summoner-AI_编排框架-8b5cf6?style=for-the-badge&logo=leagueoflegends&logoColor=white&labelColor=2d1b69">
+    <img src="https://img.shields.io/badge/⚡_Summoner-AI_编排框架-6d28d9?style=for-the-badge&logo=leagueoflegends&logoColor=white&labelColor=ede9fe" alt="Summoner">
   </picture>
 </p>
 
 <p align="center">
-  <strong>像 Makefile 定义构建步骤一样定义 AI 工作流。框架动词固定——项目 skill 可替换。</strong>
+  <strong>像 Makefile 定义构建步骤一样定义 AI 工作流。<br>框架动词固定——项目 skill 可替换。</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/johnson-xue/summoner/stargazers"><img src="https://img.shields.io/github/stars/johnson-xue/summoner?style=flat&color=8b5cf6" alt="stars"></a>
-  <a href="https://github.com/johnson-xue/summoner/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat" alt="license"></a>
-  <a href="https://github.com/johnson-xue/summoner/releases"><img src="https://img.shields.io/badge/version-0.1.0-blue?style=flat" alt="version"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platform-Claude%20Code-purple?style=flat" alt="platform"></a>
-  <a href="#"><img src="https://img.shields.io/badge/hooks-Go-00ADD8?style=flat&logo=go&logoColor=white" alt="go"></a>
-  <a href="#"><img src="https://img.shields.io/badge/macOS-000000?style=flat&logo=apple&logoColor=white" alt="macOS"></a>
-  <a href="#"><img src="https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black" alt="Linux"></a>
+  <a href="https://github.com/johnson-xue/summoner/stargazers"><img src="https://img.shields.io/github/stars/johnson-xue/summoner?style=flat-square&color=8b5cf6" alt="stars"></a>
+  <a href="https://github.com/johnson-xue/summoner/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license"></a>
+  <a href="https://github.com/johnson-xue/summoner/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/version-v0.1.0-blue?style=flat-square" alt="version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/macOS-✅-black?style=flat-square&logo=apple" alt="macOS"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Linux-✅-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Go_•_Markdown-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
 </p>
 
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="README_CN.md">中文</a> ·
-  <a href="https://johnson-xue.github.io/summoner">文档站点</a>
+  <a href="https://johnson-xue.github.io/summoner">文档站点</a> ·
+  <a href="https://github.com/johnson-xue/summoner/releases">版本发布</a>
 </p>
 
----
+<br>
 
-## Summoner 是什么？
+<details open>
+<summary><strong>📖 目录</strong></summary>
 
-AI coding agent 能力很强，但缺乏纪律。没有结构化流程时，它们会跳过诊断直接改代码、忘记复盘、声称完成但从未验证。问题不是能力——是流程。
+- [✨ 演示](#-演示)
+- [🎯 痛点](#-痛点)
+- [🧩 工作原理](#-工作原理)
+- [🚀 快速开始](#-快速开始)
+- [📋 命令速查](#-命令速查)
+- [🏗 架构](#-架构)
+- [💻 平台支持](#-平台支持)
+- [💰 Token 成本](#-token-成本)
+- [💡 最佳实践](#-最佳实践)
+- [📁 文件结构](#-文件结构)
+- [📚 相关项目](#-相关项目)
 
-**Summoner 就是流程层。** 灵感来自英雄联盟——选择英雄（skill），知道何时进场（execute），何时 B 键回城（checkpoint）。每场比赛结束复盘（post-game review），经验积累，越用越强。
-
-### 解决的核心问题
-
-| 没有 Summoner | 有 Summoner |
-|--------------|-----------|
-| AI 跳过诊断直接改代码 | **Phase 1 铁律** — 根因未确认前禁止修改代码 |
-| 中途发现方向错了改不了 | **Checkpoint 协议** — 每个 Phase 暂停，继续/跳过/回城/停止 |
-| 上次踩的坑这次还踩 | **Memory Chain** — SQLite 驱动的 Phase 0 历史 pattern 检索 |
-| 代码审查"应该做"但总忘 | **Post-Game Review** — 5 种复盘问卷，hook 程序化强制 |
-| 直接调 skill 漏了关联 skill | **Command 编排** — `/summoner:fix` 自动链接 debug→test→review |
-| 不同项目 skill 不同 | **summoner.yaml Manifest** — 每个项目声明自己的 skill 映射 |
-| 纯 .md 指令缺乏一致性 | **Go 生命周期 Hooks** — 程序化约束，AI 零配合 |
-
-### Token 成本（诚实）
-
-| 场景 | Tokens | vs 直接调 skill |
-|------|:------:|:---:|
-| `/summoner:fix`（复杂 bug，memory 命中） | ~9,300 | +4,300 |
-| `/summoner:fix`（简单，无 memory 匹配） | ~8,300 | +3,300 |
-| `/summoner:debug`（仅诊断） | ~4,300 | +1,300 |
-
-> **原则：** 多步骤工作流（修 Bug、新功能、发版审查）用 Summoner。单步骤任务（改名、改配置值）直接用领域 skill。
+</details>
 
 ---
 
-## 平台支持
+## ✨ 演示
 
-Summoner 的核心工作流（SKILL.md 路由 + checkpoint 协议 + 赛后复盘）适用于任何 AI 编程平台。高级功能（hooks 程序化约束、Memory Chain SQLite 检索）因平台而异。
+```console
+$ /summoner:fix 线上报错 SC_ErrInnerLogic characterItemCfg 104003018 not found
 
-### 功能矩阵
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 0: Memory Retrieval        │
+│                                                 │
+│  📚 匹配到 2 条历史经验                          │
+│  🐛 配置关联表断裂     (★★★★★) hits: 3           │
+│  ⚡ ok检查必做          (★★★) hits: 5            │
+│  [enter] 加载经验  [no] 忽略                    │
+└─────────────────────────────────────────────────┘
 
-| 平台 | 命令入口 | Memory Chain | Hooks | Personas | 接入方式 |
-|:------|:--------:|:------------:|:-----:|:--------:|:-----:|
-| **Claude Code** | ✅ 斜杠命令 | ✅ SQLite | ✅ Go | ✅ 并行审查 | `plugin.json` |
-| **Gemini CLI** | ✅ TOML | ✅ bash | — | ✅ | `.gemini/commands/` |
-| **OpenCode** | ✅ 意图路由 | ✅ bash | — | ✅ | `skills/` |
-| **Cursor** | ✅ 规则 | ✅ bash | — | — | `.cursor/rules/` |
-| **Windsurf** | ✅ 规则 | ✅ bash | — | — | `.windsurfrules` |
-| **Copilot** | ✅ 指令 | ✅ bash | — | — | `.github/copilot-instructions.md` |
-| **Aider** | ✅ 约定 | ✅ bash | — | — | `CONVENTIONS.md` |
-| **Codex** | ⚠️ 手动 | ⚠️ bash | — | — | 提示词触发 |
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 1/5: 诊断根因              │
+│  ✅ character_item_conf.json id=104003018 缺失  │
+│  📋 根因: conf/ 关联表断裂，非代码 bug          │
+│  [enter] 继续  [skip] 跳过  [recall] 回城       │
+└─────────────────────────────────────────────────┘
 
-✅ = 原生支持  ✅ bash = 通过 shell 命令  — = 不支持
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 5/5: 审查                  │
+│  ✅ 纯配置补全，建议跳过审查                     │
+│  📋 产物: character_item_conf.json +1行          │
+└─────────────────────────────────────────────────┘
 
-### 操作系统
+→ Post-Game Review complete ✓
+→ Memory updated: config-chain-break (hits: 4)
+```
 
-| 操作系统 | 状态 | 备注 |
-|:--------|:---:|:------|
-| **macOS** | ✅ 完整 | 全部功能支持，Go hooks 原生编译 |
-| **Linux** | ✅ 完整 | 全部功能支持，需要 `sqlite3` 在 PATH 中 |
-| **Windows** | ⚠️ WSL | Shell 脚本需要 WSL/Git Bash，Go hooks 在 WSL 内编译 |
+<br>
 
-### 功能层级
+## 🎯 痛点
 
-| 层级 | 平台 | 获得的能力 |
-|:-----|:-----|:----------|
-| **完整** | Claude Code | 斜杠命令 + Go hooks（自动状态追踪）+ SQLite 记忆链 + Persona 并行审查 + Checkpoint 程序化约束 |
-| **标准** | Gemini CLI, OpenCode | 命令/路由 + SQLite 记忆链（markdown 驱动）+ Personas |
-| **基础** | Cursor, Windsurf, Copilot, Aider, Codex | Markdown 指令 + SQLite 记忆链（bash 驱动）+ Checkpoint 协议 |
+AI coding agent 能力很强，但**缺乏纪律**。没有结构化流程时：
 
-## 快速开始
+> ❌ 跳过诊断 → "错误很明显，让我直接改"<br>
+> ❌ 忘记审查 → "看起来没问题，合并吧"<br>
+> ❌ 重复踩坑 → "上次见过这 bug，但不记得怎么修的"<br>
+> ❌ 纯 Markdown 指令 → AI 不一定遵守
+
+**Summoner 是解决这四大问题的流程层。**
+
+| 痛点 | Summoner 方案 |
+|:-----|:------------|
+| 🔍 AI 跳过诊断 | **Phase 1 铁律** — hook 程序化强制，而非"建议" |
+| 🛑 中途无法纠正方向 | **Checkpoint 协议** — 每个 Phase 可以暂停、回城 |
+| 🧠 上轮经验下轮忘 | **Memory Chain** — SQLite Phase 0 自动检索历史 pattern |
+| 📋 审查只在记得时做 | **Post-Game Review** — 5 类复盘问卷，Stop hook 提醒 |
+
+<br>
+
+## 🧩 工作原理
+
+```mermaid
+graph LR
+    U[用户: /summoner:fix] --> P0[Phase 0: Memory]
+    P0 --> P1[Phase 1: Diagnose 🔒]
+    P1 --> CP1{Checkpoint}
+    CP1 -->|enter| P2[Phase 2: Reproduce]
+    CP1 -->|skip| P3
+    CP1 -->|recall| P1
+    CP1 -->|stop| END[Abort]
+    P2 --> CP2{Checkpoint}
+    CP2 --> P3[Phase 3: Fix]
+    P3 --> P4[Phase 4: Verify]
+    P4 --> P5[Phase 5: Review]
+    P5 --> REVIEW[Post-Game Review]
+    REVIEW --> MEMORY[(Memory DB)]
+```
+
+**每个 Phase 结束时都有 checkpoint。** 你可以控制何时前进、跳过、回退或停止。没有自动驾驶。
+
+<br>
+
+## 🚀 快速开始
+
+> [!IMPORTANT]
+> 需要：**Go**（编译 hooks）· **SQLite3**（记忆存储）· **Claude Code**（主平台）
 
 ```bash
-# 1. 安装
+# ① 安装
 git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/
 cd ~/.claude/plugins/summoner/hooks && make build
 
-# 2. 项目接入
+# ② 项目接入
 cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
 
-# 3. 初始化记忆数据库（推荐）
+# ③ 初始化记忆数据库（推荐）
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh your-project-name
 
-# 4. 验证配置
+# ④ 验证配置
 ~/.claude/plugins/summoner/scripts/validate-manifest.sh summoner.yaml
 ```
 
----
+**就这么简单。** 重启 Claude Code，SessionStart hook 会自动注入 Summoner 上下文。
 
-## 命令速查
+<br>
 
-| 命令 | 链路 | 场景 |
-|------|------|------|
-| `/summoner:fix` | 诊断→复现→修复→验证→审查 | 修 Bug |
-| `/summoner:new` | 定义→计划→实现→测试→审查 | 新功能 |
-| `/summoner:ship` | fan-out(1-3 personas)→合并→决策 | 发版审查 |
-| `/summoner:debug` | 仅诊断 | 快速排查 |
-| `/summoner:ops` | 运维 skill（委托） | 服务器操作 |
-| `/summoner:review` | 仅代码审查 | 独立审查 |
+## 📋 命令速查
 
----
+| 命令 | 🎯 链路 | 💡 使用场景 |
+|:-----|:--------|:----------|
+| `/summoner:fix` | `🔍→🧪→🔧→✅→👀` | 修 Bug — 先诊断再修改 |
+| `/summoner:new` | `📝→📊→🏗→🧪→👀` | 新功能 — 先规范再编码 |
+| `/summoner:ship` | `👀∥🔒∥🧪→📊` | 发版审查 — 并行审查+合并决策 |
+| `/summoner:debug` | `🔍 only` | 快速排查 — 只告诉我哪有问题 |
+| `/summoner:ops` | `⚙️ (委托)` | 运维操作 — 启动、停止、重启 |
+| `/summoner:review` | `👀 only` | 独立审查 — 不经过其他 Phase |
 
-## 架构
+> 🔍 诊断 · 🧪 复现 · 🔧 修复 · ✅ 验证 · 👀 审查 · 📝 定义 · 📊 规划 · 🏗 实现 · 🔒 审计
+
+<br>
+
+## 🏗 架构
 
 ```
-┌──────────────────────────────────────────────────┐
-│  summoner.yaml  (项目端)                          │
-│  debug→my-debug-skill, test→my-test-skill          │
-├──────────────────────────────────────────────────┤
-│  Summoner 插件                                   │
-│  ┌───────────┐ ┌──────────────┐ ┌─────────────┐  │
-│  │ commands/ │ │ summoner/    │ │ hooks/ (Go) │  │
-│  │ 6 个命令  │ │ SKILL.md     │ │ SessionStart│  │
-│  │ (/summoner│ │ 路由中枢     │ │ PreToolUse  │  │
-│  │ :fix,...) │ │              │ │ Stop        │  │
-│  └───────────┘ └──────────────┘ └─────────────┘  │
-│  ┌───────────┐ ┌──────────────┐ ┌─────────────┐  │
-│  │ agents/   │ │ memory/      │ │ references/ │  │
-│  │ 3 personas│ │ SQLite db    │ │ 7 个协议文档 │  │
-│  └───────────┘ └──────────────┘ └─────────────┘  │
-├──────────────────────────────────────────────────┤
-│  现有 Skills（不动）                              │
-│  Superpowers + 项目领域 skills                    │
-└──────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  🏠 你的项目                                             │
+│  summoner.yaml → debug→my-skill, test→my-skill           │
+├──────────────────────────────────────────────────────────┤
+│  ⚡ Summoner 插件 (~/.claude/plugins/summoner/)          │
+│                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                │
+│  │ 🎮 commands/    │  │ 🧠 skills/      │                │
+│  │ /summoner:fix   │  │ summoner/       │                │
+│  │ /summoner:new   │  │ SKILL.md        │                │
+│  │ /summoner:ship  │  │ 路由中枢        │                │
+│  └─────────────────┘  └─────────────────┘                │
+│                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                │
+│  │ 🪝 hooks/ (Go)  │  │ 💾 memory/      │                │
+│  │ SessionStart    │  │ SQLite db       │                │
+│  │ PreToolUse      │  │ Phase 0 检索    │                │
+│  │ Stop            │  │ 赛后写入        │                │
+│  └─────────────────┘  └─────────────────┘                │
+│                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                │
+│  │ 🤖 agents/      │  │ 📖 references/  │                │
+│  │ code-reviewer   │  │ 7 个协议文档    │                │
+│  │ security-auditor│  │ + JSON Schema   │                │
+│  │ test-engineer   │  │                 │                │
+│  └─────────────────┘  └─────────────────┘                │
+├──────────────────────────────────────────────────────────┤
+│  📦 现有 Skills（不动）                                  │
+│  Superpowers + 你项目的领域 skills                       │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### 最佳实践
+<br>
 
-1. **优先用 `/summoner:fix` 而非直接调 skill。** Phase 0 在诊断第一步前加载历史经验。
-2. **不要跳过 Phase 1。** 再明显的 bug 也值得结构化诊断。Memory Chain 经常发现非直觉关联。
-3. **善用 checkpoint。** 方向偏了 `recall` 比 undo 代码便宜。已知怎么修 `skip` 跳过复现。
-4. **每次复盘都做。** 1 分钟复盘喂养 Memory Chain，下次触发时省 10 分钟。
-5. **有意识地设置 `project.name`。** 同一名称跨分支共享经验，不同名称隔离记忆。
-6. **源码更新后重建 hooks。** `cd hooks && make build` 后生效。
+## 💻 平台支持
 
-### 文件结构
+| 平台 | 命令 | 记忆 | Hooks | Personas | 接入方式 |
+|:-----|:----:|:----:|:-----:|:--------:|:-------|
+| **Claude Code** | ✅ | ✅ | ✅ | ✅ | `plugin.json` |
+| **Gemini CLI** | ✅ | ✅ | — | ✅ | `.gemini/commands/` |
+| **OpenCode** | ✅ | ✅ | — | ✅ | `skills/` |
+| **Cursor** | ✅ | ✅ | — | — | `.cursor/rules/` |
+| **Windsurf** | ✅ | ✅ | — | — | `.windsurfrules` |
+| **Copilot** | ✅ | ✅ | — | — | `.github/` |
+| **Aider** | ✅ | ✅ | — | — | `CONVENTIONS.md` |
+| **Codex** | ⚠️ | ⚠️ | — | — | 提示词 |
+
+<details>
+<summary><strong>各层级说明</strong></summary>
+
+| 层级 | 获得的能力 |
+|:-----|:---------|
+| **完整**（Claude Code） | 斜杠命令 + Go hooks + SQLite 记忆 + Persona 并行审查 + Checkpoint 程序化约束 |
+| **标准**（Gemini, OpenCode） | 命令/路由 + SQLite 记忆（markdown 驱动）+ Personas |
+| **基础**（Cursor, Windsurf, Copilot, Aider） | Markdown 指令 + SQLite 记忆（bash 驱动）+ Checkpoint 协议 |
+
+</details>
+
+<br>
+
+## 💰 Token 成本
+
+> [!NOTE]
+> **诚实说明。** Summoner 会增加开销。单步骤任务直接使用领域 skill。
+
+| 场景 | Tokens | 额外开销 |
+|:-----|:------:|:--------:|
+| `/summoner:fix`（有记忆匹配） | ~9,300 | +86% |
+| `/summoner:fix`（简单，无记忆匹配） | ~8,300 | +66% |
+| `/summoner:debug`（仅诊断） | ~4,300 | +35% |
+| **直接 skill**（基准） | ~5,000 | — |
+
+> **经验法则：** 多步骤工作流用 Summoner。单步骤任务直接用领域 skill。
+
+<br>
+
+## 💡 最佳实践
+
+<details open>
+<summary><strong>📌 点击展开</strong></summary>
+
+1. 🎯 **优先用 `/summoner:fix` 而非直接调 skill。** Phase 0 记忆检索在诊断前加载历史经验，节省时间。
+
+2. 🔒 **永远不要跳过 Phase 1。** 即使是"显而易见"的 bug 也值得结构化诊断。Memory Chain 经常发现非直觉关联（如"配置错误表现为代码错误"）。
+
+3. 🛑 **善用 checkpoint。** 方向错了？`recall` 回城比撤销代码更便宜。已知怎么修？`skip` 跳过复现阶段。
+
+4. 📝 **每次复盘都做。** 1 分钟复盘喂养 Memory Chain，下次触发类似 bug 时 Phase 0 会自动检索。
+
+5. 🏷 **有意识地设置 `project.name`。** 同一名称跨分支共享经验，不同名称隔离记忆。
+
+6. 🔧 **源码更新后重建 hooks。** `cd hooks && make build` — Go 二进制不会自动重建。
+
+</details>
+
+<br>
+
+## 📁 文件结构
+
+<details>
+<summary><strong>summoner/（63 个文件）</strong></summary>
 
 ```
 summoner/
-├── plugin.json                # Claude Code 插件声明
-├── hooks/                     # Go 生命周期 hooks
-│   ├── bin/                   # 编译产物 (make build)
-│   ├── shared/                # 公共 Go 工具
-│   ├── session-start/         # 上下文注入
-│   ├── pretooluse-skill/      # 状态追踪
-│   ├── stop/                  # 复盘提醒
+├── plugin.json              # Claude Code 插件声明
+├── summoner.md              # 通用入口（任何 AI 工具）
+│
+├── 🪝 hooks/ (Go)
+│   ├── bin/                 # 编译产物 (make build)
+│   ├── shared/              # 公共工具
+│   ├── session-start/       # 上下文注入 hook
+│   ├── pretooluse-skill/    # 状态追踪 hook
+│   ├── stop/                # 复盘提醒 hook
 │   └── Makefile
-├── skills/summoner/SKILL.md   # 路由中枢
-├── commands/    (6 md)        # 命令定义
-├── agents/      (3 md)        # 通用 personas
-├── references/  (7 md+json)   # 协议规范
-├── scripts/     (3 sh)        # 初始化和验证
-├── memory/                    # SQLite (运行时)
-├── .gemini/commands/  (6 toml) # Gemini CLI 斜杠命令
-├── .opencode/                  # OpenCode 集成指南
-└── docs/                       # 设计文档 + Codex 配置指南```
+│
+├── 🧠 skills/summoner/SKILL.md  # 路由中枢
+├── 🎮 commands/ (6 md)          # 斜杠命令定义
+├── 🤖 agents/ (3 md)            # 通用 personas
+├── 📖 references/ (7 md+json)   # 协议规范 + JSON Schema
+├── 🔧 scripts/ (3 sh)           # init-db, summoner-init, 验证
+├── 💾 memory/                   # SQLite 数据库（运行时）
+│
+├── 🌐 平台适配器
+│   ├── .gemini/commands/ (6 toml)  # Gemini CLI
+│   ├── .opencode/                  # OpenCode
+│   └── docs/ (4 个配置指南)        # Cursor, Windsurf, Copilot, Aider
+│
+├── 📚 文档
+│   ├── README.md / README_CN.md
+│   ├── docs/index.html         # GitHub Pages 站点
+│   ├── CHANGELOG.md
+│   └── docs/specs/             # 设计规范 + 计划
+│
+└── 🏛 社区
+    ├── CONTRIBUTING.md
+    ├── CODE_OF_CONDUCT.md
+    └── .github/                # Issue/PR 模板 + CODEOWNERS
+```
 
----
+</details>
 
-## 相关项目
+<br>
 
-- [anthropics/skills](https://github.com/anthropics/skills) — 官方 Anthropic skill 示例
-- [obra/superpowers](https://github.com/obra/superpowers) — 通用 Claude Code 技能库
-- [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) — 工程级 skill 集合
-- [claude-mem](https://github.com/yoloshii/ClawMem) — 混合 RAG 智能体记忆
+<p align="center">
+  <a href="https://star-history.com/#johnson-xue/summoner&Date">
+    <img src="https://api.star-history.com/svg?repos=johnson-xue/summoner&type=Date" alt="Star History Chart">
+  </a>
+</p>
 
-## License
+## 📚 相关项目
 
-MIT © [Jingshan Xue](https://github.com/johnson-xue)
+| 项目 | Stars | 说明 |
+|:-----|:-----:|:----|
+| [anthropics/skills](https://github.com/anthropics/skills) | ★ | Anthropic 官方 skill 示例 |
+| [obra/superpowers](https://github.com/obra/superpowers) | 20k+ | 通用 Claude Code skill 库 |
+| [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | — | 工程级 skill 合集 |
+| [claude-mem](https://github.com/yoloshii/ClawMem) | 180+ | 混合 RAG 智能体记忆 |
+
+<br>
+
+<p align="center">
+  <sub>MIT © <a href="https://github.com/johnson-xue">Jingshan Xue</a> · 使用 Claude Code 构建 · 灵感来自英雄联盟</sub>
+</p>

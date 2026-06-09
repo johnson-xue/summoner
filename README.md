@@ -1,194 +1,330 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Summoner-AI%20Orchestration-8b5cf6?style=for-the-badge&logo=leagueoflegends&logoColor=white">
-    <img src="https://img.shields.io/badge/Summoner-AI%20Orchestration-6d28d9?style=for-the-badge&logo=leagueoflegends&logoColor=white" alt="Summoner">
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/⚡_Summoner-AI_Orchestration-8b5cf6?style=for-the-badge&logo=leagueoflegends&logoColor=white&labelColor=2d1b69">
+    <img src="https://img.shields.io/badge/⚡_Summoner-AI_Orchestration-6d28d9?style=for-the-badge&logo=leagueoflegends&logoColor=white&labelColor=ede9fe" alt="Summoner">
   </picture>
 </p>
 
 <p align="center">
-  <strong>Define AI workflows like Makefile targets. Framework verbs fixed — project skills replaceable.</strong>
+  <strong>Define AI workflows like Makefile targets.<br>Framework verbs are fixed — project skills are replaceable.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/johnson-xue/summoner/stargazers"><img src="https://img.shields.io/github/stars/johnson-xue/summoner?style=flat&color=8b5cf6" alt="stars"></a>
-  <a href="https://github.com/johnson-xue/summoner/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat" alt="license"></a>
-  <a href="https://github.com/johnson-xue/summoner/releases"><img src="https://img.shields.io/badge/version-0.1.0-blue?style=flat" alt="version"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platform-Claude%20Code-purple?style=flat" alt="platform"></a>
-  <a href="#"><img src="https://img.shields.io/badge/hooks-Go-00ADD8?style=flat&logo=go&logoColor=white" alt="go"></a>
-  <a href="#"><img src="https://img.shields.io/badge/macOS-000000?style=flat&logo=apple&logoColor=white" alt="macOS"></a>
-  <a href="#"><img src="https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black" alt="Linux"></a>
+  <a href="https://github.com/johnson-xue/summoner/stargazers"><img src="https://img.shields.io/github/stars/johnson-xue/summoner?style=flat-square&color=8b5cf6" alt="stars"></a>
+  <a href="https://github.com/johnson-xue/summoner/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license"></a>
+  <a href="https://github.com/johnson-xue/summoner/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/version-v0.1.0-blue?style=flat-square" alt="version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/macOS-✅-black?style=flat-square&logo=apple" alt="macOS"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Linux-✅-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Go_•_Markdown-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
 </p>
 
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="README_CN.md">中文</a> ·
-  <a href="https://johnson-xue.github.io/summoner">Documentation</a>
+  <a href="https://johnson-xue.github.io/summoner">Documentation</a> ·
+  <a href="https://github.com/johnson-xue/summoner/releases">Releases</a>
 </p>
 
----
+<br>
 
-## What is Summoner?
+<details open>
+<summary><strong>📖 Table of Contents</strong></summary>
 
-AI coding agents are powerful but undisciplined. Without structure, they skip diagnosis, forget reviews, and produce work that passes tests but fails in production.
+- [✨ Demo](#-demo)
+- [🎯 The Problem](#-the-problem)
+- [🧩 How It Works](#-how-it-works)
+- [🚀 Quick Start](#-quick-start)
+- [📋 Commands](#-commands)
+- [🏗 Architecture](#-architecture)
+- [💻 Platform Support](#-platform-support)
+- [💰 Token Cost](#-token-cost)
+- [💡 Best Practices](#-best-practices)
+- [📁 File Map](#-file-map)
+- [📚 Related Projects](#-related-projects)
 
-**Summoner is the process layer.** Inspired by League of Legends — choose your champion (skill), know when to engage (execute), and when to B-recall (checkpoint). After every match, review what happened (post-game review). Patterns accumulate. Every session gets better.
-
-### The Problem Summoner Solves
-
-| Without Summoner | With Summoner |
-|------------------|---------------|
-| AI jumps to code before understanding the bug | **Phase 1 Iron Law** — no changes before root cause is confirmed |
-| No way to correct direction mid-flight | **Checkpoint Protocol** — pause at every phase (continue/skip/recall/stop) |
-| Lessons learned are forgotten next session | **Memory Chain** — SQLite Phase 0 retrieval of past patterns |
-| Code review "should happen" but often doesn't | **Post-Game Review** — 5-type questionnaire, hook-enforced |
-| Direct skill invocation misses related skills | **Command Orchestration** — `/summoner:fix` chains debug→test→review |
-| Different projects need different skills | **summoner.yaml Manifest** — each project declares its own skill mapping |
-| Markdown instructions lack consistency | **Go Lifecycle Hooks** — programmatic enforcement, AI writes nothing |
-
-### Token Cost (Honest)
-
-| Scenario | Tokens | vs Direct Skill |
-|----------|:------:|:---:|
-| `/summoner:fix` (complex bug, memory hits) | ~9,300 | +4,300 |
-| `/summoner:fix` (simple, no memory match) | ~8,300 | +3,300 |
-| `/summoner:debug` (diagnose only) | ~4,300 | +1,300 |
-
-> **Rule of thumb:** Use Summoner for multi-step workflows (bugs, features, reviews). Use direct skills for single-step tasks (rename a variable, change a config value).
+</details>
 
 ---
 
-## Platform Support
+## ✨ Demo
 
-Summoner's core workflow (SKILL.md routing + checkpoint protocol + post-game review) works on any AI coding platform. Advanced features (hooks, Memory Chain SQLite) are platform-dependent.
+```console
+$ /summoner:fix 线上报错 SC_ErrInnerLogic characterItemCfg 104003018 not found
 
-### Feature Matrix
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 0: Memory Retrieval        │
+│                                                 │
+│  📚 匹配到 2 条历史经验                          │
+│  🐛 配置关联表断裂     (★★★★★) hits: 3           │
+│  ⚡ ok检查必做          (★★★) hits: 5            │
+│  [enter] 加载经验  [no] 忽略                    │
+└─────────────────────────────────────────────────┘
 
-| Platform | Commands | Memory Chain | Hooks | Personas | Setup |
-|:---------|:--------:|:------------:|:-----:|:--------:|:-----:|
-| **Claude Code** | ✅ Slash | ✅ SQLite | ✅ Go | ✅ fan-out | `plugin.json` |
-| **Gemini CLI** | ✅ TOML | ✅ bash | — | ✅ | `.gemini/commands/` |
-| **OpenCode** | ✅ AGENTS.md | ✅ bash | — | ✅ | `skills/` |
-| **Cursor** | ✅ Rules | ✅ bash | — | — | `.cursor/rules/` |
-| **Windsurf** | ✅ Rules | ✅ bash | — | — | `.windsurfrules` |
-| **Copilot** | ✅ Instructions | ✅ bash | — | — | `.github/copilot-instructions.md` |
-| **Aider** | ✅ Conventions | ✅ bash | — | — | `CONVENTIONS.md` |
-| **Codex** | ⚠️ Manual | ⚠️ bash | — | — | Prompt |
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 1/5: 诊断根因              │
+│  ✅ character_item_conf.json id=104003018 缺失  │
+│  📋 根因: conf/ 关联表断裂，非代码 bug          │
+│  [enter] 继续  [skip] 跳过  [recall] 回城       │
+└─────────────────────────────────────────────────┘
 
-✅ = native support  ✅ bash = works via shell commands  — = not available
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 5/5: 审查                  │
+│  ✅ 纯配置补全，建议跳过审查                     │
+│  📋 产物: character_item_conf.json +1行          │
+└─────────────────────────────────────────────────┘
 
-### Operating Systems
+→ Post-Game Review complete ✓
+→ Memory updated: config-chain-break (hits: 4)
+```
 
-| OS | Status | Notes |
-|:---|:------:|:------|
-| **macOS** | ✅ Full | All features supported. Go hooks compile natively. |
-| **Linux** | ✅ Full | All features supported. Requires `sqlite3` in PATH. |
-| **Windows** | ⚠️ WSL | Shell scripts require WSL/Git Bash. Go hooks compile in WSL. Native PowerShell fallback not yet implemented. |
+<br>
 
-### Feature Tiers by Platform
+## 🎯 The Problem
 
-| Tier | Platforms | What You Get |
-|:-----|:----------|:-------------|
-| **Full** | Claude Code | Slash commands + Go hooks (auto state tracking) + SQLite Memory Chain + Persona fan-out + Checkpoint enforcement |
-| **Standard** | Gemini CLI, OpenCode | Slash commands or intent routing + SQLite Memory Chain (markdown-driven) + Personas |
-| **Basic** | Cursor, Windsurf, Copilot, Aider, Codex | Markdown instructions + SQLite Memory Chain (bash-driven) + Checkpoint protocol |
+AI coding agents are powerful but **undisciplined**. Without structure:
 
-## Quick Start
+> ❌ Skipping diagnosis → "The error is obvious, let me fix it"<br>
+> ❌ Forgetting reviews → "Looks good, let's merge"<br>
+> ❌ Repeating mistakes → "I've seen this bug before but don't remember the fix"<br>
+> ❌ Markdown-only instructions → AI may or may not follow them
+
+**Summoner is the process layer that fixes all four.**
+
+| Pain Point | Summoner's Answer |
+|:-----------|:------------------|
+| 🔍 AI skips diagnosis | **Phase 1 Iron Law** — enforced by hook, not suggestion |
+| 🛑 Can't change direction mid-flight | **Checkpoint Protocol** — pause at any phase, recall anytime |
+| 🧠 Lessons forgotten next session | **Memory Chain** — SQLite Phase 0 auto-retrieval of past patterns |
+| 📋 Reviews only when you remember | **Post-Game Review** — 5-type questionnaire, Stop hook reminder |
+
+<br>
+
+## 🧩 How It Works
+
+```mermaid
+graph LR
+    U[User: /summoner:fix] --> P0[Phase 0: Memory]
+    P0 --> P1[Phase 1: Diagnose 🔒]
+    P1 --> CP1{Checkpoint}
+    CP1 -->|enter| P2[Phase 2: Reproduce]
+    CP1 -->|skip| P3
+    CP1 -->|recall| P1
+    CP1 -->|stop| END[Abort]
+    P2 --> CP2{Checkpoint}
+    CP2 --> P3[Phase 3: Fix]
+    P3 --> P4[Phase 4: Verify]
+    P4 --> P5[Phase 5: Review]
+    P5 --> REVIEW[Post-Game Review]
+    REVIEW --> MEMORY[(Memory DB)]
+```
+
+**Every phase ends with a checkpoint.** You control when to advance, skip, go back, or stop. No auto-pilot.
+
+<br>
+
+## 🚀 Quick Start
+
+> [!IMPORTANT]
+> Requires: **Go** (for hooks) · **SQLite3** (for memory) · **Claude Code** (primary platform)
 
 ```bash
-# 1. Install
+# ① Install
 git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/
 cd ~/.claude/plugins/summoner/hooks && make build
 
-# 2. Add summoner.yaml to your project
+# ② Add to your project
 cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
 
-# 3. Initialize memory database (optional but recommended)
+# ③ Initialize memory (optional, recommended)
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh your-project-name
 
-# 4. Validate
+# ④ Validate
 ~/.claude/plugins/summoner/scripts/validate-manifest.sh summoner.yaml
 ```
 
----
+**That's it.** Restart Claude Code. The SessionStart hook injects Summoner context automatically.
 
-## Commands
+<br>
 
-| Command | Pipeline | When to Use |
-|---------|----------|-------------|
-| `/summoner:fix` | diagnosis→reproduce→fix→verify→review | Bug fixing |
-| `/summoner:new` | define→plan→implement→test→review | New features |
-| `/summoner:ship` | fan-out(1-3 personas)→merge→decision | Pre-launch review |
-| `/summoner:debug` | diagnosis only | Quick investigation |
-| `/summoner:ops` | ops skill (delegated) | Server operations |
-| `/summoner:review` | code review only | Standalone review |
+## 📋 Commands
 
----
+| Command | 🎯 Pipeline | 💡 Use When |
+|:--------|:-----------|:------------|
+| `/summoner:fix` | `🔍→🧪→🔧→✅→👀` | Bug fixing — diagnose first, fix after |
+| `/summoner:new` | `📝→📊→🏗→🧪→👀` | New features — spec before code |
+| `/summoner:ship` | `👀∥🔒∥🧪→📊` | Pre-launch — parallel review + merge decision |
+| `/summoner:debug` | `🔍 only` | Quick investigation — just tell me what's wrong |
+| `/summoner:ops` | `⚙️ (delegated)` | Server operations — start, stop, restart |
+| `/summoner:review` | `👀 only` | Standalone review — no other phases |
 
-## Architecture
+> 🔍 diagnose · 🧪 reproduce · 🔧 fix · ✅ verify · 👀 review · 📝 define · 📊 plan · 🏗 implement · 🔒 audit
+
+<br>
+
+## 🏗 Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│  summoner.yaml  (per project)                     │
-│  debug→my-debug-skill, test→my-test-skill          │
-├──────────────────────────────────────────────────┤
-│  Summoner Plugin                                 │
-│  ┌───────────┐ ┌──────────────┐ ┌─────────────┐  │
-│  │ commands/ │ │ summoner/    │ │ hooks/ (Go) │  │
-│  │ 6 entries │ │ SKILL.md     │ │ SessionStart│  │
-│  │ (/summoner│ │ meta-skill   │ │ PreToolUse  │  │
-│  │ :fix,...) │ │ routing hub  │ │ Stop        │  │
-│  └───────────┘ └──────────────┘ └─────────────┘  │
-│  ┌───────────┐ ┌──────────────┐ ┌─────────────┐  │
-│  │ agents/   │ │ memory/      │ │ references/ │  │
-│  │ 3 personas│ │ SQLite db    │ │ 7 protocols │  │
-│  └───────────┘ └──────────────┘ └─────────────┘  │
-├──────────────────────────────────────────────────┤
-│  Existing Skills (unchanged)                      │
-│  Superpowers + your project domain skills         │
-└──────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  🏠 Your Project                                         │
+│  summoner.yaml → debug→my-skill, test→my-skill           │
+├──────────────────────────────────────────────────────────┤
+│  ⚡ Summoner Plugin (~/.claude/plugins/summoner/)        │
+│                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                │
+│  │ 🎮 commands/    │  │ 🧠 skills/      │                │
+│  │ /summoner:fix   │  │ summoner/       │                │
+│  │ /summoner:new   │  │ SKILL.md        │                │
+│  │ /summoner:ship  │  │ routing hub     │                │
+│  └─────────────────┘  └─────────────────┘                │
+│                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                │
+│  │ 🪝 hooks/ (Go)  │  │ 💾 memory/      │                │
+│  │ SessionStart    │  │ SQLite db       │                │
+│  │ PreToolUse      │  │ Phase 0 search  │                │
+│  │ Stop            │  │ Post-game write │                │
+│  └─────────────────┘  └─────────────────┘                │
+│                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                │
+│  │ 🤖 agents/      │  │ 📖 references/  │                │
+│  │ code-reviewer   │  │ 7 protocol docs │                │
+│  │ security-auditor│  │ + JSON Schema   │                │
+│  │ test-engineer   │  │                 │                │
+│  └─────────────────┘  └─────────────────┘                │
+├──────────────────────────────────────────────────────────┤
+│  📦 Existing Skills (unchanged)                          │
+│  Superpowers + your project domain skills                │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### Best Practices
+<br>
 
-1. **Prefer `/summoner:fix` over direct skill invocation.** Phase 0 loads relevant past patterns before the first diagnostic step.
-2. **Don't skip Phase 1.** Even obvious bugs benefit from structured diagnosis. The Memory Chain often surfaces non-obvious connections.
-3. **Use the checkpoint.** Wrong direction? `recall`. Already know the fix? `skip` the reproduce phase.
-4. **Complete post-game reviews.** A 1-minute review feeds the Memory Chain and saves 10 minutes the next time.
-5. **Set `project.name` deliberately.** Same name across branches → shared experience. Different name for divergent branches → isolated memory.
-6. **Rebuild hooks after updates.** `cd hooks && make build` after pulling changes.
+## 💻 Platform Support
 
-### File Map
+| Platform | Commands | Memory | Hooks | Personas | Setup |
+|:---------|:--------:|:------:|:-----:|:--------:|:-----|
+| **Claude Code** | ✅ | ✅ | ✅ | ✅ | `plugin.json` |
+| **Gemini CLI** | ✅ | ✅ | — | ✅ | `.gemini/commands/` |
+| **OpenCode** | ✅ | ✅ | — | ✅ | `skills/` |
+| **Cursor** | ✅ | ✅ | — | — | `.cursor/rules/` |
+| **Windsurf** | ✅ | ✅ | — | — | `.windsurfrules` |
+| **Copilot** | ✅ | ✅ | — | — | `.github/` |
+| **Aider** | ✅ | ✅ | — | — | `CONVENTIONS.md` |
+| **Codex** | ⚠️ | ⚠️ | — | — | Prompt |
+
+<details>
+<summary><strong>What each tier means</strong></summary>
+
+| Tier | What You Get |
+|:------|:------------|
+| **Full** (Claude Code) | Slash commands + Go hooks + SQLite Memory + Persona fan-out + Checkpoint enforcement |
+| **Standard** (Gemini, OpenCode) | Commands/routing + SQLite Memory (markdown-driven) + Personas |
+| **Basic** (Cursor, Windsurf, Copilot, Aider) | Markdown instructions + SQLite Memory (bash-driven) + Checkpoint protocol |
+
+</details>
+
+<br>
+
+## 💰 Token Cost
+
+> [!NOTE]
+> **Honest disclosure.** Summoner adds overhead. For single-step tasks, use direct skills.
+
+| Scenario | Tokens | Overhead |
+|:---------|:------:|:--------:|
+| `/summoner:fix` (bug, memory matched) | ~9,300 | +86% |
+| `/summoner:fix` (simple, no memory hit) | ~8,300 | +66% |
+| `/summoner:debug` (diagnose only) | ~4,300 | +35% |
+| **Direct skill** (baseline) | ~5,000 | — |
+
+> **Rule of thumb:** Multi-step workflows → Summoner. Single-step tasks → direct skill.
+
+<br>
+
+## 💡 Best Practices
+
+<details open>
+<summary><strong>📌 Click to expand</strong></summary>
+
+1. 🎯 **Prefer `/summoner:fix` over direct skills.** Phase 0 memory retrieval saves time by loading past patterns before the first diagnostic step.
+
+2. 🔒 **Never skip Phase 1.** Even "obvious" bugs benefit from structured diagnosis. Memory Chain often surfaces non-obvious connections (e.g., "config errors manifest as code errors").
+
+3. 🛑 **Use checkpoints aggressively.** Wrong direction? `recall` is cheaper than undo. Already know the fix? `skip` the reproduce phase. Verbose output? Say "别废话".
+
+4. 📝 **Complete every post-game review.** A 1-minute review feeds the Memory Chain. Next time you hit a similar bug, Phase 0 has your back.
+
+5. 🏷 **Set `project.name` deliberately.** Same name across branches = shared experience. Different name for divergent branches = isolated memory.
+
+6. 🔧 **Rebuild hooks after updates.** `cd hooks && make build` after pulling — Go binaries don't auto-rebuild.
+
+</details>
+
+<br>
+
+## 📁 File Map
+
+<details>
+<summary><strong>summoner/ (63 files)</strong></summary>
 
 ```
 summoner/
-├── plugin.json                # Claude Code plugin declaration
-├── hooks/                     # Go lifecycle hooks
-│   ├── bin/                   # Compiled binaries (make build)
-│   ├── shared/                # Shared Go utilities
-│   ├── session-start/         # Context injection
-│   ├── pretooluse-skill/      # State tracking
-│   ├── stop/                  # Review reminder
+├── plugin.json              # Claude Code plugin declaration
+├── summoner.md              # Universal entry (any AI tool)
+│
+├── 🪝 hooks/ (Go)
+│   ├── bin/                 # Compiled binaries (make build)
+│   ├── shared/              # Common utilities
+│   ├── session-start/       # Context injection hook
+│   ├── pretooluse-skill/    # State tracking hook
+│   ├── stop/                # Review reminder hook
 │   └── Makefile
-├── skills/summoner/SKILL.md   # Meta-skill: routing hub
-├── commands/    (6 md)        # Slash command definitions
-├── agents/      (3 md)        # Reusable personas
-├── references/  (7 md+json)   # Protocol specs + schema
-├── scripts/     (3 sh)        # init, validate, wizard
-├── memory/                    # SQLite databases (runtime)
-├── .gemini/commands/  (6 toml) # Gemini CLI slash commands
-├── .opencode/                  # OpenCode integration guide
-└── docs/                       # Design docs + Codex setup guide```
+│
+├── 🧠 skills/summoner/SKILL.md  # Meta-skill routing hub
+├── 🎮 commands/ (6 md)          # Slash command definitions
+├── 🤖 agents/ (3 md)            # Reusable personas
+├── 📖 references/ (7 md+json)   # Protocol specs + JSON Schema
+├── 🔧 scripts/ (3 sh)           # init-db, summoner-init, validate
+├── 💾 memory/                   # SQLite databases (runtime)
+│
+├── 🌐 Platform adapters
+│   ├── .gemini/commands/ (6 toml)  # Gemini CLI
+│   ├── .opencode/                  # OpenCode
+│   └── docs/ (4 setup guides)     # Cursor, Windsurf, Copilot, Aider
+│
+├── 📚 Documentation
+│   ├── README.md / README_CN.md
+│   ├── docs/index.html         # GitHub Pages site
+│   ├── CHANGELOG.md
+│   └── docs/specs/             # Design spec + plan
+│
+└── 🏛 Community
+    ├── CONTRIBUTING.md
+    ├── CODE_OF_CONDUCT.md
+    └── .github/                # Issue/PR templates + CODEOWNERS
+```
 
----
+</details>
 
-## Related
+<br>
 
-- [anthropics/skills](https://github.com/anthropics/skills) — Official Anthropic skill examples
-- [obra/superpowers](https://github.com/obra/superpowers) — General-purpose Claude Code skills
-- [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) — Production-grade engineering skills
-- [claude-mem](https://github.com/yoloshii/ClawMem) — Agent memory with hybrid RAG
+<p align="center">
+  <a href="https://star-history.com/#johnson-xue/summoner&Date">
+    <img src="https://api.star-history.com/svg?repos=johnson-xue/summoner&type=Date" alt="Star History Chart">
+  </a>
+</p>
 
-## License
+## 📚 Related Projects
 
-MIT © [Jingshan Xue](https://github.com/johnson-xue)
+| Project | Stars | What It Does |
+|:--------|:-----:|:------------|
+| [anthropics/skills](https://github.com/anthropics/skills) | ★ | Official Anthropic skill examples |
+| [obra/superpowers](https://github.com/obra/superpowers) | 20k+ | General-purpose Claude Code skills |
+| [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | — | Production-grade engineering skills |
+| [claude-mem](https://github.com/yoloshii/ClawMem) | 180+ | Agent memory with hybrid RAG |
+
+<br>
+
+<p align="center">
+  <sub>MIT © <a href="https://github.com/johnson-xue">Jingshan Xue</a> · Built with Claude Code · LoL-inspired</sub>
+</p>

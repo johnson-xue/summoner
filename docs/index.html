@@ -85,6 +85,34 @@
   <h3 id="what-is">What Is Summoner?</h3>
   <p>AI coding agents are powerful but undisciplined. Without structure, they skip diagnosis, forget reviews, and produce work that passes tests but fails in production. Summoner is the process layer — inspired by League of Legends: choose your champion (skill), know when to engage (execute), and when to B-recall (checkpoint). After every match, review (post-game review). Patterns accumulate. Every session gets better.</p>
 
+  <h3>Demo</h3>
+  <pre><code>$ /summoner:fix 线上报错 SC_ErrInnerLogic characterItemCfg 104003018 not found
+
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 0: Memory Retrieval        │
+│                                                 │
+│  📚 匹配到 2 条历史经验                          │
+│  🐛 配置关联表断裂     (★★★★★) hits: 3           │
+│  ⚡ ok检查必做          (★★★) hits: 5            │
+│  [enter] 加载经验  [no] 忽略                    │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 1/5: 诊断根因              │
+│  ✅ character_item_conf.json id=104003018 缺失  │
+│  📋 根因: conf/ 关联表断裂，非代码 bug          │
+│  [enter] 继续  [skip] 跳过  [recall] 回城       │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 5/5: 审查                  │
+│  ✅ 纯配置补全，建议跳过审查                     │
+│  📋 产物: character_item_conf.json +1行          │
+└─────────────────────────────────────────────────┘
+
+→ Post-Game Review complete ✓
+→ Memory updated: config-chain-break (hits: 4)</code></pre>
+
   <h3 id="problem">What It Solves</h3>
   <table>
     <tr><th>Without Summoner</th><th>With Summoner</th></tr>
@@ -118,6 +146,17 @@
     <tr><td><strong>Aider</strong></td><td>✅ Conventions</td><td>✅ bash</td><td>—</td><td><code>CONVENTIONS.md</code></td></tr>
     <tr><td><strong>Codex</strong></td><td>⚠️ Manual</td><td>⚠️ bash</td><td>—</td><td>Prompt</td></tr>
   </table>
+  <h3>Feature Tiers</h3>
+  <details>
+    <summary><strong>What each tier means</strong></summary>
+    <table>
+      <tr><th>Tier</th><th>What You Get</th></tr>
+      <tr><td><strong>Full</strong> (Claude Code)</td><td>Slash commands + Go hooks + SQLite Memory + Persona fan-out + Checkpoint enforcement</td></tr>
+      <tr><td><strong>Standard</strong> (Gemini, OpenCode)</td><td>Commands/routing + SQLite Memory (markdown-driven) + Personas</td></tr>
+      <tr><td><strong>Basic</strong> (Cursor, Windsurf, Copilot, Aider)</td><td>Markdown instructions + SQLite Memory (bash-driven) + Checkpoint protocol</td></tr>
+    </table>
+  </details>
+
   <h3>Operating Systems</h3>
   <table>
     <tr><th>OS</th><th>Status</th><th>Notes</th></tr>
@@ -270,6 +309,10 @@ cd your-project
 └── <span>docs/</span>                      <em># Design documents</em></pre>
 
 </main>
+
+<p align="center" style="margin:48px 0;">
+  <img src="https://api.star-history.com/svg?repos=johnson-xue/summoner&type=Date" alt="Star History" style="max-width:100%;">
+</p>
 
 <footer>
   <p>MIT © <a href="https://github.com/johnson-xue">Jingshan Xue</a> · <a href="https://github.com/johnson-xue/summoner">GitHub</a> · <a href="README_CN.md">中文 README</a></p>
