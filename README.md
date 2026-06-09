@@ -30,7 +30,6 @@
 <details open>
 <summary><strong>📖 Table of Contents</strong></summary>
 
-- [✨ Demo](#-demo)
 - [🎯 The Problem](#-the-problem)
 - [🧩 How It Works](#-how-it-works)
 - [🚀 Quick Start](#-quick-start)
@@ -46,38 +45,12 @@
 
 ---
 
-## ✨ Demo
 
-```console
-$ /summoner:fix 线上报错 SC_ErrInnerLogic characterItemCfg 104003018 not found
 
-┌─────────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 0: Memory Retrieval        │
-│                                                 │
-│  📚 匹配到 2 条历史经验                          │
-│  🐛 配置关联表断裂     (★★★★★) hits: 3           │
-│  ⚡ ok检查必做          (★★★) hits: 5            │
-│  [enter] 加载经验  [no] 忽略                    │
-└─────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 1/5: 诊断根因              │
-│  ✅ character_item_conf.json id=104003018 缺失  │
-│  📋 根因: conf/ 关联表断裂，非代码 bug          │
-│  [enter] 继续  [skip] 跳过  [recall] 回城       │
-└─────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 5/5: 审查                  │
-│  ✅ 纯配置补全，建议跳过审查                     │
-│  📋 产物: character_item_conf.json +1行          │
-└─────────────────────────────────────────────────┘
 
-→ Post-Game Review complete ✓
-→ Memory updated: config-chain-break (hits: 4)
-```
 
-<br>
 
 ## 🎯 The Problem
 
