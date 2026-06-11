@@ -109,14 +109,14 @@ Phase 5   Review — code review
 
 ## Feedback Needed
 
-Summoner is in early development (v0.2.0). Your feedback shapes its direction.
+Summoner is in early development (v0.1.1). Your feedback shapes its direction.
 
 | What | Where |
 |:-----|:------|
 | **Bug report** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=bug_report.yml) — include version, platform, and what you expected |
 | **Feature request** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=feature_request.yml) — tell us your use case and current workaround |
 | **Questions / Ideas** | [GitHub Discussions](https://github.com/johnson-xue/summoner/discussions) — Q&A, ideas, show your setup |
-| **Known Issues** | See [v0.2.0 Release Notes](https://github.com/johnson-xue/summoner/releases) for current limitations |
+| **Known Issues** | See [v0.1.1 Release Notes](https://github.com/johnson-xue/summoner/releases) for current limitations |
 
 **Why report?** Every issue you file teaches Summoner what real-world AI workflows need. Even a single sentence helps — "I tried X, expected Y, got Z."
 
