@@ -81,6 +81,12 @@ echo ""
 # Project name
 read -p "项目名称 (如 my-game-server): " PROJECT_NAME
 PROJECT_NAME="${PROJECT_NAME:-my-project}"
+# Sanitize: only allow alphanumeric, underscore, hyphen
+PROJECT_NAME="${PROJECT_NAME//[^a-zA-Z0-9_-]/}"
+if [ -z "$PROJECT_NAME" ]; then
+    echo "错误：项目名称不能为空或只含非法字符"
+    exit 1
+fi
 
 echo ""
 echo "这个项目提供了哪些能力？(回车跳过 = 无此能力)"
@@ -90,21 +96,24 @@ echo "--- 领域 skill（项目特有的） ---"
 
 read -p "  调试/诊断 skill 名 (默认: superpowers:systematic-debugging): " input
 DEBUG_SKILL="${input:-superpowers:systematic-debugging}"
+DEBUG_SKILL="${DEBUG_SKILL//[^a-zA-Z0-9:_-]/}"
 
 read -p "  测试 skill 名 (默认: superpowers:test-driven-development): " input
 TEST_SKILL="${input:-superpowers:test-driven-development}"
+TEST_SKILL="${TEST_SKILL//[^a-zA-Z0-9:_-]/}"
 
 read -p "  运维 skill 名 (默认: superpowers:finishing-a-development-branch): " input
 OPS_SKILL="${input:-superpowers:finishing-a-development-branch}"
+OPS_SKILL="${OPS_SKILL//[^a-zA-Z0-9:_-]/}"
 
 read -p "  配置检查 skill 名 (如 my-config-skill, 无则回车): " input
-CONFIG_SKILL="$input"
+CONFIG_SKILL="${input//[^a-zA-Z0-9:_-]/}"
 
 read -p "  新增模块 skill 名 (如 my-subsystem-skill, 无则回车): " input
-SUBSYSTEM_SKILL="$input"
+SUBSYSTEM_SKILL="${input//[^a-zA-Z0-9:_-]/}"
 
 read -p "  RPC 接口 skill 名 (如 my-rpc-skill, 无则回车): " input
-RPC_SKILL="$input"
+RPC_SKILL="${input//[^a-zA-Z0-9:_-]/}"
 
 echo ""
 echo "--- 通用 skill（可直接用 superpowers） ---"

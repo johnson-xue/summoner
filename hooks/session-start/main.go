@@ -21,6 +21,10 @@ func main() {
 
 	if _, err := os.Stat(manifest); err == nil {
 		projectName := extractProjectName(manifest)
+		// Reject path traversal: project.name must be a plain name, not a path
+		if projectName != filepath.Base(projectName) || strings.ContainsAny(projectName, "/\\.") {
+			projectName = "unknown"
+		}
 		status = append(status, fmt.Sprintf("✅ summoner.yaml found (project: %s)", projectName))
 
 		// Check memory DB

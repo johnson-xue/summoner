@@ -11,6 +11,19 @@ Post-game review triggers when:
 - User says "stop" — SKIP review (emergency stop = no time for questions)
 - Framework detects no user input for 5+ minutes after checkpoint — SKIP (user is away)
 
+### Multi-Type Collision
+
+A session can trigger multiple review types (e.g., user skipped AND injected knowledge). Priority order:
+
+**Type 1 > Type 5 > Type 3 > Type 2 > Type 4**
+
+When multiple types are triggered, pick the **highest-priority type only** and present a single questionnaire. Do NOT merge or chain multiple questionnaires — that defeats the brevity goal.
+
+**Common collision rules:**
+- User says "skip, 我知道怎么修" → both Type 2 and Type 3 trigger → show Type 3 (higher priority)
+- User said "别废话" AND made a correction → both Type 5 and Type 1 → show Type 1
+- Session completed cleanly but user was verbose about it → Type 4 only (no Type 5 unless explicit complaint)
+
 ## Type 1: Direction Correction
 
 **Trigger:** User said "recall / 方向不对 / 换个思路" during the session.

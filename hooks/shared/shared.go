@@ -24,7 +24,12 @@ func ProjectDir() string {
 	if dir := os.Getenv("CLAUDE_PROJECT_DIR"); dir != "" {
 		return dir
 	}
-	dir, _ := os.Getwd()
+	dir, err := os.Getwd()
+	if err != nil || dir == "" {
+		// hooks run as external processes — cwd may be unreliable;
+		// fall back to a stable sentinel so StateFile is still unique
+		return filepath.Join(os.TempDir(), "summoner-unknown-project")
+	}
 	return dir
 }
 
