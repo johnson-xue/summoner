@@ -3,10 +3,79 @@
 
 # summoner-init.sh — Interactive wizard to create summoner.yaml for a project
 # Usage: ./summoner-init.sh
+#
+# Now offers 3 modes:
+#   [1] BP 阵容选择 → summoner-bp.sh (逐 phase 选 skill，推荐)
+#   [2] 快速默认    → summoner-bp.sh --quick (零交互)
+#   [3] 手动输入    → 传统逐个输入 skill 名 (兼容旧版)
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BP_SCRIPT="${SCRIPT_DIR}/summoner-bp.sh"
+
+# If args are passed directly, map numeric modes then delegate to bp.sh
+if [ $# -gt 0 ]; then
+    case "$1" in
+        1) exec "$BP_SCRIPT" ;;
+        2) exec "$BP_SCRIPT" --quick ;;
+        3) ;; # fall through to manual mode below
+        --quick|-q) exec "$BP_SCRIPT" --quick ;;
+        --force|-f) exec "$BP_SCRIPT" --force ;;
+        --help|-h) exec "$BP_SCRIPT" --help ;;
+        *)
+            echo "Usage: summoner-init.sh [1|2|3|--quick|--force|--help]"
+            echo "  1  BP champion select (recommended)"
+            echo "  2  Quick defaults (zero interaction except project name)"
+            echo "  3  Manual skill input (advanced)"
+            exit 1
+            ;;
+    esac
+    # If mode 3, continue to manual mode below
+fi
 
 echo ""
-echo "⚡ Summoner Init — 项目接入向导"
+echo ">>> Summoner Init — 项目接入向导"
 echo "================================"
+echo ""
+
+echo "选择初始化方式:"
+echo ""
+echo "  [1] BP 阵容选择  — 逐 phase 选择 skill（推荐新用户）"
+echo "  [2] 快速默认     — 使用所有推荐默认值，零交互"
+echo "  [3] 手动输入     — 逐个输入 skill 名（高级用户）"
+echo ""
+
+while true; do
+    read -p "选择 [1-3，默认=1]: " init_mode
+    init_mode="${init_mode:-1}"
+
+    case "$init_mode" in
+        1)
+            echo ""
+            echo "启动 BP 阵容选择..."
+            exec "$BP_SCRIPT"
+            ;;
+        2)
+            echo ""
+            echo "使用快速默认模式..."
+            exec "$BP_SCRIPT" --quick
+            ;;
+        3)
+            echo ""
+            echo "进入手动输入模式..."
+            break
+            ;;
+        *)
+            echo "无效选择，请输入 1、2 或 3"
+            ;;
+    esac
+done
+
+# ============================================================
+# Manual mode — traditional interactive wizard (保留兼容)
+# ============================================================
+
+echo ""
+echo "--- 手动 Skill 配置 ---"
 echo ""
 
 # Project name
@@ -19,14 +88,14 @@ echo ""
 
 echo "--- 领域 skill（项目特有的） ---"
 
-read -p "  调试/诊断 skill 名 (默认: my-debug-skill): " input
-DEBUG_SKILL="${input:-my-debug-skill}"
+read -p "  调试/诊断 skill 名 (默认: superpowers:systematic-debugging): " input
+DEBUG_SKILL="${input:-superpowers:systematic-debugging}"
 
-read -p "  测试 skill 名 (默认: my-test-skill): " input
-TEST_SKILL="${input:-my-test-skill}"
+read -p "  测试 skill 名 (默认: superpowers:test-driven-development): " input
+TEST_SKILL="${input:-superpowers:test-driven-development}"
 
-read -p "  运维 skill 名 (默认: my-ops-skill): " input
-OPS_SKILL="${input:-my-ops-skill}"
+read -p "  运维 skill 名 (默认: superpowers:finishing-a-development-branch): " input
+OPS_SKILL="${input:-superpowers:finishing-a-development-branch}"
 
 read -p "  配置检查 skill 名 (如 my-config-skill, 无则回车): " input
 CONFIG_SKILL="$input"
@@ -52,7 +121,7 @@ cat > summoner.yaml <<YAML
 version: "1"
 
 project:
-  name: ${PROJECT_NAME}
+  name: "${PROJECT_NAME}"
 
 phases:
   # 诊断
@@ -122,6 +191,9 @@ cat >> summoner.yaml <<YAML
 
   plan:
     skill: superpowers:writing-plans
+
+  implement:
+    skill: superpowers:subagent-driven-development
 
   review:
     skill: superpowers:requesting-code-review

@@ -1,0 +1,223 @@
+# Summoner Skill Roster — 英雄池
+# ================================
+# Curated popular skills from the AI coding ecosystem.
+# Each phase lists available "champions" in recommended order.
+# The first entry is the default pick ([DEFAULT] meta).
+#
+# Sources:
+#   superpowers     — obra/superpowers (174k+ stars)
+#   compound-eng    — EveryInc/compound-engineering-plugin (19k+ stars)
+#   mattpocock      — mattpocock/skills (40k+ stars)
+#   anthropic       — anthropics/skills (37k+ stars)
+#   community       — other popular community skills
+#   custom          — user-provided (no source repo)
+
+sources:
+  superpowers:
+    name: Superpowers
+    url: https://github.com/obra/superpowers
+    install: /plugin marketplace add obra/superpowers && /plugin install superpowers@superpowers
+    stars: 174000
+  compound-eng:
+    name: Compound Engineering
+    url: https://github.com/EveryInc/compound-engineering-plugin
+    install: /plugin marketplace add EveryInc/compound-engineering-plugin
+    stars: 19400
+  mattpocock:
+    name: Matt Pocock Skills
+    url: https://github.com/mattpocock/skills
+    install: git clone https://github.com/mattpocock/skills.git ~/.claude/skills/mattpocock
+    stars: 40500
+  anthropic:
+    name: Anthropic Official Skills
+    url: https://github.com/anthropics/skills
+    install: git clone https://github.com/anthropics/skills.git ~/.claude/skills/anthropic
+    stars: 37500
+  community:
+    name: Community Skills
+    url: https://github.com/OthmanAdi/planning-with-files
+    install: manual — see individual skill URL
+  custom:
+    name: Custom / Project-Specific
+    description: Your own project skill or private skill
+
+# ============================================================
+# Phase → Champion mappings
+# ============================================================
+
+phases:
+  define:
+    label: "需求定义"
+    description: "将模糊想法转化为清晰的设计规格"
+    champions:
+      - name: superpowers:brainstorming
+        source: superpowers
+        description: "Socratic 式设计精炼 — 将模糊想法转化为清晰 spec，保存设计文档"
+        default: true
+      - name: ce-ideate
+        source: compound-eng
+        description: "生成和评估 big-picture 方案，在编码前进行批判性思考"
+      - name: grill-me
+        source: mattpocock
+        description: "无情追问设计和计划中的每个决策分支，直到全部明确"
+
+  plan:
+    label: "任务拆解"
+    description: "将设计规格分解为可执行的任务列表"
+    champions:
+      - name: superpowers:writing-plans
+        source: superpowers
+        description: "将设计分解为 2-5 分钟的可执行任务，含精确文件路径和验证步骤"
+        default: true
+      - name: planning-with-files
+        source: community
+        description: "Manus 风格持久化 markdown 计划，含里程碑和清单"
+        url: https://github.com/OthmanAdi/planning-with-files
+      - name: ce-plan
+        source: compound-eng
+        description: "将需求转化为详细的实现计划和任务列表"
+
+  implement:
+    label: "功能实现"
+    description: "按计划执行编码 — /summoner:new 的 Phase 3"
+    champions:
+      - name: superpowers:subagent-driven-development
+        source: superpowers
+        description: "每个任务派发独立 subagent，两阶段审查（spec 合规 + 代码质量）"
+        default: true
+      - name: superpowers:executing-plans
+        source: superpowers
+        description: "批量执行计划，每个任务间设人工检查点"
+      - name: ce-work
+        source: compound-eng
+        description: "使用 git worktree 执行计划，将计划视为活文档"
+
+  subsystem:
+    label: "新增子系统/模块"
+    description: "新建项目子系统或功能模块（如 player/task/rank）"
+    champions:
+      - name: "[your subsystem skill here]"
+        source: custom
+        description: "项目专属子系统 skill — 包含项目约定、LSP、codebase-memory。安装后运行 summoner-init.sh 修改"
+        default: true
+
+  rpc:
+    label: "RPC 接口"
+    description: "新增 TCP 服务接口"
+    champions:
+      - name: "[your RPC skill here]"
+        source: custom
+        description: "项目专属 RPC skill — 包含协议定义、路由注册、参数校验。安装后运行 summoner-init.sh 修改"
+        default: true
+
+  gmt:
+    label: "GM 工具 / 管理后台"
+    description: "新增 GM 命令或管理功能"
+    champions:
+      - name: "[your GMT skill here]"
+        source: custom
+        description: "项目专属 GMT skill — 包含管理命令模板、权限校验。安装后运行 summoner-init.sh 修改"
+        default: true
+
+  test:
+    label: "测试"
+    description: "编写和运行测试"
+    champions:
+      - name: superpowers:test-driven-development
+        source: superpowers
+        description: "严格 RED-GREEN-REFACTOR 循环，无失败测试不写代码"
+        default: true
+      - name: tdd
+        source: mattpocock
+        description: "红-绿-重构循环，一次一个垂直切片构建功能/修复"
+
+  review:
+    label: "代码审查"
+    description: "审查代码变更的正确性、风格、安全性和架构"
+    champions:
+      - name: superpowers:requesting-code-review
+        source: superpowers
+        description: "审查前检查清单，按计划审查，按严重程度报告"
+        default: true
+      - name: ce-code-review
+        source: compound-eng
+        description: "12+ 并行审查 agent：安全、性能、架构、简洁性、git 历史等"
+
+  debug:
+    label: "调试诊断"
+    description: "排查根因 — /summoner:fix 的 Phase 1"
+    champions:
+      - name: superpowers:systematic-debugging
+        source: superpowers
+        description: "4 阶段流程：调查 → 模式分析 → 假设实验 → 实施修复"
+        default: true
+      - name: "/diagnose"
+        source: mattpocock
+        description: "严格诊断循环：复现 → 最小化 → 假设 → 插桩 → 修复 → 回归测试"
+      - name: ce-debug
+        source: compound-eng
+        description: "系统化 bug 复现、根因分析、修复"
+
+  ops:
+    label: "运维操作"
+    description: "部署、启动、停止、状态检查"
+    champions:
+      - name: superpowers:finishing-a-development-branch
+        source: superpowers
+        description: "分支收尾：验证测试、展示 merge/PR/keep/discard 选项、清理 worktree"
+        default: true
+      - name: ce-compound
+        source: compound-eng
+        description: "将学到的东西、模式、坑记录为可复用的知识文档"
+
+  config:
+    label: "配置检查"
+    description: "检查和验证项目配置"
+    champions:
+      - name: "(项目专属 skill)"
+        source: custom
+        description: "你的项目配置 skill"
+        default: true
+
+  security:
+    label: "安全审计"
+    description: "安全漏洞扫描和审计"
+    note: "Security review happens via /summoner:ship fan-out using the built-in security-auditor persona, not via this phase. Set a skill here only if your project has a dedicated security scanning skill."
+    champions:
+      - name: "[your security skill — optional]"
+        source: custom
+        description: "项目专属安全审计 skill。留空则使用 ship workflow 内置的 security-auditor persona"
+        default: true
+
+# ============================================================
+# Quick-start default lineup (used by --quick mode)
+# ============================================================
+
+defaults:
+  define: superpowers:brainstorming
+  plan: superpowers:writing-plans
+  implement: superpowers:subagent-driven-development
+  test: superpowers:test-driven-development
+  review: superpowers:requesting-code-review
+  debug: superpowers:systematic-debugging
+  ops: superpowers:finishing-a-development-branch
+  config: none
+  security: none
+  subsystem: none
+  rpc: none
+  gmt: none
+
+# Workflows that get auto-generated
+workflows:
+  bugfix:
+    chain: [debug, reproduce, fix, verify, review]
+    checkpoints: after_each
+  feature:
+    chain: [define, plan, implement, test, review]
+    checkpoints: after_each
+  ship:
+    fan_out:
+      - persona: code-reviewer
+      - persona: test-engineer
+    merge: review
+    checkpoints: after_merge
