@@ -38,8 +38,8 @@ Summoner is the routing hub. It reads the project's `summoner.yaml` manifest, re
 Before starting any workflow, check Summoner Memory for relevant historical patterns.
 
 1. Read `project.name` from the project's `summoner.yaml`
-2. Check if memory database exists: `memory/{project-name}.db`
-   - If not: run `scripts/init-memory-db.sh {project-name}` to create and seed it
+2. Check if memory database exists: `memory/{project-name}.db` (under Summoner plugin root, typically `~/.claude/plugins/summoner/memory/`)
+   - If not: run `~/.claude/plugins/summoner/scripts/init-memory-db.sh {project-name}` to create and seed it
 3. Extract features from user input:
    - error_codes: scan for SC_Err*, "panic", "nil pointer", "index out of range"
    - module: infer from log file paths (e.g. player/task/task.go → task)
@@ -74,12 +74,18 @@ Before starting any workflow, check Summoner Memory for relevant historical patt
    - Type emoji: 🐛 correction, ⚡ skip, 💡 knowledge, 🎨 style
 6. If user selects "no" or no patterns match: skip, proceed to Phase 1 (zero token cost)
 7. If user selects "enter": loaded patterns inform the diagnosis and repair strategy
-8. Token budget:
-   - Normal: Top 5 patterns, full summaries (≤1200 tokens)
-   - Level 1: Top 3 patterns, truncated summaries if near cap (≤700 tokens)
-   - Level 2: Top 1 pattern, short summary if still overflowing (≤300 tokens)
-   - Skip: Phase 0 skipped if even Level 2 would overflow (0 tokens)
-   - Degradation is automatic — always respect the 1500 token hard cap
+8. Token budget (hard cap: 1500 tokens for Phase 0 output):
+   - Estimate token cost before each level: `estimated_tokens = pattern_count * avg_summary_length / 3`
+   - Normal (≤1200 tokens estimated): Top 5 patterns, full summaries
+     → Trigger: when estimated < 1000, safe to show all
+   - Level 1 (≤700 tokens estimated): Top 3 patterns, truncated summaries
+     → Trigger: when estimated ≥ 1000 OR total conversation context > 70% of model limit
+   - Level 2 (≤300 tokens estimated): Top 1 pattern, short summary
+     → Trigger: when estimated > 700 OR conversation context > 85% of model limit
+   - Skip (0 tokens): Phase 0 skipped entirely
+     → Trigger: when even Level 2 would push total context > 90% of model limit
+   - Degradation is automatic and silent — do not explain the choice, just apply it.
+   - When in doubt, degrade one level lower than you think. Erring on the side of less output is always correct.
 9. Platform compatibility:
    - Claude Code: Memory DB path resolved via hook-injected context
    - Other platforms (Gemini, OpenCode, Aider, etc.): derive DB path manually:
@@ -93,11 +99,52 @@ On receiving a command, read the project's `summoner.yaml`:
 
 ```
 1. Locate summoner.yaml at project root
-2. If not found: "This project has no summoner.yaml. Summoner needs a manifest to know which skills to use. Create one? [y/n]"
-3. If found: resolve each phase in the workflow to its skill
-4. If a phase has skill: "none": skip that phase (explicit no-capability)
-5. If a phase is not in the manifest: use superpowers default (define → brainstorming, plan → writing-plans, review → requesting-code-review)
+2. If found: resolve each phase in the workflow to its skill → proceed to Phase Execution
+3. If a phase has skill: "none": skip that phase (explicit no-capability)
+4. If a phase is not in the manifest: use superpowers default (define → brainstorming, plan → writing-plans, review → requesting-code-review)
+5. If NOT found: set MANIFEST_MISSING = true. Phase 0 is auto-skipped (cannot resolve project.name). Phases 1-2 use superpowers defaults. At Phase 3 of /summoner:new, present the No Manifest menu below. For /summoner:fix Phase 3 (freeform fix), skip the menu — use the standard freeform fix flow.
 ```
+
+**No Manifest Handling (Hybrid A+B) — /summoner:new Phase 3 only:**
+
+When `summoner.yaml` is not found, do NOT silently fall back to generic skills. Phase 0 (Memory Retrieval) is auto-skipped — it cannot resolve `project.name` to locate the memory DB. Phases 1-2 (define, plan) use superpowers defaults since they are always generic. At Phase 3 (implementation) start, present this interactive menu:
+
+```
+┌────────────────────────────────────────┐
+│  WARNING:  No summoner.yaml found.            │
+│                                        │
+│  Phase 3 needs to know which project   │
+│  skill to use for implementation:      │
+│                                        │
+│  [1] Pause — let me create             │
+│      summoner.yaml first               │
+│      (Recommended — runs               │
+│       summoner-init.sh)                │
+│                                        │
+│  [2] Manually specify a skill name     │
+│      (e.g. antia-subsystem, my-rpc)    │
+│                                        │
+│  [3] Use generic skill                 │
+│      (no project conventions, no       │
+│       LSP, no codebase-memory)         │
+└────────────────────────────────────────┘
+```
+
+- **Option 1:** Pause the workflow. Tell the user to open a separate terminal and run one of:
+  - **Quick (推荐):** `~/.claude/plugins/summoner/scripts/summoner-init.sh 2` — generates `summoner.yaml` with all recommended defaults in 3 seconds, zero interaction.
+  - **BP 阵容选择:** `~/.claude/plugins/summoner/scripts/summoner-init.sh 1` — interactive champion select: pick a skill for each phase from the curated roster (like LoL champion select).
+  - Also run `init-memory-db.sh <project-name>` afterwards.
+  - Wait for user to confirm manifest is ready, then reload and resolve phases normally.
+- **Option 2:** Ask the user for the skill name (e.g. `antia-subsystem`, `my-rpc-skill`).
+  1. **Scan for available skills first:** Run `find .claude/skills skills ~/.claude/skills -name "SKILL.md" 2>/dev/null | head -20` and `grep '^name:'` on each to build a list of locally-installed skill names. Present these as suggestions before asking for input.
+  2. **Validate the entered name:** After the user provides a skill name, verify it exists:
+     - If the name is a local skill (found in the scan): use it directly.
+     - If the name contains a `:` (e.g. `superpowers:subagent-driven-development`): check if it's a known plugin skill by looking for it in `~/.claude/plugins/` or the session's available skills list.
+     - If the name is NOT found anywhere: warn the user: "Skill 'X' was not found. It may fail at invocation. Available skills: [list top 5]. Use it anyway? [y/N]"
+  3. Use the validated skill for this session only — remind the user that creating a `summoner.yaml` will make this permanent.
+- **Option 3:** Continue with generic `superpowers:subagent-driven-development` for implementation. Explicitly warn: "Proceeding without project conventions — no LSP, no codebase-memory, no project-specific toolchains." Continue with superpowers defaults for remaining phases.
+
+**Iron Law:** Never silently fall back to generic execution when the manifest is missing. Always surface the choice to the user.
 
 ### 2. Checkpoint Enforcement
 
@@ -112,11 +159,33 @@ After each phase completes:
 ### 3. Phase Execution
 
 For each phase in the workflow chain:
-1. Read the phase's skill from manifest
+
+**When manifest IS available (or user specified skill via Option 2):**
+1. Read the phase's skill from manifest (or use the manually-specified skill for Phase 3)
 2. Invoke the skill via the Skill tool: `Skill(skill="<skill-name>", args="<user's original input>")`
 3. The skill runs its internal workflow and returns results
 4. Summoner extracts: what was accomplished, artifacts produced, issues found
 5. Output checkpoint
+
+**When manifest is NOT available — after No Manifest menu resolution:**
+
+Phase 1-2 always use superpowers defaults (define → `superpowers:brainstorming`, plan → `superpowers:writing-plans`). Phase 3 behavior depends on the user's menu choice:
+- Option 1 (pause): manifest created → reload → continue with normal Phase Execution
+- Option 2 (manual skill): use the specified skill for Phase 3, superpowers defaults for remaining
+- Option 3 (generic): use the superpowers chain below for all remaining phases:
+  1. Phase 3 (implement): invoke `superpowers:subagent-driven-development`
+     - WARNING: Remind user: no project conventions active (LSP, codebase-memory, project toolchains unavailable)
+  2. Phase 4 (test): invoke `superpowers:test-driven-development` or skip if no tests
+  3. Phase 5 (review): invoke `superpowers:requesting-code-review`
+
+**Phase 3 Routing (when manifest is available):**
+
+At Phase 3 of `/summoner:new`, determine the implementation skill based on function type:
+- New subsystem / module → `phase.subsystem` skill
+- New RPC interface → `phase.rpc` skill
+- GM tool / admin command → `phase.gmt` skill
+- If the relevant phase is not in the manifest: ask user which skill to use (one-time), then apply for this session
+- If multiple match: ask user to clarify the primary function type
 
 For the `fix` phase (freeform — no skill mapping):
 1. Present the diagnosis from Phase 1
@@ -158,6 +227,15 @@ Full definitions: Read `references/workflow-reference.md` (workflow diagrams, au
 | `/summoner:review` | code review only |
 
 (M) = Mandatory — iron law, cannot be skipped.
+
+## Available Personas (dispatch as subagents)
+
+| Persona | Use for |
+|---------|---------|
+| `summoner:code-reviewer` | Standalone code review, ship fan-out |
+| `summoner:security-auditor` | Security vulnerability audit, ship fan-out |
+| `summoner:test-engineer` | Test coverage analysis, Prove-It checks, ship fan-out |
+| `summoner:debug-agent` | Root cause analysis, stack trace diagnosis, error pattern matching |
 
 ## References
 
