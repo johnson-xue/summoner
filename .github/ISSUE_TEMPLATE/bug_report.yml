@@ -1,7 +1,7 @@
 name: Bug Report
-description: Report a bug or unexpected behavior
+description: Report a bug in Summoner
 title: "bug: "
-labels: ["bug", "triage"]
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -12,8 +12,17 @@ body:
     id: version
     attributes:
       label: Summoner Version
-      description: Which version are you using? (check CHANGELOG.md or `git log --oneline -1`)
-      placeholder: "0.1.0"
+      description: Which version are you using? (check `plugin.json` or CHANGELOG.md)
+      placeholder: "v0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Which AI coding platform are you using Summoner with?
+      placeholder: "Claude Code / Gemini CLI / Cursor / OpenCode / Aider"
     validations:
       required: true
 
@@ -21,15 +30,41 @@ body:
     id: os
     attributes:
       label: Operating System
-      placeholder: "macOS 14.0 / Ubuntu 24.04"
+      placeholder: "macOS 14.0 / Ubuntu 24.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Summoner is affected?
+      options:
+        - Hooks (SessionStart/PreToolUse/Stop)
+        - Memory Chain (Phase 0 retrieval)
+        - Checkpoint Protocol
+        - Command routing (/summoner:fix/new/ship/etc)
+        - Skill resolution (manifest parsing)
+        - Platform adapter (Gemini/OpenCode/Cursor/etc)
+        - Scripts (init / validate / memory)
+        - Documentation
+        - Other
     validations:
       required: true
 
   - type: textarea
-    id: what-happened
+    id: expected
     attributes:
-      label: What Happened?
-      description: Describe the bug — what did you expect to happen, and what actually happened?
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
     validations:
       required: true
 
@@ -50,18 +85,3 @@ body:
     attributes:
       label: Relevant Logs or Screenshots
       description: Paste any error messages, hook output, or screenshots.
-
-  - type: dropdown
-    id: component
-    attributes:
-      label: Component
-      options:
-        - hooks
-        - commands
-        - meta-skill (SKILL.md)
-        - memory (SQLite)
-        - scripts
-        - documentation
-        - other
-    validations:
-      required: true

@@ -41,7 +41,7 @@ AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查�
 ```bash
 cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
-~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
+~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep -A2 '^project:' summoner.yaml | grep 'name:' | head -1 | awk '{print $2}')
 ```
 
 > **替代方式：** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — 效果相同，无需 marketplace。非主流平台需编译：`cd ~/.claude/plugins/summoner/hooks && make build`。
@@ -104,6 +104,21 @@ Phase 5   审查 — 代码审查
 ## 安装体积
 
 63 个文件 · 19 个核心 · 编译后 hooks ~7.5 MB · 零外部依赖（Go + SQLite3 除外）
+
+---
+
+## 我们需要反馈
+
+Summoner 处于早期开发阶段（v0.2.0）。你的反馈决定了它的方向。
+
+| 做什么 | 去哪里 |
+|:-------|:-------|
+| **报 Bug** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=bug_report.yml) — 请附上版本、平台和预期行为 |
+| **提需求** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=feature_request.yml) — 告诉我们你的使用场景和当前解决方案 |
+| **提问 / 交流** | [GitHub Discussions](https://github.com/johnson-xue/summoner/discussions) — Q&A、想法、秀出你的配置 |
+| **已知问题** | 查看 [v0.2.0 Release Notes](https://github.com/johnson-xue/summoner/releases) 了解当前限制 |
+
+**为什么要反馈？** 你提交的每个 issue 都在告诉 Summoner 真实的 AI 工作流需要什么。哪怕一句话也很有价值——"我试了 X，期望 Y，实际得到 Z。"
 
 ---
 

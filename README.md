@@ -41,7 +41,7 @@ Then in your project (hooks work immediately — pre-compiled for macOS/Linux):
 ```bash
 cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
-~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep name: summoner.yaml | head -1 | awk '{print $2}')
+~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep -A2 '^project:' summoner.yaml | grep 'name:' | head -1 | awk '{print $2}')
 ```
 
 > **Alternative:** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — same result, no marketplace needed. If on an unsupported platform: `cd ~/.claude/plugins/summoner/hooks && make build`.
@@ -104,6 +104,21 @@ Phase 5   Review — code review
 ## Install Size
 
 63 files · 19 core · compiled hooks ~7.5 MB · zero external deps beyond Go + SQLite3
+
+---
+
+## Feedback Needed
+
+Summoner is in early development (v0.2.0). Your feedback shapes its direction.
+
+| What | Where |
+|:-----|:------|
+| **Bug report** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=bug_report.yml) — include version, platform, and what you expected |
+| **Feature request** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=feature_request.yml) — tell us your use case and current workaround |
+| **Questions / Ideas** | [GitHub Discussions](https://github.com/johnson-xue/summoner/discussions) — Q&A, ideas, show your setup |
+| **Known Issues** | See [v0.2.0 Release Notes](https://github.com/johnson-xue/summoner/releases) for current limitations |
+
+**Why report?** Every issue you file teaches Summoner what real-world AI workflows need. Even a single sentence helps — "I tried X, expected Y, got Z."
 
 ---
 

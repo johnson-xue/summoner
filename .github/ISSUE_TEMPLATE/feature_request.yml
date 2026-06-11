@@ -9,18 +9,34 @@ body:
         Thanks for suggesting a feature! Describe the problem first, then the solution.
 
   - type: textarea
-    id: problem
+    id: use_case
     attributes:
-      label: Problem
-      description: What problem are you trying to solve? What's the current limitation?
+      label: Use Case
+      description: What scenario needs this feature? Describe the real-world situation where you'd use it.
     validations:
       required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current Limitation
+      description: What's the gap in Summoner today? What can't you do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current Workaround
+      description: How are you solving this today? (even if it's manual)
+    validations:
+      required: false
 
   - type: textarea
     id: solution
     attributes:
       label: Proposed Solution
-      description: What would you like Summoner to do? Be specific.
+      description: What would you like Summoner to do? Be specific about the UX and behavior.
     validations:
       required: true
 
@@ -28,21 +44,22 @@ body:
     id: alternatives
     attributes:
       label: Alternatives Considered
-      description: What other approaches have you considered? Workarounds?
+      description: What other approaches have you considered?
 
   - type: dropdown
     id: component
     attributes:
       label: Component
       options:
-        - new command
-        - hooks
-        - memory
-        - checkpoint protocol
-        - personas
-        - manifest / config
-        - documentation
-        - other
+        - New command / workflow
+        - Hooks (SessionStart/PreToolUse/Stop)
+        - Memory Chain (SQLite)
+        - Checkpoint Protocol
+        - Personas (code-reviewer / security-auditor / test-engineer)
+        - Manifest / summoner.yaml
+        - Platform adapter (non-Claude-Code support)
+        - Documentation
+        - Other
     validations:
       required: true
 

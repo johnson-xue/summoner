@@ -11,8 +11,9 @@
 
 1. Check the [README](../README.md) for installation and usage instructions
 2. Review the [reference docs](../references/) for protocol specifications
-3. Search [existing issues](https://github.com/johnson-xue/summoner/issues) for similar questions
-4. Open a [new issue](https://github.com/johnson-xue/summoner/issues/new/choose) with the "Question" label
+3. [GitHub Discussions](https://github.com/johnson-xue/summoner/discussions) — Q&A, ideas, show your setup
+4. Search [existing issues](https://github.com/johnson-xue/summoner/issues) for known bugs
+5. Open a [bug report](https://github.com/johnson-xue/summoner/issues/new?template=bug_report.yml) or [feature request](https://github.com/johnson-xue/summoner/issues/new?template=feature_request.yml)
 
 ## Common Issues
 

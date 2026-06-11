@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Questions & Discussions
+    url: https://github.com/johnson-xue/summoner/discussions
+    about: Please ask questions here instead of filing an issue — Q&A, ideas, show your setup
+  - name: 📖 Summoner Documentation
+    url: https://johnson-xue.github.io/summoner/
+    about: Read the docs before filing an issue — workflows, manifest spec, checkpoint protocol
