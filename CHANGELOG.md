@@ -1,5 +1,20 @@
 # Summoner Changelog
 
+## 0.1.1 — 2026-06-11
+
+### Phase 3 Routing Fix (Issue #1)
+- **No Manifest Handling (Hybrid A+B):** When `summoner.yaml` is missing, Phase 3 no longer silently falls back to generic skills. Instead, presents an interactive 3-option menu:
+  - [1] Pause to create summoner.yaml (recommended — runs summoner-init.sh)
+  - [2] Manually specify a skill name for this session
+  - [3] Use generic skill with explicit warning about missing project conventions
+- **Phase 3 Routing:** Explicit routing logic for subsystem/RPC/GMT function types when manifest is available
+- **Iron Law:** Never silently fall back to generic execution — always surface the choice to the user
+
+### Documentation
+- Improved README with "Report Issues" / "Feedback Needed" guidance
+- Added GitHub Issue templates (bug report, feature request)
+- Updated workflow documentation to reference No Manifest Handling
+
 ## 0.1.0 — 2026-06-09
 
 ### Core Framework

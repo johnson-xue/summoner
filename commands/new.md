@@ -6,7 +6,7 @@ end_action: post_game_review
 
 # /summoner:new
 
-Invoke define → plan → subsystem → test → review phases from `summoner.yaml`.
+Invoke define → plan → implement → test → review phases from `summoner.yaml`. Phase 3 routes to subsystem / rpc / gmt skill based on function type.
 
 ## Workflow
 
@@ -23,7 +23,7 @@ Phase 5 ──→ 审查       (phase.review)
 
 1. 每个 Phase 结束后输出 SUMMONER CHECKPOINT，等待用户选择。
 2. Phase 1-2 不可跳过（没 spec 不动工，没 plan 不写码）。
-3. Phase 3 根据功能类型选择对应 skill（subsystem / rpc / gmt）。
+3. Phase 3 根据功能类型选择对应 skill（subsystem / rpc / gmt）。如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
 4. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
 
 ## Auto-Skip Conditions
