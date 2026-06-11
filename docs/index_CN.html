@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Summoner — AI Agent Orchestration Framework</title>
+  <title>Summoner — AI Agent 编排框架</title>
   <style>
     :root { --bg:#0d1117; --fg:#c9d1d9; --muted:#8b949e; --accent:#8b5cf6; --border:#30363d; --card:#161b22; --code:#1c2128; }
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -37,69 +37,69 @@
 <header>
   <div class="container">
     <h1>Summoner</h1>
-    <p>Define AI workflows like Makefile targets.<br>Framework verbs are fixed. Project skills are replaceable.</p>
+    <p>像 Makefile 一样定义 AI 工作流。<br>框架动词固定。项目 skill 可替换。</p>
     <div class="badges">
       <img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version">
       <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
       <img src="https://img.shields.io/badge/macOS-✅-black?logo=apple" alt="macOS">
       <img src="https://img.shields.io/badge/Linux-✅-FCC624?logo=linux&logoColor=black" alt="Linux">
     </div>
-    <p style="margin-top:12px;"><a href="https://github.com/johnson-xue/summoner">GitHub</a> · <a href="index_CN.html">中文</a></p>
+    <p style="margin-top:12px;"><a href="https://github.com/johnson-xue/summoner">GitHub</a> · <a href="index.html">English</a></p>
   </div>
 </header>
 
 <main class="container">
 
-<h2>What It Does</h2>
-<p>AI coding agents skip diagnosis, forget reviews, and repeat mistakes. <strong>Summoner adds a process layer</strong> — checkpoints between phases, post-game reviews, and a memory chain that auto-recalls past fixes.</p>
+<h2>它做什么</h2>
+<p>AI coding agent 能力很强，但缺乏纪律 — 跳过诊断、忘记审查、重复犯错。<strong>Summoner 加上流程层</strong> — Phase 间强制暂停（checkpoint）、赛后复盘（post-game review）、自动检索历史经验的记忆链（Memory Chain）。</p>
 
-<h2>Quick Start</h2>
+<h2>快速开始</h2>
 <pre><code>git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/
 cd ~/.claude/plugins/summoner/hooks && make build
 cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep -A2 '^project:' summoner.yaml | grep 'name:' | head -1 | awk '{print $2}')</code></pre>
 
-<h2>How It Works</h2>
+<h2>工作方式</h2>
 <pre><code>/summoner:fix "线上报错 SC_ErrInnerLogic..."
 
-Phase 0   Memory — auto-recalls past bug patterns
-Phase 1   Diagnosis — root cause (iron law: never skip)
-   ⏸️     Checkpoint → continue / skip / recall (redo) / stop
-Phase 2   Reproduce — Prove-It test (auto-skipped for config-only fixes)
-Phase 3   Fix
-Phase 4   Verify — run test suite
-Phase 5   Review — code review
-   📋     Post-Game Review — 5 types, auto-journaled to SQLite</code></pre>
+Phase 0   记忆检索 — 自动匹配历史 bug pattern
+Phase 1   诊断根因 — 铁律：禁止跳过
+   ⏸️     Checkpoint → 继续 / 跳过 / 回城(重做) / 停
+Phase 2   复现测试 — Prove-It 模式（纯配置修复自动跳过）
+Phase 3   修复
+Phase 4   验证 — 跑测试套件
+Phase 5   审查 — 代码审查
+   📋     赛后复盘 — 5 种问卷，自动写入 SQLite</code></pre>
 
-<h2>Commands</h2>
+<h2>命令</h2>
 <table>
-  <tr><th>Command</th><th>Pipeline</th></tr>
-  <tr><td><code>/summoner:fix</code></td><td>diagnose → reproduce → fix → verify → review</td></tr>
-  <tr><td><code>/summoner:new</code></td><td>define → plan → implement → test → review</td></tr>
-  <tr><td><code>/summoner:ship</code></td><td>fan-out 1-3 reviewers → merge → go/no-go</td></tr>
-  <tr><td><code>/summoner:debug</code></td><td>diagnosis only — no code changes</td></tr>
-  <tr><td><code>/summoner:ops</code></td><td>server operations (delegated to project skill)</td></tr>
-  <tr><td><code>/summoner:review</code></td><td>standalone code review</td></tr>
+  <tr><th>命令</th><th>流程</th></tr>
+  <tr><td><code>/summoner:fix</code></td><td>诊断 → 复现 → 修复 → 验证 → 审查</td></tr>
+  <tr><td><code>/summoner:new</code></td><td>定义 → 计划 → 实现 → 测试 → 审查</td></tr>
+  <tr><td><code>/summoner:ship</code></td><td>并行 1-3 个 reviewer → 合并 → 发版决策</td></tr>
+  <tr><td><code>/summoner:debug</code></td><td>仅诊断 — 不改代码</td></tr>
+  <tr><td><code>/summoner:ops</code></td><td>运维操作（委托给项目 skill）</td></tr>
+  <tr><td><code>/summoner:review</code></td><td>独立代码审查</td></tr>
 </table>
 
-<h2>Platform Support</h2>
+<h2>平台支持</h2>
 <table>
-  <tr><th>Platform</th><th>Commands</th><th>Memory</th><th>Hooks</th></tr>
+  <tr><th>平台</th><th>命令</th><th>记忆</th><th>Hooks</th></tr>
   <tr><td><strong>Claude Code</strong></td><td>✅</td><td>✅ SQLite</td><td>✅ Go</td></tr>
   <tr><td><strong>Gemini CLI</strong></td><td>✅</td><td>✅ bash</td><td>—</td></tr>
   <tr><td><strong>OpenCode</strong></td><td>✅</td><td>✅ bash</td><td>—</td></tr>
   <tr><td><strong>Cursor / Windsurf / Copilot / Aider</strong></td><td>✅</td><td>✅ bash</td><td>—</td></tr>
 </table>
 
-<h2>Token Cost</h2>
+<h2>Token 成本</h2>
 <table>
-  <tr><th>Workflow</th><th>Tokens</th><th>Overhead</th></tr>
-  <tr><td><code>/summoner:fix</code> (with memory)</td><td>~9,300</td><td>+86%</td></tr>
-  <tr><td><code>/summoner:fix</code> (no memory)</td><td>~8,300</td><td>+66%</td></tr>
+  <tr><th>工作流</th><th>Tokens</th><th>开销</th></tr>
+  <tr><td><code>/summoner:fix</code>（记忆命中）</td><td>~9,300</td><td>+86%</td></tr>
+  <tr><td><code>/summoner:fix</code>（无记忆）</td><td>~8,300</td><td>+66%</td></tr>
   <tr><td><code>/summoner:debug</code></td><td>~4,300</td><td>+35%</td></tr>
 </table>
-<blockquote>Multi-step workflows → Summoner. Single-step tasks → direct skill.</blockquote>
+<blockquote>多步骤工作流 → Summoner。单步骤任务 → 直接调 skill。</blockquote>
 
 <hr>
 
