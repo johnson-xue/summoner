@@ -6,7 +6,7 @@ end_action: post_game_review
 
 # /summoner:debug
 
-Invoke the project's debug skill for diagnosis only. No code changes.
+Invoke the project's debug skill for diagnosis only. No code changes. Can also dispatch `summoner:debug-agent` persona for standalone root cause analysis.
 
 ## Workflow
 

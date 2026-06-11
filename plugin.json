@@ -1,6 +1,6 @@
 {
   "name": "summoner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Summoner — AI Agent Orchestration Framework. Portable, project-agnostic workflow orchestration with checkpoint-based interruption and post-game review. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
   "author": "Jingshan Xue",
   "license": "MIT",
@@ -26,6 +26,11 @@
       "name": "test-engineer",
       "path": "agents/test-engineer.md",
       "description": "QA Engineer — test strategy, coverage analysis, Prove-It pattern for bug fixes"
+    },
+    {
+      "name": "debug-agent",
+      "path": "agents/debug-agent.md",
+      "description": "Root Cause Analyst — systematic error diagnosis, stack trace analysis, log correlation, hypothesis-driven debugging"
     }
   ],
   "commands": [

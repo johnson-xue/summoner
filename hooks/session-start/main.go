@@ -30,7 +30,7 @@ func main() {
 			status = append(status, fmt.Sprintf("✅ Memory DB ready (%s patterns)", count))
 		} else {
 			status = append(status, fmt.Sprintf(
-				"⚠️  Memory DB not initialized. Run: %s/scripts/init-memory-db.sh %s",
+				"WARNING:  Memory DB not initialized. Run: %s/scripts/init-memory-db.sh %s",
 				pluginRoot, projectName,
 			))
 		}
@@ -39,8 +39,15 @@ func main() {
 		phaseCount := countPhases(manifest)
 		status = append(status, fmt.Sprintf("   %d phases configured", phaseCount))
 	} else {
+		status = append(status, "WARNING:  No summoner.yaml found.")
 		status = append(status, fmt.Sprintf(
-			"⚠️  No summoner.yaml found. Run: %s/scripts/summoner-init.sh", pluginRoot,
+			"   Quick fix: %s/scripts/summoner-init.sh 2 (3s, all defaults)", pluginRoot,
+		))
+		status = append(status, fmt.Sprintf(
+			"   BP champion select: %s/scripts/summoner-init.sh 1 (pick skills per phase)", pluginRoot,
+		))
+		status = append(status, fmt.Sprintf(
+			"   Full manual: %s/scripts/summoner-init.sh 3", pluginRoot,
 		))
 	}
 
@@ -69,17 +76,35 @@ Rules:
 }
 
 // extractProjectName reads the project.name field from summoner.yaml.
+// Parses YAML directly instead of shelling out to grep — avoids matching
+// "name:" keys outside the project: section.
 func extractProjectName(manifest string) string {
-	out, err := exec.Command("grep", "-A1", "project:", manifest).Output()
+	data, err := os.ReadFile(manifest)
 	if err != nil {
 		return "unknown"
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	inProject := false
+	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "name:") {
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Enter project: section
+		if strings.HasPrefix(trimmed, "project:") {
+			inProject = true
+			continue
+		}
+		// Exit project: section at next top-level key
+		if inProject && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+			break
+		}
+		// Match "  name: my-project" inside project: section
+		if inProject && strings.HasPrefix(trimmed, "name:") {
 			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
 			name = strings.Trim(name, `"'`)
-			return name
+			if name != "" {
+				return name
+			}
 		}
 	}
 	return "unknown"
@@ -94,7 +119,8 @@ func countPatterns(dbFile string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// countPhases counts configured phases in summoner.yaml (only within phases: section).
+// countPhases counts actual phase entries in summoner.yaml (only within phases: section).
+// Each phase is a YAML key at 2-space indent under phases: — not counting comments or blank lines.
 func countPhases(manifest string) int {
 	data, err := os.ReadFile(manifest)
 	if err != nil {
@@ -103,15 +129,26 @@ func countPhases(manifest string) int {
 	count := 0
 	inPhases := false
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "phases:") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "phases:") {
 			inPhases = true
 			continue
 		}
-		if strings.HasPrefix(strings.TrimSpace(line), "workflows:") {
-			break
-		}
-		if inPhases && strings.HasPrefix(strings.TrimSpace(line), "skill:") {
-			count++
+		if inPhases {
+			// Exit phases section when we hit a non-indented top-level key
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+				break
+			}
+			// Count phase entries: 2-space indent, word, colon, possibly value
+			// Matches "  debug:" or "  debug:\n" but not "    skill: ..." (3+ spaces = sub-key)
+			if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "  #") {
+				if strings.ContainsRune(trimmed, ':') && !strings.Contains(trimmed, " ") {
+					count++
+				}
+			}
 		}
 	}
 	return count
