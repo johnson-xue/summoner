@@ -25,7 +25,10 @@ func main() {
 	}
 
 	// Write state file — hook does this, NOT the AI
-	os.MkdirAll(shared.StateDir(), 0755)
+	if err := os.MkdirAll(shared.StateDir(), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Summoner hook: failed to create state dir: %v\n", err)
+		os.Exit(0)
+	}
 
 	state := shared.State{
 		Workflow:  "summoner",

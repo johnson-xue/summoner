@@ -29,6 +29,8 @@ AI coding agents skip diagnosis, forget reviews, and repeat mistakes. **Summoner
 
 ## Quick Start
 
+> **Prerequisites:** Go ≥ 1.16 · sqlite3 CLI (pre-installed on macOS; `apt install sqlite3` on Ubuntu/Debian)
+
 In Claude Code:
 
 ```
@@ -43,6 +45,8 @@ cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep -A2 '^project:' summoner.yaml | grep 'name:' | head -1 | awk '{print $2}')
 ```
+
+**Restart Claude Code** — hooks activate on the next session start.
 
 > **Alternative:** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — same result, no marketplace needed. If on an unsupported platform: `cd ~/.claude/plugins/summoner/hooks && make build`.
 

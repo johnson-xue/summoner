@@ -47,9 +47,10 @@ The framework scans EVERY user reply after checkpoint for these signals. Matchin
 ### Ambiguity Resolution
 
 If user input matches multiple signals:
-- STOP > RECALL > DONE > SKIP > CONTINUE (safety-first)
+- STOP > RECALL > DONE > VERBOSE > SKIP > CONTINUE (safety-first)
 - "stop 方向不对" → STOP wins (highest priority)
 - "skip 我自己来" → STOP wins (STOP > SKIP)
+- "别废话，继续" → VERBOSE wins (VERBOSE > CONTINUE)
 
 If no signal is detected and input doesn't look like a workflow decision:
 - Treat as CONTINUE with user feedback (the input may be additional context for the next phase)

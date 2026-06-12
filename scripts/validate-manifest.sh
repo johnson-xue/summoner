@@ -22,10 +22,10 @@ if command -v python3 &>/dev/null; then
         echo "→ Schema validation..."
 
         # Validate YAML can be parsed
-        python3 -c "
-import yaml, json, sys
+        python3 - "$MANIFEST" <<'PYEOF'
+import yaml, sys
 try:
-    with open('$MANIFEST') as f:
+    with open(sys.argv[1]) as f:
         data = yaml.safe_load(f)
     if data is None:
         print('ERROR: empty or invalid YAML')
@@ -34,7 +34,7 @@ try:
 except Exception as e:
     print(f'ERROR: YAML parse failed — {e}')
     sys.exit(1)
-"
+PYEOF
         YAML_OK=$?
     else
         echo "  (pyyaml not installed — skipping YAML parse check)"
@@ -44,20 +44,20 @@ except Exception as e:
     # Validate against JSON Schema if jsonschema is available
     if [ -f "$SCHEMA_FILE" ] && [ $YAML_OK -eq 0 ]; then
         if python3 -c "import jsonschema" 2>/dev/null; then
-            python3 -c "
+            python3 - "$MANIFEST" "$SCHEMA_FILE" <<'PYEOF'
 import yaml, json, jsonschema, sys
-with open('$MANIFEST') as f:
+with open(sys.argv[1]) as f:
     data = yaml.safe_load(f)
-with open('$SCHEMA_FILE') as f:
+with open(sys.argv[2]) as f:
     schema = json.load(f)
 try:
     jsonschema.validate(data, schema)
     print('  ✓ Schema validation passed')
 except jsonschema.ValidationError as e:
     print(f'ERROR: Schema validation failed — {e.message}')
-    print(f'  at: {\" → \".join(str(p) for p in e.absolute_path)}')
+    print(f'  at: {" → ".join(str(p) for p in e.absolute_path)}')
     sys.exit(1)
-"
+PYEOF
             SCHEMA_OK=$?
         else
             echo "  (jsonschema not installed — skipping schema validation)"
