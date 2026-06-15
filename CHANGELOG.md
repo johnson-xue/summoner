@@ -1,5 +1,26 @@
 # Summoner Changelog
 
+## 0.1.2 — 2026-06-15
+
+### Security Fixes (P0)
+- **Shell Injection in `summoner-init.sh` [High]:** All user inputs sanitized with character whitelist `[a-zA-Z0-9:_-]` to prevent YAML structure corruption
+- **Python Path Injection in `validate-manifest.sh` [Medium]:** Replaced `open('$MANIFEST')` with `sys.argv[1]` to prevent arbitrary code execution via command-line parameter
+- **Path Traversal in session-start Hook [Medium]:** `projectName` now validated via `filepath.Base()` check before constructing DB file path
+- **Unchecked `os.MkdirAll` Error [Bug]:** Directory creation failure now properly logged instead of silently continuing
+
+### Workflow Logic Improvements
+- **Checkpoint Protocol:** `VERBOSE` signal added to ambiguity resolution priority chain (`STOP > RECALL > DONE > VERBOSE > SKIP > CONTINUE`)
+- **Post-Game Review Collision Rules:** Type 2/3 intersection clarified — when multiple types trigger, only the highest-priority questionnaire is presented
+- **No Manifest Handling:** Iron law enforcement — Phase 3 of `/summoner:new` now presents interactive menu rather than silently falling back to generic skills
+
+### Code Quality
+- **`ProjectDir()` Fallback:** Handles `os.Getwd()` error by returning stable sentinel path instead of empty string
+- **Go Hooks Reliability:** Error handling hardened across all 3 hook binaries (session-start, pretooluse-skill, stop)
+
+### Documentation
+- README: Added sqlite3 CLI prerequisite + "Restart Claude Code" instruction after installation
+- GitHub Issue templates: bug report and feature request with structured fields and labels
+
 ## 0.1.1 — 2026-06-11
 
 ### Phase 3 Routing Fix (Issue #1)

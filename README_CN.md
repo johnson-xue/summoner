@@ -109,14 +109,14 @@ Phase 5   审查 — 代码审查
 
 ## 我们需要反馈
 
-Summoner 处于早期开发阶段（v0.1.1）。你的反馈决定了它的方向。
+Summoner 处于早期开发阶段（v0.1.2）。你的反馈决定了它的方向。
 
 | 做什么 | 去哪里 |
 |:-------|:-------|
 | **报 Bug** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=bug_report.yml) — 请附上版本、平台和预期行为 |
 | **提需求** | [GitHub Issues](https://github.com/johnson-xue/summoner/issues/new?template=feature_request.yml) — 告诉我们你的使用场景和当前解决方案 |
 | **提问 / 交流** | [GitHub Discussions](https://github.com/johnson-xue/summoner/discussions) — Q&A、想法、秀出你的配置 |
-| **已知问题** | 查看 [v0.1.1 Release Notes](https://github.com/johnson-xue/summoner/releases) 了解当前限制 |
+| **已知问题** | 查看 [v0.1.2 Release Notes](https://github.com/johnson-xue/summoner/releases) 了解当前限制 |
 
 **为什么要反馈？** 你提交的每个 issue 都在告诉 Summoner 真实的 AI 工作流需要什么。哪怕一句话也很有价值——"我试了 X，期望 Y，实际得到 Z。"
 
