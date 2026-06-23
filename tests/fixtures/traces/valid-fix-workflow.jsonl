@@ -1,0 +1,18 @@
+{"type":"session_start","timestamp":"2026-06-23T10:00:00Z","workflow":"fix","session_id":"test-123","project":"test-project","model":"claude-opus-4-8"}
+{"type":"phase_start","timestamp":"2026-06-23T10:00:05Z","phase":0,"name":"memory","skill":null}
+{"type":"phase_end","timestamp":"2026-06-23T10:00:10Z","phase":0,"status":"completed","artifacts":["patterns: 0 matches"]}
+{"type":"checkpoint","timestamp":"2026-06-23T10:00:10Z","phase":0,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-06-23T10:00:12Z","phase":1,"name":"diagnose","skill":"test-debug"}
+{"type":"tool_call","timestamp":"2026-06-23T10:00:15Z","tool":"Read","args":{"file_path":"test.go"},"result":"success","duration_ms":120}
+{"type":"reasoning","timestamp":"2026-06-23T10:00:20Z","step":"root_cause_analysis","content":"Found issue at line 234","confidence":0.95}
+{"type":"phase_end","timestamp":"2026-06-23T10:00:35Z","phase":1,"status":"completed","artifacts":["root_cause: test.go:234"]}
+{"type":"checkpoint","timestamp":"2026-06-23T10:00:35Z","phase":1,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-06-23T10:00:40Z","phase":3,"name":"fix","skill":"freeform"}
+{"type":"tool_call","timestamp":"2026-06-23T10:00:45Z","tool":"Edit","args":{"file_path":"test.go","old_string":"old","new_string":"new"},"result":"success","duration_ms":80}
+{"type":"phase_end","timestamp":"2026-06-23T10:00:50Z","phase":3,"status":"completed","artifacts":["edited: test.go"]}
+{"type":"checkpoint","timestamp":"2026-06-23T10:00:50Z","phase":3,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-06-23T10:00:55Z","phase":4,"name":"verify","skill":"test-suite"}
+{"type":"tool_call","timestamp":"2026-06-23T10:01:00Z","tool":"Bash","args":{"command":"go test ./..."},"result":"success","duration_ms":3500}
+{"type":"phase_end","timestamp":"2026-06-23T10:01:05Z","phase":4,"status":"completed","artifacts":["tests: all passed"]}
+{"type":"checkpoint","timestamp":"2026-06-23T10:01:05Z","phase":4,"user_input":"done"}
+{"type":"session_end","timestamp":"2026-06-23T10:01:15Z","status":"completed","total_duration_ms":75000,"total_phases":4,"skipped_phases":0}

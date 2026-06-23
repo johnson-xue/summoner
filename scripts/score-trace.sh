@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -o pipefail
 
 # score-trace.sh — Run scoring system on a trace file
 # Usage: score-trace.sh --trace <file> --priority <P0|P1|P2>
@@ -31,6 +31,12 @@ if [[ -z "$TRACE_FILE" ]] || [[ -z "$PRIORITY" ]]; then
   exit 1
 fi
 
+# Validate priority
+if [[ "$PRIORITY" != "P0" ]] && [[ "$PRIORITY" != "P1" ]] && [[ "$PRIORITY" != "P2" ]]; then
+  echo "Error: priority must be P0, P1, or P2 (got: $PRIORITY)"
+  exit 1
+fi
+
 if [[ ! -f "$TRACE_FILE" ]]; then
   echo "Error: Trace file not found: $TRACE_FILE"
   exit 1
@@ -43,6 +49,10 @@ echo ""
 TOTAL_SCORE=0
 MAX_SCORE=0
 DETAILS=()
+
+# Create temp file for scorer output
+TEMP_OUTPUT=$(mktemp)
+trap "rm -f $TEMP_OUTPUT" EXIT
 
 # P0 Deterministic Scorers
 if [[ "$PRIORITY" == "P0" ]]; then
@@ -58,11 +68,14 @@ if [[ "$PRIORITY" == "P0" ]]; then
     scorer_path="$SCORERS_DIR/deterministic/${scorer}.sh"
 
     if [[ -f "$scorer_path" ]]; then
-      if bash "$scorer_path" "$TRACE_FILE" > /tmp/scorer_output.txt 2>&1; then
+      bash "$scorer_path" "$TRACE_FILE" > "$TEMP_OUTPUT" 2>&1
+      exit_code=$?
+
+      if [[ $exit_code -eq 0 ]]; then
         status="pass"
         score=$max_points
         echo "✅ $scorer: $score/$max_points"
-      elif [[ $? -eq 2 ]]; then
+      elif [[ $exit_code -eq 2 ]]; then
         status="skip"
         score=$max_points  # No penalty for skipped
         echo "⊘ $scorer: $score/$max_points (skipped)"
@@ -70,7 +83,7 @@ if [[ "$PRIORITY" == "P0" ]]; then
         status="fail"
         score=0
         echo "❌ $scorer: $score/$max_points"
-        cat /tmp/scorer_output.txt
+        cat "$TEMP_OUTPUT"
       fi
 
       TOTAL_SCORE=$((TOTAL_SCORE + score))
@@ -81,17 +94,17 @@ if [[ "$PRIORITY" == "P0" ]]; then
     fi
   done
 
-  # P0 Rubric Scorers (placeholder - requires LLM integration)
+  # P0 Rubric Scorers (TODO: implement LLM-as-Judge)
+  # Currently skipped - will be implemented in follow-up PR
   echo ""
-  echo "🤖 Rubric Scorers (LLM-as-Judge):"
-  echo "   error-handling: 8/10 (placeholder - implement with LLM)"
-  echo "   edge-case-coverage: 7/10 (placeholder - implement with LLM)"
-  RUBRIC_SCORE=15
-  RUBRIC_MAX=20
-  TOTAL_SCORE=$((TOTAL_SCORE + RUBRIC_SCORE))
-  MAX_SCORE=$((MAX_SCORE + RUBRIC_MAX))
-  DETAILS+=("{\"scorer\":\"error-handling\",\"score\":8,\"max\":10,\"status\":\"pass\"}")
-  DETAILS+=("{\"scorer\":\"edge-case-coverage\",\"score\":7,\"max\":10,\"status\":\"pass\"}")
+  echo "🤖 Rubric Scorers (LLM-as-Judge): TODO"
+  echo "   error-handling: SKIP (not implemented yet)"
+  echo "   edge-case-coverage: SKIP (not implemented yet)"
+
+  # Note: When implemented, these will add 20 points to MAX_SCORE
+  # For now, max score is 80 (deterministic only), threshold remains 80
+  # RUBRIC_MAX=20
+  # MAX_SCORE=$((MAX_SCORE + RUBRIC_MAX))
 fi
 
 # Calculate pass/fail
