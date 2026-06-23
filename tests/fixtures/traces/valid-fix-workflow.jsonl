@@ -16,3 +16,4 @@
 {"type":"phase_end","timestamp":"2026-06-23T10:01:05Z","phase":4,"status":"completed","artifacts":["tests: all passed"]}
 {"type":"checkpoint","timestamp":"2026-06-23T10:01:05Z","phase":4,"user_input":"done"}
 {"type":"session_end","timestamp":"2026-06-23T10:01:15Z","status":"completed","total_duration_ms":75000,"total_phases":4,"skipped_phases":0}
+{"type":"scoring_result","timestamp":"2026-06-23T06:45:38Z","priority":"P0","total_score":80,"max_score":80,"pass":true,"details":[{"scorer":"iron-law-check","score":30,"max":30,"status":"skip"},{"scorer":"build-check","score":20,"max":20,"status":"skip"},{"scorer":"test-pass-rate","score":20,"max":20,"status":"skip"},{"scorer":"lint-check","score":10,"max":10,"status":"skip"}]}
