@@ -42,11 +42,14 @@ Then in your project (hooks work immediately — pre-compiled for macOS/Linux):
 
 ```bash
 cd your-project
-~/.claude/plugins/summoner/scripts/summoner-init.sh
-~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep -A2 '^project:' summoner.yaml | grep 'name:' | head -1 | awk '{print $2}')
+~/.claude/plugins/summoner/scripts/summoner-setup.sh
 ```
 
+**Or** simply say in Claude Code: `setup summoner`
+
 **Restart Claude Code** — hooks activate on the next session start.
+
+> **Note:** The new `summoner-setup.sh` combines init + memory DB setup into one command. For quick mode (all defaults): `summoner-setup.sh --quick`
 
 > **Alternative:** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — same result, no marketplace needed. If on an unsupported platform: `cd ~/.claude/plugins/summoner/hooks && make build`.
 

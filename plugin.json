@@ -10,6 +10,11 @@
       "name": "summoner",
       "path": "skills/summoner/SKILL.md",
       "description": "Routes user intent through summoner.yaml manifest to domain skills. Enforces checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow."
+    },
+    {
+      "name": "summoner-setup",
+      "path": "skills/summoner-setup/SKILL.md",
+      "description": "Initialize Summoner for this project (one-command setup). Use when user says 'setup summoner', 'initialize summoner', or asks how to use Summoner in this project."
     }
   ],
   "agents": [
