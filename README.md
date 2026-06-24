@@ -58,7 +58,7 @@ cd your-project
 ## How It Works
 
 ```
-/summoner:fix "线上报错 SC_ErrInnerLogic..."
+/summoner:fix "production error SC_ErrInnerLogic..."
 
 Phase 0   Memory — auto-recalls past bug patterns
 Phase 1   Diagnosis — root cause (iron law: never skip)
