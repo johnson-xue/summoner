@@ -43,16 +43,17 @@ func main() {
 		phaseCount := countPhases(manifest)
 		status = append(status, fmt.Sprintf("   %d phases configured", phaseCount))
 	} else {
-		status = append(status, "WARNING:  No summoner.yaml found.")
+		status = append(status, "⚠️  No summoner.yaml found — Summoner not initialized for this project")
+		status = append(status, "")
+		status = append(status, "🔮 To get started, just say:")
+		status = append(status, "   \"setup summoner\"")
+		status = append(status, "")
+		status = append(status, "Or run manually:")
 		status = append(status, fmt.Sprintf(
-			"   Quick fix: %s/scripts/summoner-init.sh 2 (3s, all defaults)", pluginRoot,
+			"   %s/scripts/summoner-setup.sh", pluginRoot,
 		))
-		status = append(status, fmt.Sprintf(
-			"   BP champion select: %s/scripts/summoner-init.sh 1 (pick skills per phase)", pluginRoot,
-		))
-		status = append(status, fmt.Sprintf(
-			"   Full manual: %s/scripts/summoner-init.sh 3", pluginRoot,
-		))
+		status = append(status, "")
+		status = append(status, "💡 This takes <10 seconds and sets up everything automatically.")
 	}
 
 	// --- Build context ---
