@@ -1,7 +1,7 @@
 .PHONY: all clean install
 
 BIN_DIR := bin
-HOOKS := session-start pretooluse-skill stop
+HOOKS := session-start pretooluse-skill stop validate-manifest
 
 all: build
 
