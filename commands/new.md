@@ -21,10 +21,11 @@ Phase 5 ──→ 审查       (phase.review)
 
 ## Rules
 
-1. 每个 Phase 结束后输出 SUMMONER CHECKPOINT，等待用户选择。
-2. Phase 1-2 不可跳过（没 spec 不动工，没 plan 不写码）。
-3. Phase 3 根据功能类型选择对应 skill（subsystem / rpc / gmt）。如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
-4. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
+1. 每个 Phase 开始输出 **PHASE START** 块 + 结束输出 **SUMMONER CHECKPOINT** 块（格式与字段规约见 `references/checkpoint-protocol.md`），等待用户选择。
+2. 用户回复若是内容反馈（方案不对/漏了边界/方向有问题），先处理反馈再重新输出 CHECKPOINT——勿当 CONTINUE 推进。
+3. Phase 1-2 不可跳过（没 spec 不动工，没 plan 不写码）。
+4. Phase 3 根据功能类型选择对应 skill（subsystem / rpc / gmt）。如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
+5. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
 
 ## Auto-Skip Conditions
 

@@ -148,24 +148,31 @@ When `summoner.yaml` is not found, do NOT silently fall back to generic skills. 
 
 ### 2. Checkpoint Enforcement
 
-After each phase completes:
+Each phase has a **START block** (entering) and a **CHECKPOINT block** (end) — both defined in `references/checkpoint-protocol.md`.
+
+**Entering a phase:**
+1. Output the PHASE START block (lightweight 3-line plain-text: Workflow + Phase N/Total + 任务 + Skill) — gives the user continuous context of "which phase, doing what task"
+
+**After each phase completes:**
 1. Output the SUMMONER CHECKPOINT block (exact format in `references/checkpoint-protocol.md`)
 2. Wait for user response
 3. Scan for interrupt signals (per `references/checkpoint-protocol.md` interrupt signal grammar)
-4. Execute the selected action: continue / skip / done / recall / stop
+4. If the reply is content feedback (not a pure flow decision), handle the feedback first, then re-output the CHECKPOINT block — do NOT auto-advance
+5. Execute the selected action: continue / skip / done / recall / stop
 
-**Iron Law:** Never auto-advance past a checkpoint. Never assume the user wants to continue.
+**Iron Law:** Never auto-advance past a checkpoint. Never assume the user wants to continue. Never misread content feedback as CONTINUE.
 
 ### 3. Phase Execution
 
 For each phase in the workflow chain:
 
 **When manifest IS available (or user specified skill via Option 2):**
-1. Read the phase's skill from manifest (or use the manually-specified skill for Phase 3)
-2. Invoke the skill via the Skill tool: `Skill(skill="<skill-name>", args="<user's original input>")`
-3. The skill runs its internal workflow and returns results
-4. Summoner extracts: what was accomplished, artifacts produced, issues found
-5. Output checkpoint
+1. Output PHASE START block (Workflow/Phase N/Total/任务/Skill)
+2. Read the phase's skill from manifest (or use the manually-specified skill for Phase 3)
+3. Invoke the skill via the Skill tool: `Skill(skill="<skill-name>", args="<user's original input>")`
+4. The skill runs its internal workflow and returns results
+5. Summoner extracts: what was accomplished, artifacts produced, issues found
+6. Output CHECKPOINT block (field spec + anti-examples in `references/checkpoint-protocol.md`)
 
 **When manifest is NOT available — after No Manifest menu resolution:**
 

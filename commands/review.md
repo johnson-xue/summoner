@@ -18,9 +18,10 @@ Phase 1 ──→ 代码审查 (code-reviewer persona)
 
 ## Rules
 
-1. 只审查，不修改代码。
-2. 使用 `agents/code-reviewer.md` 的 5-axis 审查框架。
-3. 输出按 Critical / Important / Suggestion 分级。
+1. 每个 Phase 开始输出 **PHASE START** 块 + 结束输出 **SUMMONER CHECKPOINT** 块（格式与字段规约见 `references/checkpoint-protocol.md`），等待用户选择。内容反馈先处理再重问。
+2. 只审查，不修改代码。
+3. 使用 `agents/code-reviewer.md` 的 5-axis 审查框架。
+4. 输出按 Critical / Important / Suggestion 分级。
 
 ## Auto-Skip
 

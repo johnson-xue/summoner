@@ -2,9 +2,25 @@
 
 ## Purpose
 
-Checkpoints are the core interruption mechanism in Summoner. After each phase completes, the framework pauses and presents a structured status block. The user chooses how to proceed.
+Checkpoints are the core interruption mechanism in Summoner. Each phase has a **START block** (entering the phase) and a **CHECKPOINT block** (phase end). The START block gives the user continuous context ("which phase, doing what task"). The CHECKPOINT block reports results and asks how to proceed. The user chooses how to advance.
 
-## Checkpoint Output Format
+## PHASE START Block (entering each phase)
+
+Every phase start MUST output this lightweight 3-line block (plain text, no ASCII frame — keep it brief so it doesn't compete with the phase's own output):
+
+```
+⚡ SUMMONER START — Workflow={workflow名} Phase {N}/{Total}: {phase名}
+🎯 任务: {one sentence — what this phase will do}
+🔧 Skill: {skill name | freeform | none (无专属 skill)}
+```
+
+Field rules:
+- **Workflow**: the workflow name (`fix` / `new` / `ship` / `debug` / `ops` / `review`).
+- **Phase {N}/{Total}**: N and Total are mandatory, never omit. phase名 from manifest.
+- **任务**: ≤60 chars, one sentence, the task this phase performs (derive from manifest phase comment or user input). Not a restatement of the phase name.
+- **Skill**: the skill this phase invokes. `freeform` for free-form phases (e.g. fix Phase 3). `none (无专属 skill)` when manifest declares `skill: none`.
+
+## CHECKPOINT Block (phase end)
 
 Every phase end MUST output this exact format:
 
@@ -25,26 +41,98 @@ Every phase end MUST output this exact format:
 └──────────────────────────────────────────────┘
 ```
 
-## Field Requirements
+### Field Specification (mandatory — no free-form deviation)
 
-- **完成内容**: 1 paragraph max. What was accomplished.
-- **产物**: Comma-separated list of concrete artifacts (file paths, code snippets, decision records). Never empty — if nothing was produced, state "No artifacts — analysis only."
-- **发现**: Issues, risks, or open questions. "None" if clean.
+| Field | Type | Rule |
+|------|------|------|
+| `Phase {N}/{Total}: {phase名}` | header | Mandatory. N/Total never omitted. phase名 from manifest. |
+| `完成内容` | 1 paragraph | ≤80 chars, declarative. **What** was accomplished (not how). |
+| `产物` | comma-separated list | Concrete paths / decisions / test results. Never empty — if nothing produced, write `No artifacts — analysis only.` |
+| `发现` | list | Risks / open questions. `None` if clean. |
+| `Next:` 5 options | fixed | `[enter]/[skip]/[done]/[recall]/[stop]` — order fixed, never reordered, never dropped. |
+
+**Iron law — fields cannot be omitted:** any field with no content must show an explicit placeholder (`None` / `No artifacts — analysis only.`). Never delete the field row. This guarantees the block is always structurally identical — the user (and AI) can grep/parse it reliably.
+
+### Standard Example (fix workflow, Phase 1 diagnose complete)
+
+```
+⚡ SUMMONER START — Workflow=fix Phase 1/5: diagnose
+🎯 任务: 定位 player/task 模块的空指针根因
+🔧 Skill: antia-debug
+
+[phase execution output...]
+
+┌──────────────────────────────────────────────┐
+│  ⚡ SUMMONER — Phase 1/5: diagnose            │
+│                                              │
+│  ✅ 完成内容: 定位到 TaskModule.handle() 未判空  │
+│     player.SubTask 字段，player 离线时触发 NPE。 │
+│  📋 产物: docs/reviews/2026-07-07-task-npe.md │
+│     (根因报告), player/task/task.go:142       │
+│  ⚠️ 发现: handle() 还存在 3 处类似未判空，建议   │
+│     Phase 3 一并修。                           │
+│                                              │
+│  Next:                                       │
+│  [enter] 继续下一 Phase                       │
+│  [skip]  跳过下一 Phase                       │
+│  [done]  完成，退出框架                       │
+│  [recall] B 键回城 — 回到之前 Phase 重新来过   │
+│  [stop]  紧急停止 — 保留产物，立即退出          │
+└──────────────────────────────────────────────┘
+```
+
+### Anti-examples (common deviations — do NOT output these)
+
+**反例 1 — 字段省略（完成内容为空就删行）:**
+```
+│  ✅ 完成内容:                                  │   ← ✗ 空 content 也不能删字段
+│  📋 产物: task.go:142                         │
+```
+错在哪：删了字段行，块结构变形，用户无法靠固定行位 grep。正确：写 `完成内容: No artifacts — analysis only.` 或补一句陈述。
+
+**反例 2 — 完成内容写成流水账（how 而非 what）:**
+```
+│  ✅ 完成内容: 我先 grep 了 task 模块，然后读了   │
+│     handle 函数，发现第 142 行没判空，又查了     │
+│     player 离线逻辑，确认是 NPE...              │
+```
+错在哪：写成执行流水账（how），超 80 字，掩盖了「定位到什么」（what）。正确：`完成内容: 定位到 handle() 未判空 player.SubTask，离线触发 NPE。`
+
+**反例 3 — 选项顺序乱/漏:**
+```
+│  Next:                                       │
+│  [skip]  跳过                                 │
+│  [done]  完成                                 │
+│  [enter] 继续                                 │   ← ✗ 顺序乱
+```
+错在哪：选项顺序不是 `enter/skip/done/recall/stop`，且漏了 recall/stop。用户肌肉记忆失效。正确：固定 5 选项 + 固定顺序。
 
 ## Interrupt Signal Grammar
 
-The framework scans EVERY user reply after checkpoint for these signals. Matching is case-insensitive and whitespace-tolerant.
+The framework scans EVERY user reply after the CHECKPOINT block. Matching is case-insensitive and whitespace-tolerant.
 
 | Signal | Keywords | Action |
 |--------|----------|--------|
-| CONTINUE | enter, 继续, next, proceed, yes, ok, go | Advance to next phase |
+| CONTINUE | enter, 继续, next, proceed, yes, ok, go, 好, 收到 | Advance to next phase |
 | SKIP | skip, 跳过, 不用, 不需要, skip this | Skip the NEXT phase (not the current one) |
 | DONE | done, 够了, 可以了, 完成, finish, good | Mark workflow complete, trigger post-game review, exit |
 | RECALL | recall, 回城, 方向不对, 换个思路, go back, redo | Return to previous phase, discard current phase output |
 | STOP | stop, 停, 我自己来, 退出, quit, abort | Exit framework immediately, preserve all artifacts, NO post-game review |
 | VERBOSE | 别废话, 简洁点, 太啰嗦, too verbose, be brief, tldr | Record Type 5 complaint, condense current and future output |
 
-### Ambiguity Resolution
+### Content Feedback Recognition (do NOT misread as CONTINUE)
+
+User replies after a checkpoint are not always workflow decisions — many are **content feedback** about the phase's output (the solution is wrong, misses a case, wrong direction). Misreading these as CONTINUE ignores the user's question.
+
+**Rule (keyword list + semantic judgment, combined):**
+
+1. **Keyword list (deterministic):** if the reply contains content-feedback markers — `方案/方向/漏了/不对/应该/边界/缺/错了/有问题/不对劲/重做/换一个` (CN) or `wrong/misses/should/wrong direction/redo/alternative` (EN) — treat as **content feedback**, NOT CONTINUE. Handle the feedback first, then re-output the CHECKPOINT block to re-ask the flow decision.
+
+2. **Semantic judgment (fallback):** if no signal keyword matches AND the reply is NOT a pure confirmation word (`好/继续/ok/收到/enter/yes`), treat it as content feedback. Handle it, then re-output the CHECKPOINT block.
+
+3. **Pure confirmation only → CONTINUE:** only replies that are clearly bare confirmations (no substantive content) advance. When in doubt, do NOT auto-advance — re-ask.
+
+**Ambiguity Resolution (unchanged, safety-first):**
 
 If user input matches multiple signals:
 - STOP > RECALL > DONE > VERBOSE > SKIP > CONTINUE (safety-first)
@@ -52,8 +140,20 @@ If user input matches multiple signals:
 - "skip 我自己来" → STOP wins (STOP > SKIP)
 - "别废话，继续" → VERBOSE wins (VERBOSE > CONTINUE)
 
-If no signal is detected and input doesn't look like a workflow decision:
-- Treat as CONTINUE with user feedback (the input may be additional context for the next phase)
+### Content Feedback Examples
+
+**反例 A — 实质反馈被当 CONTINUE（旧规则错）:**
+- 用户回复: `"这个方案漏了 player 离线的边界 case"`
+- 旧规则: 无 signal 关键词命中 → CONTINUE → 忽略反馈，进入下一 phase ✗
+- 新规则: 命中内容反馈关键词「漏了」→ 先处理反馈（补边界 case），再重新输出 CHECKPOINT 问流程决策 ✓
+
+**反例 B — 方向性反馈（命中 RECALL 也补确认）:**
+- 用户回复: `"方向不对，应该用缓存方案"`
+- 新规则: 「方向不对」命中 RECALL 关键词 → RECALL。但补一句确认: "确认回城到上一 Phase 重新来过？当前产物会丢弃。"（避免误判 recall 浪费产物）
+
+**正例 — 纯确认才 CONTINUE:**
+- 用户回复: `"好，继续"` → 纯确认词 → CONTINUE ✓
+- 用户回复: `"enter"` → CONTINUE ✓
 
 ## Recovery
 

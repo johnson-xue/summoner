@@ -20,10 +20,11 @@ Phase 1 ──→ 诊断根因 (phase.debug)
 
 ## Rules
 
-1. Phase 1 结束时输出完整诊断报告：根因、影响范围、修复建议。
-2. 不写任何代码。不创建任何测试文件。
-3. 诊断报告 = 给用户的输入，用户可以拿着它自己修，或手动 `/summoner:fix`。
-4. 如果诊断过程中发现需要配置检查，自动触发 `phases.debug.triggers` 中声明的 phase（如 config）。
+1. 每个 Phase 开始输出 **PHASE START** 块 + 结束输出 **SUMMONER CHECKPOINT** 块（格式与字段规约见 `references/checkpoint-protocol.md`），等待用户选择。内容反馈先处理再重问。
+2. Phase 1 结束时输出完整诊断报告：根因、影响范围、修复建议。
+3. 不写任何代码。不创建任何测试文件。
+4. 诊断报告 = 给用户的输入，用户可以拿着它自己修，或手动 `/summoner:fix`。
+5. 如果诊断过程中发现需要配置检查，自动触发 `phases.debug.triggers` 中声明的 phase（如 config）。
 
 ## Rationalizations
 

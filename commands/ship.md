@@ -68,13 +68,14 @@ Fan-out scale is determined by diff size before launching personas:
 
 ## Rules
 
-1. Phase A personas run in PARALLEL — never sequentially.
-2. Personas do NOT call each other. The main agent merges in Phase B.
-3. Rollback plan is MANDATORY before any GO decision.
-4. If any persona returns a Critical finding, default verdict is NO-GO unless user explicitly accepts the risk.
-5. **Fan-out scale is dynamic** — determine diff size first, then select personas per the Adaptive Fan-Out table above.
-6. **Skip fan-out entirely** if changes touch < 3 files AND diff < 50 lines AND no auth/payments/data/config changes. Suggest `/summoner:review` instead.
-7. **Always run all 3** if the diff touches auth, payments, personal data, or configuration/env files — regardless of line count.
+1. 每个 Phase（A 并行 / B merge）开始输出 **PHASE START** 块 + 结束输出 **SUMMONER CHECKPOINT** 块（格式与字段规约见 `references/checkpoint-protocol.md`），等待用户选择。内容反馈先处理再重问。
+2. Phase A personas run in PARALLEL — never sequentially.
+3. Personas do NOT call each other. The main agent merges in Phase B.
+4. Rollback plan is MANDATORY before any GO decision.
+5. If any persona returns a Critical finding, default verdict is NO-GO unless user explicitly accepts the risk.
+6. **Fan-out scale is dynamic** — determine diff size first, then select personas per the Adaptive Fan-Out table above.
+7. **Skip fan-out entirely** if changes touch < 3 files AND diff < 50 lines AND no auth/payments/data/config changes. Suggest `/summoner:review` instead.
+8. **Always run all 3** if the diff touches auth, payments, personal data, or configuration/env files — regardless of line count.
 
 ## Post-Game Review
 

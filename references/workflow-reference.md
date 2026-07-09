@@ -48,6 +48,9 @@ Phases are offered as skippable (not auto-skipped — user confirms):
 - ✗ Advancing past checkpoint without user confirmation
 - ✗ Skipping Phase 1 in fix/debug workflows
 - ✗ Not outputting exact SUMMONER CHECKPOINT format
+- ✗ Not outputting PHASE START block at phase entry (user loses "which phase / what task" context)
+- ✗ Misreading content feedback as CONTINUE (e.g. "方案漏了边界" → CONTINUE instead of handling feedback)
+- ✗ Omitting CHECKPOINT fields when empty (must show `None` / `No artifacts — analysis only.`)
 - ✗ Hardcoding project names or domain skill names in framework output
 - ✗ Skipping post-game review after workflow completion
 - ✗ Personas calling other personas instead of reporting
@@ -55,8 +58,10 @@ Phases are offered as skippable (not auto-skipped — user confirms):
 ## Verification Checklist
 
 After workflow completion:
-- [ ] Every phase had a checkpoint block output
+- [ ] Every phase had a PHASE START block + CHECKPOINT block output (paired)
+- [ ] CHECKPOINT fields all present (empty fields show explicit placeholder, not omitted)
 - [ ] User confirmed each checkpoint decision
+- [ ] Content feedback replies were handled (not misread as CONTINUE)
 - [ ] Post-game review questionnaire was presented and answered
 - [ ] Journal entry was written to SQLite
 - [ ] No phase was silently skipped (auto-skip still requires user confirmation)

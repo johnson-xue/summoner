@@ -16,8 +16,8 @@ Phase 0→Memory Retrieval→Phase 1: diagnose(MANDATORY)→Phase 2: reproduce(o
 
 ## Rules
 
-1. Output SUMMONER CHECKPOINT after each phase (`references/checkpoint-protocol.md`). Wait for user input.
-2. Checkpoint options: continue / skip (current phase only) / done / recall / stop.
+1. Each phase: output **PHASE START** block at entry + **SUMMONER CHECKPOINT** block at end (format + field spec in `references/checkpoint-protocol.md`). Wait for user input.
+2. Checkpoint options: continue / skip (current phase only) / done / recall / stop. If user reply is content feedback (方案/方向/漏了/不对…), handle it first then re-output CHECKPOINT — do NOT auto-advance as CONTINUE.
 3. **Phase 1 iron law**: never skip diagnosis. Root cause unknown = all subsequent work is blind.
 
 ## Auto-Skip Conditions (propose to user — never auto-skip)
