@@ -1,5 +1,25 @@
 # Summoner Changelog
 
+## 0.1.4 — 2026-07-09
+
+### Checkpoint Protocol Unification
+
+- **Unified display format**: `checkpoint-protocol.md` upgraded from illustrative ASCII block to mandatory field spec (5 fields with type/length/format rules) + standard example (fix Phase 1 diagnose) + 3 anti-examples (field omission / how-not-what log / option reordering). Fixes inconsistent checkpoint display across phases.
+- **PHASE START block**: new lightweight 3-line plain-text block (Workflow + Phase N/Total + task + Skill) output at phase entry, paired with the existing end-of-phase CHECKPOINT block. Gives users continuous "which phase / what task" context — previously the checkpoint only appeared at phase end with no in-progress indicator.
+- **Content feedback recognition**: interrupt signal grammar reworked. User replies containing content feedback (方案/方向/漏了/不对/should/misses...) are no longer misread as CONTINUE. Mechanism: keyword list + semantic judgment (combined). The old `no signal → CONTINUE` over-fallback is removed — only pure confirmation words advance. Fixes "ignoring the user's question" when user gives substantive feedback.
+
+### validate-manifest Refactor
+
+- **Thin main.go**: validate-manifest hook's embedded validation logic extracted to standalone `github.com/johnson-xue/memory-validator` library. main.go is now a thin wrapper importing the library (keeps `skills_check=skipped` behavior — summoner doesn't pass `--skills-dir`).
+- **memory-validator v0.2.0**: depends on the new standalone library (compile-time `go.mod` binding). Library v0.2.0 adds recursive `duplicate_key` detection (top-level + nested fields) + `path` field for structural location.
+- **Output format change**: success `✓ VALID path=... project=... phases=... workflows=... skills_check=skipped|checked`; failure `✗ INVALID path=...` + structured per-error lines (was Chinese summary).
+
+### Synced Files
+
+- `references/checkpoint-protocol.md`, `references/workflow-reference.md`, `skills/summoner/SKILL.md`
+- `commands/{debug,fix,new,ops,review,ship}.md` — unified Rule 1 referencing PHASE START + CHECKPOINT pairing
+- `hooks/go.mod` — require memory-validator v0.2.0; `hooks/validate-manifest/main.go` thin; `main_test.go` deleted (tests moved to library)
+
 ## 0.1.3 — 2026-06-24
 
 ### Major Features (PR #8)
