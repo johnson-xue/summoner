@@ -1,5 +1,20 @@
 # Summoner Changelog
 
+## [0.1.6] - 2026-07-14
+
+### ✨ Features
+- feat(release): complete command specification with full workflow (fc6e361)
+- feat(release): add command entry point (1b07a00)
+
+### 📝 Documentation
+- add release workflow implementation plan (d2d0fa4)
+- add release workflow design spec (b27a510)
+
+### 🔧 Chores
+- publish v0.1.5 to summoner-marketplace (03b3cfc)
+- update plugin version to 0.1.5 (2da6961)
+
+
 ## 0.1.4 — 2026-07-09
 
 ### Checkpoint Protocol Unification

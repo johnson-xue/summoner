@@ -1,7 +1,7 @@
 {
   "name": "summoner",
   "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "author": {
     "name": "Jingshan Xue"
   },
