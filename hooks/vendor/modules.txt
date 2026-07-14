@@ -1,0 +1,5 @@
+# github.com/johnson-xue/memory-validator v0.2.0
+## explicit
+github.com/johnson-xue/memory-validator
+# gopkg.in/yaml.v3 v3.0.1
+gopkg.in/yaml.v3
