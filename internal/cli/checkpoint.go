@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/johnson-xue/summoner/internal/context"
@@ -186,6 +187,11 @@ func editInEditor(currentContent string) (string, error) {
 		editor = "vim" // fallback
 	}
 
+	// Security: Validate editor to prevent command injection (S2 duplicate fix)
+	if err := validateEditorSafe(editor); err != nil {
+		return "", fmt.Errorf("unsafe EDITOR value: %w", err)
+	}
+
 	fmt.Printf("\n打开编辑器: %s %s\n", editor, tmpPath)
 	fmt.Println("编辑完成后保存并退出...")
 
@@ -206,6 +212,34 @@ func editInEditor(currentContent string) (string, error) {
 	}
 
 	return string(newContent), nil
+}
+
+// validateEditorSafe validates the EDITOR environment variable to prevent command injection
+// This is a duplicate of the validation in cmd/summoner-ctx/main.go for internal use
+func validateEditorSafe(editor string) error {
+	// List of known safe editors
+	allowedEditors := []string{"vim", "vi", "nano", "emacs", "code", "subl", "nvim", "gedit", "kate"}
+
+	editorBase := filepath.Base(editor)
+
+	// Check if it's a known safe editor
+	for _, allowed := range allowedEditors {
+		if editorBase == allowed {
+			return nil
+		}
+	}
+
+	// If not in allowed list, must be an absolute path to be safe
+	if !filepath.IsAbs(editor) {
+		return fmt.Errorf("unknown editor '%s' must be specified as absolute path", editor)
+	}
+
+	// Verify the executable exists
+	if _, err := os.Stat(editor); err != nil {
+		return fmt.Errorf("editor executable not found: %w", err)
+	}
+
+	return nil
 }
 
 // editInTerminal prompts user to enter new summary in terminal
