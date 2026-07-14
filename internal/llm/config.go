@@ -3,8 +3,10 @@ package llm
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,6 +41,12 @@ func (p *ProviderConfig) setDefaults(name string) {
 	}
 	if p.AuthPrefix == "" {
 		p.AuthPrefix = "Bearer"
+	}
+
+	// Security: Validate base URL to prevent SSRF attacks (S6)
+	if err := validateBaseURL(p.BaseURL); err != nil {
+		log.Printf("Warning: %v, disabling provider %s", err, name)
+		p.BaseURL = "" // Disable provider with invalid URL
 	}
 }
 
@@ -151,6 +159,44 @@ func LoadConfig() (*Config, error) {
 	logInfo("Using default LLM configuration")
 	defaultCfg := getDefaultConfig()
 	return &defaultCfg, nil
+}
+
+// validateBaseURL validates the base URL to prevent SSRF attacks
+// Addresses S6: Unvalidated URL in LLM Client [MEDIUM]
+func validateBaseURL(baseURL string) error {
+	if baseURL == "" {
+		return fmt.Errorf("base URL cannot be empty")
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow HTTPS (except localhost for development)
+	if parsed.Scheme != "https" {
+		hostname := parsed.Hostname()
+		if hostname != "localhost" && hostname != "127.0.0.1" && hostname != "::1" {
+			return fmt.Errorf("only HTTPS URLs allowed (except localhost)")
+		}
+	}
+
+	// Block private IP ranges to prevent SSRF
+	hostname := parsed.Hostname()
+	privateRanges := []string{
+		"10.", "172.16.", "172.17.", "172.18.", "172.19.",
+		"172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+		"172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+		"172.30.", "172.31.", "192.168.", "169.254.",
+	}
+
+	for _, prefix := range privateRanges {
+		if strings.HasPrefix(hostname, prefix) {
+			return fmt.Errorf("private IP ranges not allowed")
+		}
+	}
+
+	return nil
 }
 
 // GetProvider returns the current provider configuration

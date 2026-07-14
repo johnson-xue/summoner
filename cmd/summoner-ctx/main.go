@@ -68,6 +68,11 @@ func saveCmd() *cobra.Command {
 			defer mem.Close()
 
 			// Read input file
+			// Security: Validate input file path to prevent path traversal (S4)
+			if err := validateInputPath(inputFile); err != nil {
+				return fmt.Errorf("invalid input file: %w", err)
+			}
+
 			fullOutput, err := os.ReadFile(inputFile)
 			if err != nil {
 				return fmt.Errorf("read input file: %w", err)
@@ -626,6 +631,40 @@ func validateEditor(editor string) error {
 	// Verify the executable exists
 	if _, err := os.Stat(editor); err != nil {
 		return fmt.Errorf("editor executable not found: %w", err)
+	}
+
+	return nil
+}
+
+// validateInputPath validates the input file path to prevent path traversal
+// Addresses S4: Path Traversal in File Operations [MEDIUM]
+func validateInputPath(path string) error {
+	// Clean and resolve path
+	cleanPath := filepath.Clean(path)
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Check for traversal attempts
+	if strings.Contains(cleanPath, "..") {
+		return fmt.Errorf("path traversal detected: %s", path)
+	}
+
+	// Ensure file exists and is readable
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Errorf("cannot access file: %w", err)
+	}
+
+	// Prevent reading directories or devices
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file: %s", path)
+	}
+
+	// Size limit to prevent OOM (100MB)
+	if info.Size() > 100*1024*1024 {
+		return fmt.Errorf("file too large: %d bytes (max 100MB)", info.Size())
 	}
 
 	return nil
