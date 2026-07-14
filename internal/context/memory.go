@@ -27,8 +27,8 @@ type Memory struct {
 
 // NewMemory creates a new context memory manager
 func NewMemory(projectName string) (*Memory, error) {
-	if projectName == "" {
-		return nil, fmt.Errorf("project name cannot be empty")
+	if err := validateProjectName(projectName); err != nil {
+		return nil, err
 	}
 
 	// FIX: Use project hash to avoid name conflicts
@@ -118,6 +118,34 @@ func validateDatabaseBasePath(basePath string) error {
 	// Ensure directory exists or can be created
 	if err := os.MkdirAll(absPath, 0755); err != nil {
 		return fmt.Errorf("cannot create directory: %w", err)
+	}
+
+	return nil
+}
+
+// validateProjectName validates the project name for security
+// Addresses S5: Insufficient Input Validation in Project Name [MEDIUM]
+func validateProjectName(name string) error {
+	if name == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+
+	// Length limit
+	if len(name) > 255 {
+		return fmt.Errorf("project name too long (max 255 chars)")
+	}
+
+	// Disallow path separators and special chars
+	invalidChars := []string{"/", "\\", "..", "\x00", "\n", "\r"}
+	for _, char := range invalidChars {
+		if strings.Contains(name, char) {
+			return fmt.Errorf("project name contains invalid character: %s", char)
+		}
+	}
+
+	// Disallow leading/trailing whitespace
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("project name has leading/trailing whitespace")
 	}
 
 	return nil
