@@ -1,5 +1,14 @@
 # Summoner Changelog
 
+## [0.1.7] - 2026-07-15
+
+### ✨ Features
+- feat(release): enhance skill with detailed implementation guide (3ca97ae)
+
+### 🔧 Chores
+- remove temporary reports and establish documentation rules (77777d8)
+
+
 ## [0.1.6] - 2026-07-14
 
 ### ✨ Features
