@@ -2,153 +2,147 @@
 description: 版本发布全流程 — 版本规划 → changelog 生成 → 发布执行。确保 plugin.json 和 marketplace.json 版本同步。
 phase_checkpoints: after_each
 end_action: post_game_review
+skill_implementation: skills/release/SKILL.md
 ---
 
 # /summoner:release
 
-Automated version release workflow. Ensures zero version drift between plugin.json and marketplace.json.
+Automated version release workflow with checkpoint-based execution.
 
-## Usage
+## Quick Reference
 
 ```bash
-/summoner:release [--major|--minor|--patch] [--version X.Y.Z] [--dry-run] [--no-push]
+/summoner:release [OPTIONS]
+
+OPTIONS:
+  --major              Increment major version (X.0.0)
+  --minor              Increment minor version (0.X.0)
+  --patch              Increment patch version (0.0.X)
+  --version X.Y.Z      Specify exact version number
+  --dry-run            Preview mode, no git operations
+  --no-push            Local only (no remote push)
+  --skip-changelog     Skip changelog generation
 ```
 
-## Workflow Description
+## What This Command Does
 
-This command implements a three-phase checkpoint workflow:
+**Problem it solves:** Version drift between `plugin.json` and `marketplace.json` causes incomplete releases.
 
-**Phase 1: Version Planning**
-- Read current version from `.claude-plugin/plugin.json`
-- Validate consistency with `.claude-plugin/marketplace.json`
-- Determine new version (auto-increment or user-specified)
-- Verify git tag doesn't already exist
+**Solution:** Single automated workflow that guarantees both files stay synchronized through three checkpoint phases.
 
-**Phase 2: Changelog Generation**
-- Analyze commits since last git tag
-- Classify by conventional commits (feat/fix/docs/security/chore)
-- Generate markdown changelog with emoji categories
+## Three-Phase Workflow
 
-**Phase 3: Release Execution**
-- Update both `plugin.json` and `marketplace.json`
-- Update or create `CHANGELOG.md`
-- Create git commit and annotated tag
-- Push to remote (unless `--no-push`)
-- Optionally create GitHub Release (if `gh` CLI available)
+### Phase 1: Version Planning
+- Detects current version from plugin.json
+- Validates marketplace.json consistency (warns if mismatch)
+- Determines new version (auto-increment or manual)
+- Validates semver format and checks for tag conflicts
+- **Checkpoint:** User confirms version before proceeding
+
+### Phase 2: Changelog Generation  
+- Analyzes commits since last git tag
+- Classifies by conventional commits (feat/fix/docs/security/chore/perf/refactor/test)
+- Generates markdown with emoji category headers
+- **Checkpoint:** User reviews/edits changelog
+
+### Phase 3: Release Execution
+- Updates plugin.json and marketplace.json (atomic)
+- Updates or creates CHANGELOG.md
+- Creates git commit: `release: vX.Y.Z`
+- Creates annotated git tag: `vX.Y.Z`
+- Pushes to remote (unless --no-push)
+- Optionally creates GitHub Release (asks if gh CLI available)
+- **Checkpoint:** Shows success summary
+
+## Safety Features
+
+**Automatic Rollback:**
+- If Phase 3 fails after commit, automatically resets
+- If Phase 3 fails after tag, automatically deletes tag
+- Always preserves modified files for inspection
+- No rollback after successful push (manual intervention required)
+
+**Pre-Flight Checks:**
+- Verifies git repository
+- Checks jq installation
+- Warns about uncommitted changes (optional continue)
+
+**Validation:**
+- Semver format enforcement
+- New version must be > current version
+- Git tag must not already exist
+
+## Examples
+
+```bash
+# Standard patch release
+/summoner:release --patch
+
+# Minor version bump with dry-run preview
+/summoner:release --minor --dry-run
+
+# Major version with custom number
+/summoner:release --version 2.0.0
+
+# Local-only release (no push)
+/summoner:release --patch --no-push
+```
 
 ## Implementation
 
-Execute the following workflow when invoked:
+The AI executing this command should:
 
-### Pre-Flight Checks
+1. **Read the detailed implementation:** `skills/release/SKILL.md`
+2. **Follow checkpoint protocol:** Use exact format from `references/checkpoint-protocol.md`
+3. **Handle user feedback:** Process feedback at checkpoints, then re-output checkpoint
+4. **Execute phases sequentially:** Complete each phase fully before checkpoint
+5. **Manage context:** Save to summoner-ctx after successful release (if available)
 
+## Requirements
+
+- Git repository
+- `jq` (JSON processor) - install with `brew install jq`
+- `gh` CLI (optional, for GitHub releases)
+
+## Integration
+
+**With /summoner:ship:**
 ```bash
-# Verify git repository
-if ! git rev-parse --git-dir > /dev/null 2>&1; then
-    echo "❌ Error: Not a git repository"
-    exit 1
-fi
-
-# Check for jq
-if ! command -v jq &> /dev/null; then
-    echo "❌ Error: jq not installed. Install with: brew install jq"
-    exit 1
-fi
-
-# Parse arguments
-INCREMENT_MAJOR=false
-INCREMENT_MINOR=false  
-INCREMENT_PATCH=false
-VERSION_ARG=""
-DRY_RUN=false
-NO_PUSH=false
-SKIP_CHANGELOG=false
-
-# [Parse command-line args here]
+# Recommended for major releases:
+/summoner:ship         # Quality gate first
+/summoner:release --minor  # Then release if GO
 ```
 
-### Phase 1: Version Planning
+**With summoner-ctx:**
+Release metadata is automatically saved to context database if summoner-ctx is available.
 
-Output PHASE START block:
-```
-⚡ SUMMONER START — Workflow=release Phase 1/3: Version Planning
-🎯 任务: 确定新版本号并验证版本文件一致性
-🔧 Skill: none (版本管理逻辑)
-```
+## Troubleshooting
 
-1. Read current version from `.claude-plugin/plugin.json`
-2. Check `.claude-plugin/marketplace.json` consistency  
-3. Determine new version based on args or interactive prompt
-4. Validate semver format and that new > current
-5. Check git tag doesn't exist
-
-Output CHECKPOINT block and wait for user action.
-
-### Phase 2: Changelog Generation
-
-Output PHASE START block:
-```
-⚡ SUMMONER START — Workflow=release Phase 2/3: Changelog Generation
-🎯 任务: 从 git commits 生成 changelog 并分类
-🔧 Skill: none (changelog 生成逻辑)
+**"jq not installed"**
+```bash
+brew install jq
 ```
 
-1. Get commit range (last tag..HEAD)
-2. Classify commits by prefix (feat:/fix:/docs:/security:/chore:)
-3. Format as markdown with emoji section headers
-4. Show preview
-
-Output CHECKPOINT block and wait for user action.
-
-### Phase 3: Release Execution
-
-Output PHASE START block:
-```
-⚡ SUMMONER START — Workflow=release Phase 3/3: Release Execution
-🎯 任务: 更新版本文件、CHANGELOG 并执行 git 操作
-🔧 Skill: none (文件更新和 git 操作)
+**"Tag already exists"**
+```bash
+# Delete existing tag or choose different version
+git tag -d v0.1.5
 ```
 
-1. Setup error trap for rollback
-2. Update `plugin.json` version using jq
-3. Update `marketplace.json` plugins[0].version using jq
-4. Update/create `CHANGELOG.md`
-5. Git add, commit, tag
-6. Push (unless --no-push or --dry-run)
-7. Ask about GitHub Release (if gh available)
+**"Version mismatch detected"**
+- Warning only, uses plugin.json as source of truth
+- Both files will be synchronized after release
 
-Output CHECKPOINT block with success summary.
+**Push failed**
+- Automatic rollback removes tag and commit
+- Files preserved for inspection
+- Fix authentication and retry
 
-### Rollback Strategy
+## Post-Game Review
 
-On error in Phase 3:
-- Delete local tag if created: `git tag -d vX.Y.Z`
-- Reset commit if created: `git reset HEAD~1`
-- Preserve modified files for inspection
-
-### Post-Game Review
-
-Trigger Type 4 (流程评价) review covering:
-- Version planning phase clarity
+After completion, triggers Type 4 (流程评价) review covering:
+- Version planning clarity
 - Changelog generation quality
 - Checkpoint flow appropriateness
 - Execution reliability
 - Overall experience
-
-## Notes for AI Implementation
-
-When implementing this command:
-
-1. **Follow checkpoint protocol exactly** - Use format from `references/checkpoint-protocol.md`
-2. **Handle user feedback** - If user provides content feedback at checkpoint, process it and re-output checkpoint
-3. **Preserve JSON formatting** - Use `jq` with proper indentation
-4. **Include Co-Authored-By** - Add to commit message
-5. **Error handling** - Trap errors and rollback git operations
-6. **Test first** - In --dry-run mode, show what would be done
-
-This is a coordination-heavy workflow. The AI should:
-- Read and understand the full spec before starting
-- Execute each phase completely before checkpoints
-- Handle interactive prompts for version selection
-- Manage git operations carefully with rollback
-- Provide clear status updates throughout
