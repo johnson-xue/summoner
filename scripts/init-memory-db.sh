@@ -53,23 +53,23 @@ CREATE INDEX IF NOT EXISTS idx_journal_workflow ON journal(workflow);
 
 INSERT OR IGNORE INTO patterns (name, type, error_codes, modules, keywords, summary, priority)
 VALUES
-  ('ai-risk-003-global-impact', 'correction', '[]', '[]',
+  ('ai-risk-003-global-impact', 'correction', '[]', '["player","createNewRole","internal/module/game"]',
    '["局部修改遗漏全局影响","关联表","createNewRole","调用方","回滚路径"]',
    '修改代码前检查所有调用方和关联表，确保成功路径和失败路径同步更新。新增 init 步骤必须注册到 createNewRole。',
    'high'),
   ('ai-risk-004-pattern-match', 'correction', '[]', '[]',
-   '["模式匹配代替验证","代码相似","假设"]',
+   '["模式匹配代替验证","代码相似","假设","fix without verification","assumed similar"]',
    '代码相似不等于行为相同。修复 Bug 后必须说明如何验证，禁止仅凭代码阅读就断言修复完成。',
    'high'),
-  ('ai-err-005-ok-check', 'correction', '[]', '[]',
+  ('ai-err-005-ok-check', 'correction', '["SC_NotFoundInConf","SC_ErrRushRankConfErr"]', '["conf","conf.GetPB","player"]',
    '["conf.GetPB","ok检查","nil pointer","配置访问"]',
    '使用 conf.GetPB* 时必须检查 ok 返回值，!ok 时返回 SC_NotFoundInConf 错误。忽略 ok 检查会导致 nil pointer panic。',
    'high'),
-  ('ai-err-003-naked-error', 'correction', '[]', '[]',
+  ('ai-err-003-naked-error', 'correction', '["SC_ErrInnerLogic","SC_ErrItemNotEnough","SC_ErrParam"]', '["errs","dealer","subsys"]',
    '["裸error","fmt.Errorf","errors.New","PBErrorEnum"]',
    '业务逻辑中不要使用 fmt.Errorf 返回裸 error。使用 errs.PBErrorEnum(msg.EMessageCode_SC_xxx, ...) 包装错误码。',
    'high'),
-  ('ai-err-001-gen-files', 'correction', '[]', '[]',
+  ('ai-err-001-gen-files', 'correction', '[]', '["pkg/gen","pkg/gen/msg","pkg/gen/service","pkg/gen/conf"]',
    '["pkg/gen","生成代码","make conf","不可手动编辑"]',
    'pkg/gen/ 目录下的文件是自动生成的，禁止手动编辑。修改源定义后运行 make conf 或 make pb2db 重新生成。',
    'medium');
