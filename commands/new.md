@@ -6,7 +6,7 @@ end_action: post_game_review
 
 # /summoner:new
 
-Invoke define → plan → implement → test → review phases from `summoner.yaml`. Phase 3 routes to subsystem / rpc / gmt skill based on function type.
+Invoke define → plan → implement → test → review phases from `summoner.yaml`. Phase 3 routes to subsystem / rpc / gmt / migrate skill based on function type.
 
 ## Workflow
 
@@ -14,7 +14,7 @@ Invoke define → plan → implement → test → review phases from `summoner.y
 Phase 0 ──→ 记忆检索 (Memory Retrieval, automatic)
 Phase 1 ──→ 需求定义   (phase.define, brainstorming)
 Phase 2 ──→ 任务拆解   (phase.plan, writing-plans)
-Phase 3 ──→ 实现       (phase.subsystem or phase.rpc or phase.gmt)
+Phase 3 ──→ 实现       (phase.subsystem | phase.rpc | phase.gmt | phase.migrate)
 Phase 4 ──→ 测试       (phase.test)
 Phase 5 ──→ 审查       (phase.review)
 ```
@@ -24,8 +24,15 @@ Phase 5 ──→ 审查       (phase.review)
 1. 每个 Phase 开始输出 **PHASE START** 块 + 结束输出 **SUMMONER CHECKPOINT** 块（格式与字段规约见 `references/checkpoint-protocol.md`），等待用户选择。
 2. 用户回复若是内容反馈（方案不对/漏了边界/方向有问题），先处理反馈再重新输出 CHECKPOINT——勿当 CONTINUE 推进。
 3. Phase 1-2 不可跳过（没 spec 不动工，没 plan 不写码）。
-4. Phase 3 根据功能类型选择对应 skill（subsystem / rpc / gmt）。如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
-5. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
+4. **Phase 3 按功能类型路由**（四选一）：
+   - 全新子系统（玩家特性/玩法系统，需注册枚举+建目录+SubSystem 接口）→ `phase.subsystem` = antia-subsystem
+   - 既有子系统加对外接口（proto + handler + 业务方法联动）→ `phase.rpc` = antia-rpc
+   - GMT 后台 HTTP 接口（直接操作 DB / 踢玩家下线）→ `phase.gmt` = antia-gmt
+   - 新增 DB 表 / 改 XDB XML schema / 迁移（数据层先行，无对外接口）→ `phase.migrate` = antia-migrate
+   - 多类型混合（如新子系统含新表）→ 取主类型，次要类型作为该 skill 内的子步（如 antia-subsystem 内可选调 antia-migrate）
+   - 判定不清 → 停下问用户，不在轨道上硬猜
+5. 如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
+6. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
 
 ## Auto-Skip Conditions
 

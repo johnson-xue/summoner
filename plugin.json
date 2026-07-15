@@ -1,6 +1,6 @@
 {
   "name": "summoner",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Summoner — AI Agent Orchestration Framework. Portable, project-agnostic workflow orchestration with checkpoint-based interruption and post-game review. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
   "author": "Jingshan Xue",
   "license": "MIT",
