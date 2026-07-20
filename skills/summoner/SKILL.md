@@ -38,11 +38,11 @@ Summoner is the routing hub. It reads the project's `summoner.yaml` manifest, re
 Before starting any workflow, check Summoner Memory for relevant historical patterns.
 
 1. Read `project.name` from the project's `summoner.yaml`
-2. Check if memory database exists: `memory/{project-name}.db` (under Summoner plugin root, typically `~/.claude/plugins/summoner/memory/`)
-   - If not: run `~/.claude/plugins/summoner/scripts/init-memory-db.sh {project-name}` to create and seed it
+2. Check if memory database exists: `memory/{project-name}.db` (under Summoner plugin root — the installed plugin dir, resolved via `${CLAUDE_PLUGIN_ROOT}` in Claude Code; the actual path is typically `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/memory/`)
+   - If not: run `${CLAUDE_PLUGIN_ROOT}/scripts/init-memory-db.sh {project-name}` to create and seed it (in Claude Code). On other platforms, locate the installed plugin dir (contains `scripts/` + `memory/`) — do NOT use `~/.claude/plugins/summoner/` if that path lacks a `scripts/` dir.
 3. Extract features from user input:
    - error_codes: scan for SC_Err*, "panic", "nil pointer", "index out of range"
-   - module: infer from log file paths (e.g. player/task/task.go → task)
+   - module: infer from log file paths (e.g. `player/task/task.go` → try both `player` (the top subsystem dir, usually the right token) and `task`; `internal/module/game/player/guild/...` → `player` or `guild`). The inferred token is matched against the patterns' `modules` column via LIKE. If the most specific token (e.g. `task`) returns nothing, fall back to the broader subsystem token (`player`) before concluding "no match".
    - keywords: tokenize Chinese phrases and English words
 4. Query patterns table with each extracted feature:
    ```
@@ -87,10 +87,10 @@ Before starting any workflow, check Summoner Memory for relevant historical patt
    - Degradation is automatic and silent — do not explain the choice, just apply it.
    - When in doubt, degrade one level lower than you think. Erring on the side of less output is always correct.
 9. Platform compatibility:
-   - Claude Code: Memory DB path resolved via hook-injected context
-   - Other platforms (Gemini, OpenCode, Aider, etc.): derive DB path manually:
-     DB_FILE="${HOME}/.claude/plugins/summoner/memory/${PROJECT_NAME}.db"
-     where PROJECT_NAME is read from summoner.yaml project.name field
+   - Claude Code: Memory DB path resolved via hook-injected context (`${CLAUDE_PLUGIN_ROOT}/memory/{project-name}.db`)
+   - Other platforms (Gemini, OpenCode, Aider, etc.): derive DB path manually — find the installed Summoner plugin dir (the one containing both `scripts/` and `memory/`, e.g. `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/`):
+     DB_FILE="${SUMMONER_PLUGIN_ROOT}/memory/${PROJECT_NAME}.db"
+     where PROJECT_NAME is read from summoner.yaml project.name field and SUMMONER_PLUGIN_ROOT is the installed plugin root. Avoid `~/.claude/plugins/summoner/` if it only has `.git/` + `memory/` but no `scripts/` (that's an abandoned manual clone, scripts live in the cache install).
    - If DB file doesn't exist at the expected path: skip Phase 0, proceed to Phase 1
 
 ### 1. Skill Resolution
@@ -130,10 +130,10 @@ When `summoner.yaml` is not found, do NOT silently fall back to generic skills. 
 └────────────────────────────────────────┘
 ```
 
-- **Option 1:** Pause the workflow. Tell the user to open a separate terminal and run one of:
-  - **Quick (推荐):** `~/.claude/plugins/summoner/scripts/summoner-init.sh 2` — generates `summoner.yaml` with all recommended defaults in 3 seconds, zero interaction.
-  - **BP 阵容选择:** `~/.claude/plugins/summoner/scripts/summoner-init.sh 1` — interactive champion select: pick a skill for each phase from the curated roster (like LoL champion select).
-  - Also run `init-memory-db.sh <project-name>` afterwards.
+- **Option 1:** Pause the workflow. Tell the user to open a separate terminal and run one of (locate the installed plugin dir — in Claude Code it's `${CLAUDE_PLUGIN_ROOT}`, typically `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/`):
+  - **Quick (推荐):** `${CLAUDE_PLUGIN_ROOT}/scripts/summoner-init.sh 2` — generates `summoner.yaml` with all recommended defaults in 3 seconds, zero interaction.
+  - **BP 阵容选择:** `${CLAUDE_PLUGIN_ROOT}/scripts/summoner-init.sh 1` — interactive champion select: pick a skill for each phase from the curated roster (like LoL champion select).
+  - Also run `${CLAUDE_PLUGIN_ROOT}/scripts/init-memory-db.sh <project-name>` afterwards.
   - Wait for user to confirm manifest is ready, then reload and resolve phases normally.
 - **Option 2:** Ask the user for the skill name (e.g. `antia-subsystem`, `my-rpc-skill`).
   1. **Scan for available skills first:** Run `find .claude/skills skills ~/.claude/skills -name "SKILL.md" 2>/dev/null | head -20` and `grep '^name:'` on each to build a list of locally-installed skill names. Present these as suggestions before asking for input.
