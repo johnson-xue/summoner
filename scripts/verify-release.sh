@@ -17,17 +17,17 @@ WARNINGS=0
 
 check_pass() {
     echo "✅ $1"
-    ((PASSED++))
+    PASSED=$((PASSED + 1))
 }
 
 check_fail() {
     echo "❌ $1"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 }
 
 check_warn() {
     echo "⚠️  $1"
-    ((WARNINGS++))
+    WARNINGS=$((WARNINGS + 1))
 }
 
 # 1. Version Consistency

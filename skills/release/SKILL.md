@@ -1,5 +1,15 @@
 ---
-description: Version release automation with checkpoint-based workflow
+name: summoner-release
+description: Version release automation with checkpoint-based workflow — version planning, changelog generation, release execution. Keeps plugin.json and marketplace.json synchronized. Use when user invokes /summoner:release.
+when_to_use:
+  - User invokes /summoner:release
+  - User says "发版", "release a new version", "publish 0.x.y"
+  - User wants to bump version and synchronize manifests + changelog + git tag
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
 dependencies:
   - jq (JSON processor)
   - git
@@ -346,7 +356,7 @@ git add .claude-plugin/plugin.json .claude-plugin/marketplace.json CHANGELOG.md
 
 git commit -m "release: v$NEW_VERSION
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 COMMIT_CREATED=true
 COMMIT_HASH=$(git rev-parse --short HEAD)
 echo "✅ Committed $COMMIT_HASH"

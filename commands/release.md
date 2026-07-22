@@ -2,12 +2,13 @@
 description: 版本发布全流程 — 版本规划 → changelog 生成 → 发布执行。确保 plugin.json 和 marketplace.json 版本同步。
 phase_checkpoints: after_each
 end_action: post_game_review
-skill_implementation: skills/release/SKILL.md
 ---
 
 # /summoner:release
 
-Automated version release workflow with checkpoint-based execution.
+Version release workflow with checkpoint-based execution. Three phases — version planning, changelog generation, release execution — that guarantee `plugin.json` and `marketplace.json` stay synchronized, plus an automated changelog and git tag.
+
+This is a **framework-internal, self-contained workflow** — it does not route through the project's `summoner.yaml` manifest. The meta-skill delegates directly to the `summoner-release` skill for implementation.
 
 ## Quick Reference
 
@@ -24,125 +25,38 @@ OPTIONS:
   --skip-changelog     Skip changelog generation
 ```
 
-## What This Command Does
+## Workflow
 
-**Problem it solves:** Version drift between `plugin.json` and `marketplace.json` causes incomplete releases.
+| Phase | Task | Checkpoint |
+|-------|------|------------|
+| 1/3 Version Planning | Detect current version, validate consistency, determine + validate new version | User confirms version |
+| 2/3 Changelog Generation | Analyze commits since last tag, classify by conventional-commit type | User reviews/edits changelog |
+| 3/3 Release Execution | Update manifests + CHANGELOG, commit + tag, push, optional GitHub Release | Success summary |
 
-**Solution:** Single automated workflow that guarantees both files stay synchronized through three checkpoint phases.
-
-## Three-Phase Workflow
-
-### Phase 1: Version Planning
-- Detects current version from plugin.json
-- Validates marketplace.json consistency (warns if mismatch)
-- Determines new version (auto-increment or manual)
-- Validates semver format and checks for tag conflicts
-- **Checkpoint:** User confirms version before proceeding
-
-### Phase 2: Changelog Generation  
-- Analyzes commits since last git tag
-- Classifies by conventional commits (feat/fix/docs/security/chore/perf/refactor/test)
-- Generates markdown with emoji category headers
-- **Checkpoint:** User reviews/edits changelog
-
-### Phase 3: Release Execution
-- Updates plugin.json and marketplace.json (atomic)
-- Updates or creates CHANGELOG.md
-- Creates git commit: `release: vX.Y.Z`
-- Creates annotated git tag: `vX.Y.Z`
-- Pushes to remote (unless --no-push)
-- Optionally creates GitHub Release (asks if gh CLI available)
-- **Checkpoint:** Shows success summary
-
-## Safety Features
-
-**Automatic Rollback:**
-- If Phase 3 fails after commit, automatically resets
-- If Phase 3 fails after tag, automatically deletes tag
-- Always preserves modified files for inspection
-- No rollback after successful push (manual intervention required)
-
-**Pre-Flight Checks:**
-- Verifies git repository
-- Checks jq installation
-- Warns about uncommitted changes (optional continue)
-
-**Validation:**
-- Semver format enforcement
-- New version must be > current version
-- Git tag must not already exist
-
-## Examples
-
-```bash
-# Standard patch release
-/summoner:release --patch
-
-# Minor version bump with dry-run preview
-/summoner:release --minor --dry-run
-
-# Major version with custom number
-/summoner:release --version 2.0.0
-
-# Local-only release (no push)
-/summoner:release --patch --no-push
-```
+**Safety:** automatic rollback (delete tag / reset commit on failure); pre-flight checks (git repo, `jq`, uncommitted-change warning); validation (semver, new > current, no tag conflict).
 
 ## Implementation
 
-The AI executing this command should:
+Full implementation lives in `skills/release/SKILL.md`. The AI executing this command should:
 
-1. **Read the detailed implementation:** `skills/release/SKILL.md`
-2. **Follow checkpoint protocol:** Use exact format from `references/checkpoint-protocol.md`
-3. **Handle user feedback:** Process feedback at checkpoints, then re-output checkpoint
-4. **Execute phases sequentially:** Complete each phase fully before checkpoint
-5. **Manage context:** Save to summoner-ctx after successful release (if available)
+1. **Delegate to the skill:** invoke the `summoner-release` skill for all three phases.
+2. **Follow checkpoint protocol:** use the exact format from `references/checkpoint-protocol.md` — output a PHASE START block on entry and a CHECKPOINT block at each phase end; never auto-advance.
+3. **Handle user feedback:** if a checkpoint reply is content feedback (not a pure flow decision), handle it first, then re-output the CHECKPOINT block.
 
 ## Requirements
 
 - Git repository
-- `jq` (JSON processor) - install with `brew install jq`
+- `jq` (JSON processor) — install with `brew install jq`
 - `gh` CLI (optional, for GitHub releases)
 
 ## Integration
 
-**With /summoner:ship:**
+With `/summoner:ship` (recommended for major releases — quality gate first, then release if GO):
 ```bash
-# Recommended for major releases:
-/summoner:ship         # Quality gate first
-/summoner:release --minor  # Then release if GO
+/summoner:ship
+/summoner:release --minor
 ```
-
-**With summoner-ctx:**
-Release metadata is automatically saved to context database if summoner-ctx is available.
-
-## Troubleshooting
-
-**"jq not installed"**
-```bash
-brew install jq
-```
-
-**"Tag already exists"**
-```bash
-# Delete existing tag or choose different version
-git tag -d v0.1.5
-```
-
-**"Version mismatch detected"**
-- Warning only, uses plugin.json as source of truth
-- Both files will be synchronized after release
-
-**Push failed**
-- Automatic rollback removes tag and commit
-- Files preserved for inspection
-- Fix authentication and retry
 
 ## Post-Game Review
 
-After completion, triggers Type 4 (流程评价) review covering:
-- Version planning clarity
-- Changelog generation quality
-- Checkpoint flow appropriateness
-- Execution reliability
-- Overall experience
+After completion, triggers Type 4 (流程评价) review covering version planning clarity, changelog quality, checkpoint flow, and execution reliability.
