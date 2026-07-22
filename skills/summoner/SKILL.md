@@ -2,7 +2,7 @@
 name: summoner
 description: Routes user intent through summoner.yaml manifest to domain skills. Enforces checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow.
 when_to_use:
-  - User invokes /summoner:fix, /summoner:new, /summoner:ship, /summoner:debug, /summoner:ops, or /summoner:review
+  - User invokes /summoner:fix, /summoner:new, /summoner:ship, /summoner:debug, /summoner:ops, /summoner:review, or /summoner:release
   - User says "帮我排查这个 bug" or "add a new feature" and needs structured workflow
   - User wants checkpoint-based review (stop/recall/skip at any phase)
 allowed-tools:
@@ -24,7 +24,7 @@ Summoner is the routing hub. It reads the project's `summoner.yaml` manifest, re
 
 ## When to Use
 
-- User invokes `/summoner:fix`, `/summoner:new`, `/summoner:ship`, `/summoner:debug`, `/summoner:ops`, or `/summoner:review`
+- User invokes `/summoner:fix`, `/summoner:new`, `/summoner:ship`, `/summoner:debug`, `/summoner:ops`, `/summoner:review`, or `/summoner:release`
 - User expresses intent that matches a Summoner workflow (e.g., "帮我排查这个线上 bug" → suggest `/summoner:fix`)
 
 **When NOT to use:**
@@ -232,6 +232,7 @@ Full definitions: Read `references/workflow-reference.md` (workflow diagrams, au
 | `/summoner:debug` | debug only, no code changes |
 | `/summoner:ops` | ops skill (delegated) |
 | `/summoner:review` | code review only |
+| `/summoner:release` | version-plan → changelog → release-execution (self-contained, no manifest routing) |
 
 (M) = Mandatory — iron law, cannot be skipped.
 

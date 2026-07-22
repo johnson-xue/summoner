@@ -1,5 +1,17 @@
 # Summoner Changelog
 
+## [0.1.8] - 2026-07-21
+
+### 🐛 Bug Fixes
+- **fix(release): resolve duplicate `/summoner:release` definitions.** The command existed in both `commands/release.md` (full prose) and `skills/release/SKILL.md` (full implementation) but the skill had no `name:` frontmatter and was listed in neither manifest, so neither source of truth was wired up. Now `commands/release.md` is a thin entry point and `skills/release/SKILL.md` is the discoverable `summoner-release` skill (registered in both manifests and routed by the meta-skill).
+- **fix(skills): wire `/summoner:release` into the meta-skill.** The routing hub's `when_to_use` and Workflow Quick Reference table never listed `/summoner:release`, so the command would never be claimed. Added to both.
+- **fix(scripts): `verify-release.sh` aborted after the first check.** Under `set -e` on macOS bash 3.2, `((PASSED++))` returns exit status 1 when the counter starts at 0 (the pre-increment value is falsy), killing the script. This is why pre-release checks "passed" without actually verifying the duplicate-command / stale-manifest problems. Replaced `((var++))` with assignment form `VAR=$((VAR + 1))` across all three counters.
+- **fix(release): remove hardcoded Co-Author trailer / model pin** from the skill's commit snippet (`Claude Opus 4.8 (1M context)` → `Claude`).
+
+### 🔧 Chores
+- **sync stale root `plugin.json`** — was stuck at `0.1.5`, missing the `summoner:release` command and `summoner-release` skill. Brought to `0.1.8` and aligned with the canonical `.claude-plugin/plugin.json`.
+
+
 ## [0.1.7] - 2026-07-15
 
 ### ✨ Features
