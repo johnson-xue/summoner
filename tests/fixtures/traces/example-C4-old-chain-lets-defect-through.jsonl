@@ -1,0 +1,20 @@
+{"type":"session_start","timestamp":"2026-07-27T10:00:00Z","workflow":"fix","session_id":"c4-old-001","project":"example","model":"claude-opus-4-8","note":"OLD chain Summoner — fix node applied a nil-check at the deref site but MISSED a 2nd caller of the same nilable field. No per-node review agent; defect flows to the human reviewer at Phase 5."}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:05Z","phase":0,"name":"memory","skill":null}
+{"type":"phase_end","timestamp":"2026-07-27T10:00:10Z","phase":0,"status":"completed","artifacts":["patterns: 0 matches"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:00:10Z","phase":0,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:12Z","phase":1,"name":"diagnose","skill":"debug"}
+{"type":"reasoning","timestamp":"2026-07-27T10:00:20Z","step":"root_cause_analysis","content":"player.SubTask nil at task.go:142 when player offline","confidence":0.9}
+{"type":"phase_end","timestamp":"2026-07-27T10:00:35Z","phase":1,"status":"completed","artifacts":["root_cause: task.go:142 nil deref"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:00:35Z","phase":1,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:40Z","phase":3,"name":"fix","skill":"freeform"}
+{"type":"tool_call","timestamp":"2026-07-27T10:00:45Z","tool":"Edit","args":{"file_path":"player/task/task.go","line":142},"result":"success"}
+{"type":"phase_end","timestamp":"2026-07-27T10:00:50Z","phase":3,"status":"completed","artifacts":["edited: task.go:142"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:00:50Z","phase":3,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:55Z","phase":4,"name":"verify","skill":"test-suite"}
+{"type":"tool_call","timestamp":"2026-07-27T10:01:00Z","tool":"Bash","args":{"command":"go test ./..."},"result":"success"}
+{"type":"phase_end","timestamp":"2026-07-27T10:01:05Z","phase":4,"status":"completed","artifacts":["tests: all passed"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:01:05Z","phase":4,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:01:10Z","phase":5,"name":"review","skill":"code-reviewer"}
+{"type":"phase_end","timestamp":"2026-07-27T10:01:20Z","phase":5,"status":"completed","artifacts":["review: the HUMAN reviewer notices task.go:187 also derefs player.SubTask unchecked; sends back to fix"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:01:20Z","phase":5,"user_input":"recall"}
+{"type":"session_end","timestamp":"2026-07-27T10:01:25Z","status":"stopped","total_duration_ms":85000,"total_phases":5,"skipped_phases":0,"human_interventions":3,"note":"human caught the missed 2nd caller at review — cost: 1 full graph traverse + human read of verify AND review blocks"}
