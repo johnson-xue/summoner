@@ -46,7 +46,7 @@ Today a node (= a phase = a skill call) does its work and hands the entire sessi
 
 ## 2. Design (Headline: the Node Contract)
 
-The single headline change: **a Summoner node is no longer "one skill call." A node is a closed-loop agent with a four-step contract.** The graph is just the composition of such nodes. The four chosen borrow-points (① explicit graph declaration / ② skip-node back-edge / ③ verdict-node context isolation / ④ decidable verifier) are all absorbed into one node contract rather than kept as four loose features.
+The single headline change: **a Summoner node is no longer "one skill call." A node is a closed-loop agent with a five-step contract (① Ingest+Validate → ② Work → ③ Test → ④ Handoff → ⑤ Review-agent).** The graph is just the composition of such nodes. The chosen borrow-points (① explicit graph declaration / ② skip-node back-edge / ③ verdict-node context isolation / ④ decidable verifier) are all absorbed into one node contract rather than kept as four loose features — and the user's added direction (offload the human quality-read onto an independent-context review agent) is absorbed as step ⑤.
 
 ### 2.1 The Node Contract (every node = agent run, 4 steps)
 
@@ -58,11 +58,16 @@ The single headline change: **a Summoner node is no longer "one skill call." A n
         │  ② Work              (the task itself)        │
         │  ③ Test              (node-internal verifier │ ── FAIL ─▶ self-retry (bounded)
         │                        decidable; inner loop)│
-        │  ④ Handoff           (clean, minimal, typed) │ ──▶ out to next node
+        │  ④ Handoff           (clean, minimal, typed) │
+        │  ⑤ Review-agent      (SEPARATE context, reads │ ── NEEDS-FIX ─▶ back-edge
+        │                        only the ④ envelope,      (with findings as reason)
+        │                        judges exit_criteria)    │
         └──────────────────────────────────────────────┘
-                          │
-                          ▼ (only after ④)
-                  Summoner checkpoint — human gate
+                          │  (⑤ = PASS)
+                          ▼
+                  Summoner checkpoint — human FLOW gate
+                  (continue / recall to <node> / skip / done / stop)
+                  review agent judged quality; human judges direction
 ```
 
 | Step | Does | Decidable? | Absorbs borrow-point |
@@ -71,8 +76,9 @@ The single headline change: **a Summoner node is no longer "one skill call." A n
 | ② Work | Execute the closed-loop task (diagnose / reproduce / fix / verify / review / define / plan / implement / test / fan-out persona). | n/a | — |
 | ③ Test | Run a **machine-decidable** node-internal verifier (test suite / lint / typecheck / contract check / build). If FAIL → retry within the node (bounded; cap via `max_inner_turns`), feeding the verifier feedback into the node's own context. This is the article's "every node is still a loop," kept *inside* the node. | Yes | ④ + article §"node is still a loop" |
 | ④ Handoff | Produce a **clean, minimal, typed** context for the downstream node — strip upstream raw data (raw HTML, full debug dumps, half-baked diffs that aren't the artifact), keep only validated artifacts + a structured handoff note. | Yes (handoff schema) | ③ (producer side) + ② (producer side) |
+| ⑤ Review-agent | A **separate-context** review agent reads only the ④ handoff envelope (never the node's working context) and judges product quality against the node's `exit_criteria`: PASS, or NEEDS-FIX with concrete findings (file:line + fix). Its verdict is appended to the handoff as `review_verdict`. | Pinned-rubric (decidable where exit_criteria are deterministic; explicitly-labeled soft otherwise) | replaces human "read the checkpoint & judge quality" — the original pain point |
 
-Only after ④ does the Summoner checkpoint fire. **Iron law preserved:** the node may self-loop internally (③) but every *inter-node edge* still passes a human-gated checkpoint. The graph defines routing; it does not replace human approval.
+Only after ⑤ does the Summoner checkpoint fire. **What changed vs. today:** the *quality* judgment that used to lean on a human reading the checkpoint block is now done by an independent-context review agent (⑤) — this directly removes the "人疏忽就遗漏" failure mode the user named in §1.3. **What is preserved:** the checkpoint's *flow* decision (continue / recall to \<node\> / skip / done / stop) is still the human's — the review agent judges quality, it does not choose the next node. **Iron law refined:** the node may self-loop internally (③) and may be sent back by ⑤'s NEEDS-FIX (which becomes a `handoff_reject`-equivalent back-edge), but every *inter-node edge advance* still passes a human-gated checkpoint. The graph defines routing; the review agent gates quality; the human gates flow.
 
 ### 2.2 The Handoff Envelope (typed, following market best practice)
 
@@ -86,13 +92,15 @@ Concretize "clean context" as a typed envelope (LangGraph handoff / OpenAI Agent
   "artifacts": ["docs/reviews/2026-07-27-task-npe.md", "player/task/task.go:142"],
   "exit_criteria": ["root_cause_identified", "fix_approach_stated"],
   "handoff_note": "TaskModule.handle() 未判空 player.SubTask；离线触发 NPE。Phase 3 建议路由 antia-logic。",
-  "stripped": ["raw_grep_output", "full_stack_trace"]
+  "stripped": ["raw_grep_output", "full_stack_trace"],
+  "review_verdict": {"reviewer": "review-agent:diagnose", "verdict": "PASS", "findings": []}
 }
 ```
 
 - `artifacts` — concrete, validated products the downstream can rely on (paths, file:line, decisions). Never empty.
 - `exit_criteria` — the machine-checkable list this node claims to have satisfied (see §2.4). The downstream's ① Ingest validates *these*.
 - `handoff_note` — one-paragraph structured summary; the only prose that crosses the boundary.
+- `review_verdict` — filled by ⑤ Review-agent. `PASS` or `NEEDS-FIX` + findings (each finding: file:line + concrete fix). On `NEEDS-FIX` the orchestrator routes a back-edge to `from_node` with the findings as reason (before the checkpoint, so the human at the checkpoint sees a quality-clean product).
 - `stripped` — what was intentionally dropped (auditable: a verifier can confirm these didn't leak into the downstream context).
 
 This is a **new trace event type** (`handoff`), not a runtime object — Summoner's runtime is markdown protocol + trace + scorers, so the envelope is emitted to the trace and enforced by scorers, not by a Python state machine.
@@ -106,7 +114,7 @@ recall to <node>  reason=receiver_rejected_handoff | direction_wrong | verifier_
 ```
 
 - May cross nodes (skip intermediate nodes) — the article's red edge (reject → writer, *skipping* researcher).
-- May be triggered two ways: (a) **human** at a checkpoint ("方向不对，回 diagnose"), already captured by checkpoint content-feedback grammar; (b) **downstream node's ① Ingest** rejecting an upstream handoff — emits `handoff_reject`, and the **orchestrator (command-layer graph engine)** routes back. It is *not* the downstream agent spawning the upstream agent — that would violate `persona-composition.md`'s "personas never call other personas" and Claude Code's "subagents cannot spawn subagents" platform limit. The orchestrator (main session / SKILL.md flow) executes the back-edge, exactly like Alexey's example where the orchestrator (`process.md`) runs step 5 and 7.
+- May be triggered two ways: (a) **human** at a checkpoint ("方向不对，回 diagnose"), already captured by checkpoint content-feedback grammar; (b) **downstream node's ① Ingest** rejecting an upstream handoff — emits `handoff_reject`, and the **orchestrator (command/SKILL layer, the graph-walk flow)** routes back. It is *not* the downstream agent spawning the upstream agent — that would violate `persona-composition.md`'s "personas never call other personas" and Claude Code's "subagents cannot spawn subagents" platform limit. The orchestrator (main session / SKILL.md flow) executes the back-edge, exactly like Alexey's example where the orchestrator (`process.md`) runs step 5 and 7.
 - The reject → upstream-redo flow is a real cycle, not a DAG. This matches the article: production agent graphs are usually cyclic.
 
 ### 2.4 Decidable verifier checklist (④) — the article's named bottleneck
@@ -169,7 +177,7 @@ conditional_edges:
 back_edges:
   - {from: verify, to: fix, reason: verifier_failed}       # skip nothing
   - {from: review, to: fix, reason: receiver_rejected_handoff, skip: [verify]}  # skip verify
-checkpoints: after_node      # human gate after every node's ④
+checkpoints: after_node      # human FLOW gate after every node's ⑤ (review agent already gated quality)
 ```
 
 Key points:
@@ -186,33 +194,36 @@ Key points:
 2. The **node contract** (reference to `references/node-contract.md`) — framework-level, same for all projects.
 3. **Conditional routing rules** available to plans (e.g., `route_by_diagnosis`) — project-level, declared once, reused across plans.
 
-Existing `chain` / `fan_out` / `checkpoints` schema is **preserved unchanged** as the legacy/fallback path. A plan that produces a `summoner-task-graph` block runs the graph engine; a plan that doesn't falls back to today's chain behavior. **No existing `summoner.yaml` breaks.** This is the user-approved 方案 A (incremental compat) and also satisfies the article's "don't use a graph where a loop suffices" — simple per-task graphs can still just be a chain.
+Existing `chain` / `fan_out` / `checkpoints` schema is **preserved unchanged** as the legacy/fallback path. A plan that produces a `summoner-task-graph` block runs the graph-walk flow (SKILL.md walks the per-task graph; no new runtime); a plan that doesn't falls back to today's chain behavior. **No existing `summoner.yaml` breaks.** This is the user-approved 方案 A (incremental compat) and also satisfies the article's "don't use a graph where a loop suffices" — simple per-task graphs can still just be a chain.
 
 ### 2.7 What stays unchanged (invariants)
 
 These Summoner iron laws are **not** relaxed by the graph upgrade:
 1. **Phase 1 is iron law** — the `diagnose` node's `exit_criteria` includes `root_cause`; `conditional_edges` may not bypass `diagnose`; back-edges may not skip *into* skipping diagnose.
-2. **No auto-advance past a checkpoint** — the graph defines routing, the human gates every inter-node edge. Node-internal self-loops (③) are the *only* automatic repetition, and they are bounded by `max_inner_turns`.
+2. **No auto-advance past a checkpoint — the human retains the *flow* decision.** The review agent (⑤) judges *product quality*; the *flow* decision at the checkpoint (continue / recall to \<node\> / skip / done / stop) is still the human's. What is automated: node-internal self-loops (③) and the ⑤ quality gate (NEEDS-FIX auto-routes a back-edge before the human ever sees a sub-par product). Both are bounded — ③ by `max_inner_turns`, ⑤ by a ≤3 same-finding-reject escalation to checkpoint.
 3. **No hardcoded project/domain names** — graph blocks reference `phases.*` skills; routing rules are project-declared in `summoner.yaml`, not framework-baked.
-4. **Personas never call personas** — back-edges are executed by the orchestrator (command/SKILL layer), never by a downstream agent spawning an upstream one (platform limit + composition rule).
-5. **Post-game review is mandatory** — at workflow end, the existing 5-type questionnaire fires. A new Type-1 trigger (`handoff_reject` events) feeds the reject-redo signal into memory, same as human "方向不对" today.
+4. **Agents never call other agents** — back-edges (including ⑤ NEEDS-FIX) are executed by the orchestrator (command/SKILL layer), never by the review agent spawning an upstream node, and never by a node spawning its own reviewer. The review agent only *reads* the ④ envelope and *returns a verdict*; the orchestrator acts on it. (Extends `persona-composition.md`'s "personas never call other personas" to all agents, consistent with Claude Code's "subagents cannot spawn subagents" platform limit.)
+5. **Post-game review is mandatory** — at workflow end, the existing 5-type questionnaire fires. New Type-1 triggers (`handoff_reject` and ⑤ NEEDS-FIX events) feed the reject-redo signal into memory, same as human "方向不对" today.
+6. **Review-agent context isolation is load-bearing** — ⑤ runs in a separate context that sees *only* the ④ handoff envelope, never the producing node's working context. This is the whole point: it cannot be lulled by the producer's reasoning, only by the artifacts — which is exactly the article's "verdict needs evidence external to the system." A ⑤ that read the producer's context would degenerate into "agent stamps its own work."
 
 ## 3. Components Touched
 
 | Component | Change | New? |
 |---|---|---|
-| `references/node-contract.md` | The 4-step contract, handoff envelope, decidable exit-criteria discipline | **New** |
+| `references/node-contract.md` | The 5-step contract (incl. ⑤ Review-agent), handoff envelope + `review_verdict`, decidable exit-criteria discipline, review-agent context-isolation rule | **New** |
 | `references/manifest-spec.md` | Add §Node Types + §Conditional Routing Rules; mark `graph` block as plan-time (not manifest-time) | Edit |
-| `references/checkpoint-protocol.md` | Extend `[recall]` → `[recall to <node> reason=...]`; add verdict-node `clean_context` entry behavior | Edit |
-| `references/workflow-reference.md` | Add §Per-task Graph section; document graph-engine vs chain fallback; add graph red flags | Edit |
-| `references/trace-protocol.md` | Add event types: `handoff`, `handoff_reject`, `node_test_loop`, `node_turn` | Edit |
-| `references/scoring-system.md` | Add P0 scorers: `handoff-contract-check`, `verifier-checklist-check`; wire into regression/stability | Edit |
-| `scorers/deterministic/handoff-contract-check.sh` | Validate every inter-node edge has a `handoff` event with non-empty `artifacts`+`exit_criteria`+`handoff_note`; flag missing/stripped-leak | **New** |
-| `scorers/deterministic/verifier-checklist-check.sh` | For each verdict node, confirm all exit-criteria boxes checked PASS or an explicit FAIL-with-reason; ban "判不了" criteria | **New** |
-| `skills/summoner/SKILL.md` | Phase Execution: when a plan carries a `summoner-task-graph`, run graph engine (Ingest→Work→Test→Handoff per node, back-edges via orchestrator); else chain fallback | Edit |
+| `references/checkpoint-protocol.md` | Extend `[recall]` → `[recall to <node> reason=...]`; reframe checkpoint as *human FLOW gate* (quality already gated by ⑤); add verdict-node `clean_context` entry behavior | Edit |
+| `references/workflow-reference.md` | Add §Per-task Graph section; document graph-walk vs chain fallback; add graph red flags (incl. "review agent read producer's context = fail") | Edit |
+| `references/trace-protocol.md` | Add event types: `handoff`, `handoff_reject`, `node_test_loop`, `node_turn`, `review_verdict` | Edit |
+| `references/scoring-system.md` | Add P0 scorers: `handoff-contract-check`, `verifier-checklist-check`, `review-isolation-check`; wire into regression/stability | Edit |
+| `scorers/deterministic/handoff-contract-check.sh` | Validate every inter-node edge has a `handoff` event with non-empty `artifacts`+`exit_criteria`+`handoff_note`+`review_verdict`; flag missing/stripped-leak | **New** |
+| `scorers/deterministic/verifier-checklist-check.sh` | For each node, confirm all exit_criteria boxes checked PASS or an explicit FAIL-with-reason; ban "判不了" criteria | **New** |
+| `scorers/deterministic/review-isolation-check.sh` | Confirm every ⑤ Review-agent was dispatched as a separate subagent (separate context) and its input set ⊆ the ④ envelope fields; flag any producer-context leak into the review input | **New** |
+| `agents/review-agent.md` | Generic per-node quality reviewer persona: reads only the ④ envelope, judges `exit_criteria`, returns `review_verdict` (PASS / NEEDS-FIX + file:line findings). Never reads producer context; never calls other agents; returns verdict only. | **New** |
+| `skills/summoner/SKILL.md` | Phase Execution: when a plan carries a `summoner-task-graph`, walk it per node (①→②→③→④→⑤), dispatch ⑤ as a subagent with envelope-only input, route ⑤ NEEDS-FIX as a back-edge via orchestrator; else chain fallback | Edit |
 | `commands/fix.md`, `commands/new.md` | Move the routing tables into named `route_*` rules referenced by graph blocks; commands become thinner | Edit |
 | `skills/summoner-writing-plans` (or superpowers:writing-plans integration) | Plan artifact must emit a `summoner-task-graph` block for non-trivial tasks | Edit/Note |
-| `tests/fixtures/traces/` | Add graph-mode fixtures: a clean pass, a `handoff_reject`→back-edge case, a verdict FAIL→retry case | **New** |
+| `tests/fixtures/traces/` | Add graph-mode fixtures: a clean pass (⑤ PASS), a ⑤ NEEDS-FIX→back-edge case, a ③ FAIL→retry case, a review-isolation-violation case | **New** |
 
 ## 4. Data Flow (one fix workflow, graph mode)
 
@@ -235,51 +246,60 @@ User: /summoner:fix "SC_ErrInnerLogic nil pointer in task"
   │        retry if the pin (file:line) is missing (≤3 turns)   │
   │ ④ Handoff: envelope{artifacts:[report.md, task.go:142],    │
   │            exit_criteria:[root_cause,fix_approach], note}    │
+  │ ⑤ Review-agent (separate context, envelope only):            │
+  │     PASS → review_verdict stamped                            │
+  │     NEEDS-FIX → back-edge to diagnose (orchestrator routes)  │
   └─────────────────────────────────────────────────────────────┘
-       │ checkpoint — human gate (continue/recall to <node>/stop)
+       │ checkpoint — human FLOW gate (continue/recall to <node>/stop)
+       │   note: human sees a ⑤-PASS product; quality already gated
        ▼
   ┌─ reproduce ─────────────────────────────────────────────────┐
-  │ ① Ingest: validate diagnose envelope has root_cause ✓        │
+  │ ① Ingest: validate diagnose envelope + review_verdict=PASS ✓ │
   │ ② Work: write repro test                                      │
   │ ③ Test: repro test FAILS before fix (Prove-It) — decidable   │
-  │ ④ Handoff: envelope{artifacts:[repro_test.go], criteria}   │
+  │ ④ Handoff: envelope{artifacts:[repro_test.go], criteria}    │
+  │ ⑤ Review-agent: PASS / NEEDS-FIX → back to reproduce        │
   └─────────────────────────────────────────────────────────────┘
        │ checkpoint
        ▼
   ┌─ fix (routed by conditional edge route_by_diagnosis → antia-logic) ┐
-  │ ① Ingest: validate reproduce envelope ✓                       │
+  │ ① Ingest: validate reproduce envelope + review_verdict=PASS ✓  │
   │ ② Work: apply fix                                              │
   │ ③ Test: build + compile clean (decidable); retry ≤4 turns     │
-  │ ④ Handoff: envelope{artifacts:[task.go diff], exit_criteria}  │
+  │ ④ Handoff: envelope{artifacts:[task.go diff], exit_criteria}   │
+  │ ⑤ Review-agent: PASS / NEEDS-FIX → back to fix (w/ findings)  │
   └────────────────────────────────────────────────────────────────┘
        │ checkpoint
        ▼
   ┌─ verify (clean_context: true — fresh agent, envelope only) ┐
-  │ ① Ingest: validate fix envelope ✓                            │
+  │ ① Ingest: validate fix envelope + review_verdict=PASS ✓     │
   │ ② Work: run test suite                                        │
   │ ③ Test: tests_pass + no_new_lint + build_ok — all decidable  │
-  │   FAIL → back-edge to fix (reason=verifier_failed), skip reproduce?│
-  │   PASS → ④                                                    │
+  │   FAIL → self-retry; exhausted → back-edge to fix             │
   │ ④ Handoff: envelope{verdict:PASS, test_results}              │
+  │ ⑤ Review-agent: PASS / NEEDS-FIX → back to verify or fix     │
   └─────────────────────────────────────────────────────────────┘
        │ checkpoint
        ▼
-  ┌─ review (clean_context: true) ─────────────────────────────┐
-  │ ① Ingest: validate verify envelope verdict=PASS ✓           │
-  │ ② Work: code-reviewer persona                                │
+  ┌─ review (clean_context: true) — the code-reviewer PERSONA node │
+  │ ① Ingest: validate verify envelope + review_verdict=PASS ✓    │
+  │ ② Work: code-reviewer persona (5-axis)                         │
   │ ③ Test: 0 Critical + every finding has file:line+fix — decidable│
-  │   NEEDS-FIX → back-edge to fix, reason=receiver_rejected, skip verify│
-  │   PASS → ④                                                   │
-  │ ④ Handoff: envelope{verdict:PASS, report}                   │
-  └─────────────────────────────────────────────────────────────┘
+  │ ④ Handoff: envelope{verdict:PASS, report}                     │
+  │ ⑤ Review-agent (meta-review of the persona's report):         │
+  │     PASS / NEEDS-FIX → back to review node                    │
+  └────────────────────────────────────────────────────────────────┘
        │
-       ▼ Post-game review (5-type; handoff_reject events → Type 1 memory)
+       ▼ Post-game review (5-type; handoff_reject + ⑤ NEEDS-FIX → Type 1 memory)
 ```
 
 ## 5. Error Handling
 
 - **Node self-loop exhausted (③ hits `max_inner_turns`):** node emits `node_test_loop` with `exhausted=true`; orchestrator surfaces at checkpoint as `⚠️ 发现: <node> self-loop exhausted (N turns)` and offers `[recall to <upstream>]` / `[stop]`. Never silently burns unbounded tokens — the article's `MAX_TURNS` backstop.
 - **Handoff reject (① fails):** `handoff_reject` event; orchestrator routes back-edge; the reject reason becomes the upstream node's next Ingest input. If a back-edge loops ≥3 times on the same reject reason, escalate to checkpoint (likely a real direction problem → Type 1 review).
+- **⑤ Review-agent returns NEEDS-FIX:** orchestrator routes a back-edge to `from_node` with the findings as reason — *before* the checkpoint. The human at the checkpoint should only ever see a ⑤-PASS product (the whole point of offloading the quality read). If ⑤ NEEDS-FIX loops ≥3 times on the same finding, escalate to checkpoint (⑤ may be misreading, or the producer can't satisfy the criterion — human decides).
+- **⑤ Review-agent context leak (it somehow saw producer context):** `review-isolation-check` scorer flags it; that node's `review_verdict` is voided and the node re-runs ⑤ with a correctly-scoped envelope. This is a correctness defect, not a flow decision — never surfaces to the human as "your call."
+- **⑤ Review-agent unreachable / dispatch failure:** treat as ③-exhausted equivalent — surface at checkpoint, offer `[recall to <upstream>]` / `[stop]`. Never block the workflow silently.
 - **Verdict FAIL with no upstream fix node (e.g., review rejects on a debug-only workflow):** no back-edge target → surface to user as a checkpoint decision, don't fabricate a target.
 - **Graph parse failure (malformed `summoner-task-graph` block):** fall back to chain mode + warn at checkpoint ("plan graph malformed — running chain fallback"). Never block the user.
 - **Missing manifest:** graph blocks can't resolve `phases.*` skills → existing No-Manifest menu (Phase 3) handles it; graph mode simply isn't entered.
@@ -291,23 +311,26 @@ Cases must demonstrate the upgrade *and* prove "smoother / higher correctness / 
 
 | Case | Exercises | Expected new-behavior | Measured by |
 |---|---|---|---|
-| C1: config-only fix (1-line) | Graph-vs-chain fallback (article: don't graph a loop) | Plan emits minimal chain (no reproduce/verify graph nodes); fast path | token usage, phase count |
-| C2: nil-pointer logic fix | Full graph + verdict node isolation | verify runs in clean context; no debug-dump leak | `handoff-contract-check` scorer; context-leak assertion |
-| C3: fix where verify FAILS | Back-edge (②) skip-node return | verify FAIL → back to fix, *skipping reproduce*; handoff_reject trace | `verifier-checklist-check`; back-edge trace assertion |
-| C4: review rejects (receiver_rejected_handoff) | Downstream Ingest rejects upstream | review NEEDS-FIX → back to fix; orchestrator (not agent) executes | back-edge executor assertion; persona-no-spawn assertion |
-| C5: new subsystem feature | Per-task graph from plan + conditional edge | plan emits `summoner-task-graph`; route_by_function_type conditional edge | graph-block presence; routing-rule reference |
-| C6: ship fan-out | Existing parallelism under graph framing | 3 personas as 3 nodes, merge node; clean_context on each | fan-out trace; merge envelope |
-| C7: node self-loop exhaustion | `max_inner_turns` backstop | fix node retries then escalates at checkpoint (no infinite burn) | `node_test_loop exhausted=true` trace; token ceiling |
+| C1: config-only fix (1-line) | Graph-vs-chain fallback (article: don't graph a loop) | Plan emits minimal chain (no reproduce/verify graph nodes); fast path; ⑤ still runs on the single node | token usage, phase count |
+| C2: nil-pointer logic fix | Full graph + verdict node isolation + per-node ⑤ | every node ⑤ PASS; verify runs in clean context; no debug-dump leak; human only sees PASS products | `handoff-contract-check` + `review-isolation-check`; context-leak assertion |
+| C3: fix where verify FAILS | ③ FAIL→retry then back-edge (②) skip-node | verify ③ FAIL → self-retry → exhausted → back to fix, *skipping reproduce*; ⑤ on fix NEEDS-FIX also back-edges | `verifier-checklist-check`; back-edge trace assertion |
+| C4: ⑤ Review-agent NEEDS-FIX catches a defect the human would have missed | The headline benefit — agent替人读 | ⑤ on `fix` returns NEEDS-FIX (e.g., missed nil-check caller); orchestrator back-edges *before* checkpoint; human never sees the defective handoff | `review_verdict` NEEDS-FIX trace; back-edge-before-checkpoint assertion; old-Summoner would have let it through (control) |
+| C5: ⑤ context-isolation violation (adversarial) | Reviewer must not read producer context | inject a producer-context field; ⑤ must reject/ignore; `review-isolation-check` flags if it leaks | `review-isolation-check` scorer FAIL on leak, PASS when isolated |
+| C6: new subsystem feature | Per-task graph from plan + conditional edge | plan emits `summoner-task-graph`; route_by_function_type conditional edge | graph-block presence; routing-rule reference |
+| C7: ship fan-out | Existing parallelism under graph framing | 3 personas as 3 nodes, merge node; clean_context on each; merge node has its own ⑤ | fan-out trace; merge envelope |
+| C8: node self-loop exhaustion | `max_inner_turns` backstop | fix node ③ retries then escalates at checkpoint (no infinite burn) | `node_test_loop exhausted=true` trace; token ceiling |
+| C9: ⑤ 3× same-finding escalation | Bounded auto-redo | ⑤ NEEDS-FIX loops 3× on same finding → escalates to checkpoint instead of looping forever | escalation trace; no >3 same-finding back-edges |
 
-For each case: run under **old (chain) Summoner** and **new (graph) Summoner**, capture traces, run `regression-test.sh` + `stability-test.sh` (≥5 runs, fix workflow 0% tolerance per scoring-system), and report Δ on: P0 score, human-intervention count (checkpoint content-feedback + recall events), token usage. The goal's "smoother / higher correctness / less human intervention" is quantified as: P0 score ↑, human-intervention count ↓, token neutral-or-down.
+For each case: run under **old (chain) Summoner** and **new (graph+⑤) Summoner**, capture traces, run `regression-test.sh` + `stability-test.sh` (≥5 runs, fix workflow 0% tolerance per scoring-system), and report Δ on: P0 score, **human-intervention count** (checkpoint content-feedback + recall events — the key metric, since ⑤ offloads the quality read from the human), token usage. The goal's "smoother / higher correctness / less human intervention" is quantified as: P0 score ↑, human-intervention count ↓ (most directly via C4 — defects ⑤ catches before the human), token neutral-or-down.
 
 ## 7. Out of Scope (YAGNI)
 
 - No new runtime engine (no Python/Go graph executor). The graph is walked by the SKILL.md markdown-protocol flow + trace/scorer enforcement — consistent with how Summoner already works.
 - No per-project predeclared workflow graphs in `summoner.yaml` (only node types + routing rules). Per-task graphs live in plan artifacts.
-- No replacing the checkpoint human gate. Graph routes; humans gate.
+- No replacing the checkpoint human *flow* gate. The review agent (⑤) offloads *quality* judgment from the human; the *flow* decision (continue/recall/skip/done/stop) stays human. The two are deliberately not merged.
+- No review agent making flow decisions. ⑤ returns PASS/NEEDS-FIX only; it never picks the next node. (If a future need arises for agent-decided flow, that is a separate spec — explicitly out of scope here.)
 - No auto-promotion of memory patterns into skills (existing manual review path stays).
-- No new personas. Existing 4 personas become node-capable as-is.
+- No new *domain* personas. One generic `review-agent` persona is added (⑤ is the same role per node, parameterized by the node's `exit_criteria`); the existing 4 domain personas become node-capable as-is.
 
 ## 8. Risks & Mitigations
 
@@ -319,11 +342,14 @@ For each case: run under **old (chain) Summoner** and **new (graph) Summoner**, 
 | Back-edge loops forever | `max_inner_turns` per node + 3-reject-same-reason escalation to checkpoint |
 | Scorers give false confidence (rubric "pinned to file:line" still soft) | Iron law preserved: deterministic scorers dominate; rubric only where no deterministic check exists; human calibration stays |
 | "判不了" criteria sneak back into exit_criteria | `verifier-checklist-check.sh` explicitly flags any criterion not matchable to a deterministic scorer or a pinned structural check |
+| ⑤ Review-agent rubber-stamps (agent stamps its own work) | ⑤ runs in **separate context** with envelope-only input (invariant #6); `review-isolation-check` scorer enforces it; C5 adversarially tests it |
+| ⑤ Review-agent too strict → loops on nitpicks | ⑤ judges only the node's declared `exit_criteria`, not free-form quality; 3× same-finding escalation (C9) surfaces stuck loops to the human |
+| ⑤ adds latency/tokens per node | ⑤ uses a fast model on a tiny envelope (≤120 tok in, ≤80 tok verdict); for C1 trivial path, ⑤ is the single node's only quality gate (cheaper than full chain) |
 
 ## 9. Success Criteria (matches the goal)
 
-The upgrade succeeds when, across cases C1–C7:
+The upgrade succeeds when, across cases C1–C9:
 1. **Correctness ↑:** new Summoner P0 score ≥ old, on identical tasks (regression-test non-regressing, stability-test passing at 0% tolerance for fix).
-2. **Human intervention ↓:** fewer checkpoint content-feedback + recall events per task in new vs old (measured from trace `checkpoint` + `handoff_reject` events).
+2. **Human intervention ↓:** fewer checkpoint content-feedback + recall events per task in new vs old (measured from trace `checkpoint` + `handoff_reject` + ⑤ NEEDS-FIX events). This is the headline win — ⑤ catches defective handoffs *before* the human would have had to read them.
 3. **Smoother:** post-game Type-4 rating ≥ old; Type-1 (direction correction) frequency ↓ (reject-redo handled inside graph before reaching the human).
-4. **Real-world:** at least one case run against a real bug in this repo (not only synthetic fixtures), demonstrating the back-edge + clean-context verifier catching something the old chain would have let through.
+4. **Real-world:** at least one case run against a real bug in this repo (not only synthetic fixtures), demonstrating ⑤ catching a defect the old chain would have let through to the human reviewer (C4 control comparison).
