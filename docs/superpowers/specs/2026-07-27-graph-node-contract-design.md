@@ -55,30 +55,47 @@ The single headline change: **a Summoner node is no longer "one skill call." A n
         │  NODE (agent) — closed loop                   │
         │                                              │
   in ─▶ │  ① Ingest+Validate   (handoff envelope check)│ ── REJECT ─▶ back-edge to upstream
+        │  ⓪ Pre-Work snapshot (mutating nodes only):  │
+        │     git stash / patch-snapshot before ②,    │
+        │     so ③-retry or ⑤-back-edge re-runs ② on a│
+        │     clean tree (idempotent retry — H2)        │
         │  ② Work              (the task itself)        │
         │  ③ Test              (node-internal verifier │ ── FAIL ─▶ self-retry (bounded)
-        │                        decidable; inner loop)│
-        │  ④ Handoff           (clean, minimal, typed) │
-        │  ⑤ Review-agent      (SEPARATE context, reads │ ── NEEDS-FIX ─▶ back-edge
-        │                        only the ④ envelope,      (with findings as reason)
-        │                        judges exit_criteria)    │
+        │                        decidable; inner loop;│              (restore ⓪ snapshot
+        │                        restore ⓪ before each) │               before re-running ②)
+        │  ④ Handoff           (clean, minimal, typed; │
+        │                        carries attempt_history│
+        │                        + budget_remaining — H3)│ ──▶ out to next node
+        │  ⑤ Review-agent      (SEPARATE context;      │ ── NEEDS-FIX ─▶ back-edge
+        │                        re-derives findings by  │   (with findings; restore ⓪
+        │                        running its OWN tools   │    on mutating upstream node)
+        │                        against artifact paths;│
+        │                        tool_calls = evidence) │
         └──────────────────────────────────────────────┘
                           │  (⑤ = PASS)
                           ▼
                   Summoner checkpoint — human FLOW gate
                   (continue / recall to <node> / skip / done / stop)
-                  review agent judged quality; human judges direction
+                  review agent judged quality (with own evidence); human judges direction
 ```
+
+**Idempotent retry (H2 fix):** step ⓪ snapshots the working tree before any mutating ② (fix / implement / subsystem / migrate). On ③ FAIL self-retry *or* ⑤ NEEDS-FIX back-edge to a mutating node, the orchestrator restores the ⓪ snapshot before re-running ② — otherwise half-applied Edits compound (`old_string` no longer matches, neighbor-line corruption). Read-only nodes (diagnose, verify, review) skip ⓪.
 
 | Step | Does | Decidable? | Absorbs borrow-point |
 |---|---|---|---|
 | ① Ingest+Validate | Receive the upstream handoff envelope; check that declared artifacts/fields/exit-criteria are present and well-formed. If not → emit `handoff_reject` and route back along the back-edge. | Yes (schema/structural checks) | ② (consumer side) + ③ (consumer side) |
 | ② Work | Execute the closed-loop task (diagnose / reproduce / fix / verify / review / define / plan / implement / test / fan-out persona). | n/a | — |
-| ③ Test | Run a **machine-decidable** node-internal verifier (test suite / lint / typecheck / contract check / build). If FAIL → retry within the node (bounded; cap via `max_inner_turns`), feeding the verifier feedback into the node's own context. This is the article's "every node is still a loop," kept *inside* the node. | Yes | ④ + article §"node is still a loop" |
-| ④ Handoff | Produce a **clean, minimal, typed** context for the downstream node — strip upstream raw data (raw HTML, full debug dumps, half-baked diffs that aren't the artifact), keep only validated artifacts + a structured handoff note. | Yes (handoff schema) | ③ (producer side) + ② (producer side) |
-| ⑤ Review-agent | A **separate-context** review agent reads only the ④ handoff envelope (never the node's working context) and judges product quality against the node's `exit_criteria`: PASS, or NEEDS-FIX with concrete findings (file:line + fix). Its verdict is appended to the handoff as `review_verdict`. | Pinned-rubric (decidable where exit_criteria are deterministic; explicitly-labeled soft otherwise) | replaces human "read the checkpoint & judge quality" — the original pain point |
+| ③ Test | Run a **machine-decidable** node-internal verifier (test suite / lint / typecheck / contract check / build). If FAIL → **restore the ⓪ snapshot** (on mutating nodes) then retry ② within the node (bounded; cap via `max_inner_turns`), feeding the verifier feedback into the node's own context. This is the article's "every node is still a loop," kept *inside* the node. | Yes | ④ + article §"node is still a loop" |
+| ④ Handoff | Produce a **clean, minimal, typed** context for the downstream node — strip upstream raw data (raw HTML, full debug dumps, producer *reasoning*), keep only validated artifact **paths** + a one-line factual claim + `attempt_history` + `budget_remaining`. No producer prose crosses the boundary (see H1). | Yes (handoff schema) | ③ (producer side) + ② (producer side) |
+| ⑤ Review-agent | A **separate-context** review agent that **independently re-derives** its findings by running its own `Read`/`grep`/`Bash` against the `artifacts` paths in the ④ envelope — it does **not** trust producer prose. The envelope carries only paths + `exit_criteria` + a one-line factual claim (no producer reasoning). The reviewer's tool calls are logged to the trace as evidence (the article's "verdict needs evidence external to the system"). Verdict `PASS` or `NEEDS-FIX` + findings (each: file:line + fix), appended to the handoff as `review_verdict` with the `tool_calls` that produced it. | Decidable where the re-derivation yields objective signals (test exit code, grep hit count); pinned-rubric otherwise — but the evidence is the reviewer's own tool calls, never the producer's self-report | replaces human "read the checkpoint & judge quality" — the original pain point; **isolation is enforced by independent tool-use, not by a prompt promise** |
 
-Only after ⑤ does the Summoner checkpoint fire. **What changed vs. today:** the *quality* judgment that used to lean on a human reading the checkpoint block is now done by an independent-context review agent (⑤) — this directly removes the "人疏忽就遗漏" failure mode the user named in §1.3. **What is preserved:** the checkpoint's *flow* decision (continue / recall to \<node\> / skip / done / stop) is still the human's — the review agent judges quality, it does not choose the next node. **Iron law refined:** the node may self-loop internally (③) and may be sent back by ⑤'s NEEDS-FIX (which becomes a `handoff_reject`-equivalent back-edge), but every *inter-node edge advance* still passes a human-gated checkpoint. The graph defines routing; the review agent gates quality; the human gates flow.
+Only after ⑤ does the Summoner checkpoint fire. **What changed vs. today:** the *quality* judgment that used to lean on a human reading the checkpoint block is now done by a separate-context review agent that **re-derives findings with its own tools** (⑤) — this directly removes the "人疏忽就遗漏" failure mode the user named in §1.3. **What is preserved:** the checkpoint's *flow* decision (continue / recall to \<node\> / skip / done / stop) is still the human's — the review agent judges quality, it does not choose the next node.
+
+**Two clarifications forced by the adversarial review (H1, C1, C2):**
+- **Context isolation is enforced by tool-use, not by prompt promise (H1/C1).** The ④ envelope carries artifact **paths** + `exit_criteria` + a one-line factual claim — **no producer reasoning**. A reviewer cannot be "lulled by the producer's self-justifying reasoning" because no producer reasoning crosses the boundary. The reviewer must independently `Read`/`grep` the artifact paths and decide from the artifact itself. Its tool calls are logged to the trace as the verdict's evidence. (The earlier `handoff_note` field carrying producer prose was a spec defect — the C4 fixture has been fixed to carry only a factual claim.)
+- **⑤ back-edge to the *same* node is node-internal (not inter-node); ⑤ back-edge to a *different* node is inter-node (C2).** A same-node ⑤ NEEDS-FIX (e.g. ⑤ on `fix` → back to `fix`) is treated like ③ self-retry: bounded by `max_inner_turns`, no checkpoint — the human should not see a sub-par product. A cross-node ⑤ NEEDS-FIX or ① reject (e.g. `verify` reject → back to `fix`, skipping `reproduce`) *is* an inter-node edge; it is auto-routed by the orchestrator before the checkpoint, but the **next forward checkpoint the human sees will report the round-trip** (the human is not blind to the graph having cycled — they just don't gate every cycle, else the benefit evaporates). Both are globally bounded (H6, §2.5).
+
+**Iron law refined:** the node may self-loop internally (③), may be sent back by ⑤ same-node NEEDS-FIX, and the orchestrator may auto-route bounded cross-node back-edges — but every **forward** inter-node edge advance still passes a human-gated checkpoint, and the whole graph is bounded by a global budget (§2.5). The walker tracks graph routing; the review agent gates quality (with its own evidence); the human gates forward flow.
 
 ### 2.2 The Handoff Envelope (typed, following market best practice)
 
@@ -91,17 +108,21 @@ Concretize "clean context" as a typed envelope (LangGraph handoff / OpenAI Agent
   "to_node": "fix",
   "artifacts": ["docs/reviews/2026-07-27-task-npe.md", "player/task/task.go:142"],
   "exit_criteria": ["root_cause_identified", "fix_approach_stated"],
-  "handoff_note": "TaskModule.handle() 未判空 player.SubTask；离线触发 NPE。Phase 3 建议路由 antia-logic。",
-  "stripped": ["raw_grep_output", "full_stack_trace"],
-  "review_verdict": {"reviewer": "review-agent:diagnose", "verdict": "PASS", "findings": []}
+  "factual_claim": "root cause = nil deref of player.SubTask at task.go:142 on player offline",
+  "attempt_history": [{"node":"diagnose","attempts":1,"verifier":"root_cause_pin:file:line","passed":true}],
+  "budget_remaining": {"graph_turns_left": 18, "token_budget_left": 42000},
+  "stripped": ["raw_grep_output", "full_stack_trace", "producer_reasoning_trace"],
+  "review_verdict": {"reviewer":"review-agent:diagnose","verdict":"PASS","findings":[],"evidence_tool_calls":["Read task.go:142","grep -n player.SubTask player/task/"]}
 }
 ```
 
-- `artifacts` — concrete, validated products the downstream can rely on (paths, file:line, decisions). Never empty.
+- `artifacts` — concrete, validated product **paths** (paths, file:line refs). Never empty. The downstream and the reviewer `Read` these directly — the envelope carries paths, not contents.
 - `exit_criteria` — the machine-checkable list this node claims to have satisfied (see §2.4). The downstream's ① Ingest validates *these*.
-- `handoff_note` — one-paragraph structured summary; the only prose that crosses the boundary.
-- `review_verdict` — filled by ⑤ Review-agent. `PASS` or `NEEDS-FIX` + findings (each finding: file:line + concrete fix). On `NEEDS-FIX` the orchestrator routes a back-edge to `from_node` with the findings as reason (before the checkpoint, so the human at the checkpoint sees a quality-clean product).
-- `stripped` — what was intentionally dropped (auditable: a verifier can confirm these didn't leak into the downstream context).
+- `factual_claim` — **one line, fact only, no producer reasoning.** Replaces the old `handoff_note`. Producer reasoning is banned from crossing the boundary (H1/C1: it would let the reviewer collude with the producer's self-justification). What the downstream needs to *know* (not *reason*) goes here.
+- `attempt_history` — **accumulating cross-node state (H3 fix).** Appends each node's attempts/verifier results as the graph runs. Survives back-edges: when `fix` re-runs after a ⑤ NEEDS-FIX, its ① Ingest sees what it already tried (so it does not reproduce the same failed approach). This is the shared-state channel — it lives *in* the envelope chain, not in a separate store, keeping the "no ambient mutable state" property while not losing history.
+- `budget_remaining` — **global budget (H6 fix).** Decrements across all nodes + back-edges; when it hits 0 the walker halts at a checkpoint. Bounded by `max_graph_turns` + `total_token_budget` in the graph block (§2.5).
+- `review_verdict` — filled by ⑤. `PASS` or `NEEDS-FIX` + findings + `evidence_tool_calls` (the reviewer's own Read/grep — the verdict's external evidence). On `NEEDS-FIX` the walker routes a back-edge to `from_node` with the findings as reason.
+- `stripped` — what was intentionally dropped (auditable). Producer reasoning is always listed here.
 
 This is a **new trace event type** (`handoff`), not a runtime object — Summoner's runtime is markdown protocol + trace + scorers, so the envelope is emitted to the trace and enforced by scorers, not by a Python state machine.
 
@@ -114,8 +135,8 @@ recall to <node>  reason=receiver_rejected_handoff | direction_wrong | verifier_
 ```
 
 - May cross nodes (skip intermediate nodes) — the article's red edge (reject → writer, *skipping* researcher).
-- May be triggered two ways: (a) **human** at a checkpoint ("方向不对，回 diagnose"), already captured by checkpoint content-feedback grammar; (b) **downstream node's ① Ingest** rejecting an upstream handoff — emits `handoff_reject`, and the **orchestrator (command/SKILL layer, the graph-walk flow)** routes back. It is *not* the downstream agent spawning the upstream agent — that would violate `persona-composition.md`'s "personas never call other personas" and Claude Code's "subagents cannot spawn subagents" platform limit. The orchestrator (main session / SKILL.md flow) executes the back-edge, exactly like Alexey's example where the orchestrator (`process.md`) runs step 5 and 7.
-- The reject → upstream-redo flow is a real cycle, not a DAG. This matches the article: production agent graphs are usually cyclic.
+- May be triggered three ways: (a) **human** at a checkpoint ("方向不对，回 diagnose"), already captured by checkpoint content-feedback grammar; (b) **downstream node's ① Ingest** rejecting an upstream handoff — emits `handoff_reject`; (c) **⑤ Review-agent NEEDS-FIX** — emits `review_verdict` with verdict=NEEDS-FIX. In all cases the **walker** (§10, a small Go binary) routes the back-edge, tracking the skip-set and per-finding counters in its walk-state. It is *not* a downstream agent spawning an upstream agent — that would violate `persona-composition.md`'s "personas never call other personas" and Claude Code's "subagents cannot spawn subagents" platform limit. The walker is the orchestrator, exactly like Alexey's example where the orchestrator (`process.md`) runs step 5 and 7.
+- The reject → upstream-redo flow is a real cycle, not a DAG. This matches the article: production agent graphs are usually cyclic. The walker (not the LLM) maintains the cycle state — back-edge-return-path, skip-sets, counters — so the LLM no longer has to improvise control flow (H4 fix).
 
 ### 2.4 Decidable verifier checklist (④) — the article's named bottleneck
 
@@ -134,13 +155,14 @@ Verdict: PASS only if all boxes checked; otherwise FAIL with the failing box as 
 ```markdown
 ## Node: review (fix Phase 5)
 Exit criteria:
-- [ ] code-reviewer persona returned 0 Critical findings (deterministic: parse persona report)
-- [ ] every Critical/Important finding has a file:line + concrete fix (deterministic: report-shape check)
-- [ ] [project-specific] no auth/data/config boundary touched without explicit ack (rubric, pinned)
-Verdict: PASS / NEEDS-FIX (NEEDS-FIX → back-edge to fix with the finding as reason).
+- [ ] code-reviewer persona returned 0 Critical findings — **SOFT (LLM judgment, NOT deterministic):** the parse is mechanical but the *finding count* is an LLM's call. This box is a *signal*, never the sole PASS condition. A 0-Critical report does not prove no defects exist.
+- [ ] DECIDABLE: report shape — every Critical/Important finding has a file:line + concrete fix (grep report for "file:" lines)
+- [ ] DECIDABLE: ⑤ re-derives — reviewer independently re-runs Read/grep on touched files, confirms each finding's file:line is real (reviewer tool_call evidence in trace)
+Verdict: PASS requires DECIDABLE boxes all checked AND ⑤'s own re-derivation found no new defects. SOFT boxes never alone yield PASS. NEEDS-FIX on any DECIDABLE miss or ⑤ finding.
 ```
 
-"把代码写好一点" type criteria are explicitly **banned** from exit-criteria lists — if a criterion can't be checked, it doesn't belong in the verifier; it belongs in a *suggestion* tier, not the verdict. This is the article's `verifier.check()` discipline made literal.
+**The H5 fix (category error):** the earlier spec called "0 Critical findings = deterministic" — but the *finding count* is an LLM judgment, only the *parse* is mechanical. That was a category error letting an LLM's own output masquerade as a decidable verifier (the article's "verdict needs evidence external to the system" was unsatisfied). Now: LLM-judgment criteria are explicitly labeled SOFT and can never alone yield PASS; only criteria whose evidence is the reviewer's *own tool calls* (test exit code, grep hit count, file:line existence) count as DECIDABLE. "把代码写得好一点" type criteria are **banned** from exit-criteria lists entirely; soft criteria must at least be pinned to a structural check. This is the article's `verifier.check()` discipline made literal.
+
 
 ### 2.5 Per-task graph declaration (①) — graph produced at plan time
 
@@ -150,24 +172,33 @@ The graph is declared in the plan artifact (`docs/superpowers/plans/<date>-<topi
 
 ```yaml
 # summoner-task-graph (per-task, plan-time)
+budget:                     # GLOBAL bounds (H6 fix) — walker enforces, halts at checkpoint on 0
+  max_graph_turns: 20      # total node-executions across all nodes + back-edges
+  total_token_budget: 50000
+  max_back_edges_total: 8   # hard cap on cycles regardless of per-finding counters
+  alternating_finding_window: 4   # if N distinct findings rotate within this window → escalate (H6)
 nodes:
   - id: diagnose
     skill: phase.debug        # from summoner.yaml phases.*
     exit_criteria: [root_cause, fix_approach]
     max_inner_turns: 3
+    mutating: false           # read-only → no ⓪ snapshot needed
   - id: reproduce
     skill: phase.test
     exit_criteria: [repro_test_written, repro_test_fails_before_fix]
     max_inner_turns: 2
+    mutating: true            # writes a repro test file → ⓪ snapshot before ② (H2)
   - id: fix
     skill: antia-logic        # routed by diagnose outcome (conditional edge)
-    exit_criteria: [diff_applied, no_compile_error]
+    exit_criteria: [diff_applied, no_compile_error, all_deref_sites_covered]
     max_inner_turns: 4
+    mutating: true            # ⓪ snapshot before ② (H2)
   - id: verify
     skill: phase.verify
     clean_context: true       # verdict node — isolated context
     exit_criteria: [tests_pass, no_new_lint, build_ok]
     max_inner_turns: 1
+    mutating: false
 edges:
   - {from: diagnose, to: reproduce}
   - {from: reproduce, to: fix}
@@ -194,7 +225,7 @@ Key points:
 2. The **node contract** (reference to `references/node-contract.md`) — framework-level, same for all projects.
 3. **Conditional routing rules** available to plans (e.g., `route_by_diagnosis`) — project-level, declared once, reused across plans.
 
-Existing `chain` / `fan_out` / `checkpoints` schema is **preserved unchanged** as the legacy/fallback path. A plan that produces a `summoner-task-graph` block runs the graph-walk flow (SKILL.md walks the per-task graph; no new runtime); a plan that doesn't falls back to today's chain behavior. **No existing `summoner.yaml` breaks.** This is the user-approved 方案 A (incremental compat) and also satisfies the article's "don't use a graph where a loop suffices" — simple per-task graphs can still just be a chain.
+Existing `chain` / `fan_out` / `checkpoints` schema is **preserved unchanged** as the legacy/fallback path. A plan that produces a `summoner-task-graph` block runs the **walker** (§10) which routes nodes and tracks walk-state; a plan that doesn't falls back to today's chain behavior. **No existing `summoner.yaml` breaks.** This is the user-approved 方案 A (incremental compat) and also satisfies the article's "don't use a graph where a loop suffices" — simple per-task graphs can still just be a chain.
 
 ### 2.7 What stays unchanged (invariants)
 
@@ -202,28 +233,32 @@ These Summoner iron laws are **not** relaxed by the graph upgrade:
 1. **Phase 1 is iron law** — the `diagnose` node's `exit_criteria` includes `root_cause`; `conditional_edges` may not bypass `diagnose`; back-edges may not skip *into* skipping diagnose.
 2. **No auto-advance past a checkpoint — the human retains the *flow* decision.** The review agent (⑤) judges *product quality*; the *flow* decision at the checkpoint (continue / recall to \<node\> / skip / done / stop) is still the human's. What is automated: node-internal self-loops (③) and the ⑤ quality gate (NEEDS-FIX auto-routes a back-edge before the human ever sees a sub-par product). Both are bounded — ③ by `max_inner_turns`, ⑤ by a ≤3 same-finding-reject escalation to checkpoint.
 3. **No hardcoded project/domain names** — graph blocks reference `phases.*` skills; routing rules are project-declared in `summoner.yaml`, not framework-baked.
-4. **Agents never call other agents** — back-edges (including ⑤ NEEDS-FIX) are executed by the orchestrator (command/SKILL layer), never by the review agent spawning an upstream node, and never by a node spawning its own reviewer. The review agent only *reads* the ④ envelope and *returns a verdict*; the orchestrator acts on it. (Extends `persona-composition.md`'s "personas never call other personas" to all agents, consistent with Claude Code's "subagents cannot spawn subagents" platform limit.)
+4. **Agents never call other agents** — back-edges (including ⑤ NEEDS-FIX) are executed by the **walker** (§10), never by the review agent spawning an upstream node, and never by a node spawning its own reviewer. The review agent only *reads artifact paths* and *returns a verdict with its own tool-call evidence*; the walker acts on the verdict. (Extends `persona-composition.md`'s "personas never call other personas" to all agents, consistent with Claude Code's "subagents cannot spawn subagents" platform limit.)
 5. **Post-game review is mandatory** — at workflow end, the existing 5-type questionnaire fires. New Type-1 triggers (`handoff_reject` and ⑤ NEEDS-FIX events) feed the reject-redo signal into memory, same as human "方向不对" today.
-6. **Review-agent context isolation is load-bearing** — ⑤ runs in a separate context that sees *only* the ④ handoff envelope, never the producing node's working context. This is the whole point: it cannot be lulled by the producer's reasoning, only by the artifacts — which is exactly the article's "verdict needs evidence external to the system." A ⑤ that read the producer's context would degenerate into "agent stamps its own work."
+6. **Review-agent independence is enforced by tool-use, not by a prompt promise (H1 fix).** ⑤ runs in a separate context, receives an envelope of artifact **paths** + `exit_criteria` + a one-line factual claim (no producer reasoning), and **independently re-derives** its findings by running its own `Read`/`grep`/`Bash` against those paths. Its tool calls are logged as the verdict's evidence. This is the whole point: it cannot be lulled by the producer's self-justifying reasoning (none crosses the boundary), only by the artifacts themselves — which is exactly the article's "verdict needs evidence external to the system." A ⑤ that read producer reasoning, or that returned a verdict with no tool-call evidence, would degenerate into "agent stamps its own work." The `review-isolation-check` scorer verifies the verdict has `evidence_tool_calls` and that the envelope's `stripped` includes `producer_reasoning_trace`.
 
 ## 3. Components Touched
 
 | Component | Change | New? |
 |---|---|---|
-| `references/node-contract.md` | The 5-step contract (incl. ⑤ Review-agent), handoff envelope + `review_verdict`, decidable exit-criteria discipline, review-agent context-isolation rule | **New** |
-| `references/manifest-spec.md` | Add §Node Types + §Conditional Routing Rules; mark `graph` block as plan-time (not manifest-time) | Edit |
+| `references/node-contract.md` | The 5-step contract (incl. ⓪ snapshot, ⑤ Review-agent independent re-derivation), typed handoff envelope + `review_verdict` + `evidence_tool_calls`, decidable/SOFT exit-criteria discipline, idempotent-retry rule, `attempt_history`/`budget_remaining` fields | **New** |
+| `references/manifest-spec.md` | Add §Node Types + §Conditional Routing Rules; mark `graph` block as plan-time (not manifest-time); add `after_node` to checkpoints enum; add graph `oneOf` branch (C3) | Edit |
 | `references/checkpoint-protocol.md` | Extend `[recall]` → `[recall to <node> reason=...]`; reframe checkpoint as *human FLOW gate* (quality already gated by ⑤); add verdict-node `clean_context` entry behavior | Edit |
-| `references/workflow-reference.md` | Add §Per-task Graph section; document graph-walk vs chain fallback; add graph red flags (incl. "review agent read producer's context = fail") | Edit |
-| `references/trace-protocol.md` | Add event types: `handoff`, `handoff_reject`, `node_test_loop`, `node_turn`, `review_verdict` | Edit |
+| `references/workflow-reference.md` | Add §Per-task Graph section; document walker-vs-chain fallback; add graph red flags (incl. "review agent returned verdict with no `evidence_tool_calls` = fail"; "⑤ read producer reasoning = fail") | Edit |
+| `references/trace-protocol.md` | Add event types: `handoff`, `handoff_reject`, `node_test_loop`, `node_turn`, `review_verdict` (with `evidence_tool_calls`) | Edit |
 | `references/scoring-system.md` | Add P0 scorers: `handoff-contract-check`, `verifier-checklist-check`, `review-isolation-check`; wire into regression/stability | Edit |
-| `scorers/deterministic/handoff-contract-check.sh` | Validate every inter-node edge has a `handoff` event with non-empty `artifacts`+`exit_criteria`+`handoff_note`+`review_verdict`; flag missing/stripped-leak | **New** |
-| `scorers/deterministic/verifier-checklist-check.sh` | For each node, confirm all exit_criteria boxes checked PASS or an explicit FAIL-with-reason; ban "判不了" criteria | **New** |
-| `scorers/deterministic/review-isolation-check.sh` | Confirm every ⑤ Review-agent was dispatched as a separate subagent (separate context) and its input set ⊆ the ④ envelope fields; flag any producer-context leak into the review input | **New** |
-| `agents/review-agent.md` | Generic per-node quality reviewer persona: reads only the ④ envelope, judges `exit_criteria`, returns `review_verdict` (PASS / NEEDS-FIX + file:line findings). Never reads producer context; never calls other agents; returns verdict only. | **New** |
-| `skills/summoner/SKILL.md` | Phase Execution: when a plan carries a `summoner-task-graph`, walk it per node (①→②→③→④→⑤), dispatch ⑤ as a subagent with envelope-only input, route ⑤ NEEDS-FIX as a back-edge via orchestrator; else chain fallback | Edit |
+| `scorers/deterministic/handoff-contract-check.sh` | Validate every inter-node edge has a `handoff` event with non-empty `artifacts`(paths) + `exit_criteria` + `factual_claim` + `review_verdict` with `evidence_tool_calls`; flag any producer reasoning in the envelope | **New** |
+| `scorers/deterministic/verifier-checklist-check.sh` | For each node, confirm all DECIDABLE exit_criteria checked PASS (evidence = tool calls); SOFT criteria never alone yield PASS; ban "判不了" criteria | **New** |
+| `scorers/deterministic/review-isolation-check.sh` | Confirm every ⑤ verdict has non-empty `evidence_tool_calls` (the reviewer ran its own tools) AND the envelope's `stripped` includes `producer_reasoning_trace`; flag any verdict lacking independent tool evidence (the rubber-stamp tell) | **New** |
+| `agents/review-agent.md` | Generic per-node reviewer: receives envelope of artifact **paths** + `exit_criteria` + one-line factual claim (NO producer reasoning); **independently runs Read/grep/Bash to re-derive findings**; returns `review_verdict` (PASS / NEEDS-FIX + file:line findings) with `evidence_tool_calls`. Never reads producer context; never calls other agents; returns verdict + evidence only. | **New** |
+| `cmd/summoner-walker/` (Go binary, §10) | Reads `summoner-task-graph` YAML, tracks walk-state (node/attempt, per-finding counter, alternating-finding window, back-edge-return-path stack, global budget), emits `node_turn`/`handoff`/`handoff_reject` events, tells SKILL.md which node to run next. Does NOT execute agents. | **New** |
+| `internal/graph/` (Go pkg) | Graph parse + walk-state machine + budget enforcement (reuses `internal/` layout). Walker is a thin CLI over this. | **New** |
+| `scripts/node-snapshot.sh` | ⓪ working-tree snapshot/restore helper (git stash / patch-snapshot) for mutating-node idempotent retry (H2) | **New** |
+| `skills/summoner/SKILL.md` | Phase Execution: when a plan carries a `summoner-task-graph`, call `summoner-walker next` → run that node (①→②→③→④→⑤, with ⓪ snapshot on mutating nodes) → call `summoner-walker record` with handoff/review_verdict → repeat; else chain fallback | Edit |
 | `commands/fix.md`, `commands/new.md` | Move the routing tables into named `route_*` rules referenced by graph blocks; commands become thinner | Edit |
-| `skills/summoner-writing-plans` (or superpowers:writing-plans integration) | Plan artifact must emit a `summoner-task-graph` block for non-trivial tasks | Edit/Note |
-| `tests/fixtures/traces/` | Add graph-mode fixtures: a clean pass (⑤ PASS), a ⑤ NEEDS-FIX→back-edge case, a ③ FAIL→retry case, a review-isolation-violation case | **New** |
+| `skills/summoner-writing-plans` (or superpowers:writing-plans integration) | Plan artifact must emit a `summoner-task-graph` block (with `budget`, `mutating` flags) for non-trivial tasks | Edit/Note |
+| `summoner.schema.json` / `scripts/validate-manifest.sh` | Add `after_node` to checkpoints enum; add graph `oneOf` branch (C3 fix) | Edit |
+| `tests/fixtures/traces/` | Add graph-mode fixtures: clean pass (⑤ PASS), ⑤ NEEDS-FIX→back-edge, ③ FAIL→retry (with ⓪ restore), review-isolation-violation (no `evidence_tool_calls`), alternating-finding-escalation | **New** |
 
 ## 4. Data Flow (one fix workflow, graph mode)
 
@@ -238,17 +273,20 @@ User: /summoner:fix "SC_ErrInnerLogic nil pointer in task"
   ▼ Graph walk (no new runtime — the SKILL.md markdown-protocol flow
     follows the plan's summoner-task-graph block; trace+scorers enforce it):
   ┌─ diagnose ─────────────────────────────────────────────────┐
+  │ (walker: RUN_NODE id=diagnose mutating=false)               │
   │ ① Ingest: user input + memory patterns (envelope from Phase 0)│
+  │ ⓪ (skip — read-only node)                                    │
   │ ② Work: antia-debug skill → root cause                       │
   │ ③ Test: exit_criteria[root_cause] = "file:line + hypothesis │
-  │        stated" — a *pinned rubric* (soft, explicitly labeled │
-  │        as non-decidable; scorer surfaces it, never masks it)│
-  │        retry if the pin (file:line) is missing (≤3 turns)   │
-  │ ④ Handoff: envelope{artifacts:[report.md, task.go:142],    │
-  │            exit_criteria:[root_cause,fix_approach], note}    │
-  │ ⑤ Review-agent (separate context, envelope only):            │
-  │     PASS → review_verdict stamped                            │
-  │     NEEDS-FIX → back-edge to diagnose (orchestrator routes)  │
+  │        stated" — SOFT (pinned to file:line; scorer surfaces, │
+  │        never masks); retry if pin missing (≤3 turns)        │
+  │ ④ Handoff: envelope{artifacts:[report.md path, task.go:142],│
+  │            exit_criteria, factual_claim, attempt_history,    │
+  │            budget_remaining, stripped:[producer_reasoning]} │
+  │ ⑤ Review-agent (separate context): INDEPENDENTLY re-derives │
+  │     by Read/grep on task.go for all SubTask deref sites;     │
+  │     evidence_tool_calls logged; PASS → review_verdict        │
+  │     NEEDS-FIX → walker routes back-edge to diagnose          │
   └─────────────────────────────────────────────────────────────┘
        │ checkpoint — human FLOW gate (continue/recall to <node>/stop)
        │   note: human sees a ⑤-PASS product; quality already gated
@@ -263,32 +301,42 @@ User: /summoner:fix "SC_ErrInnerLogic nil pointer in task"
        │ checkpoint
        ▼
   ┌─ fix (routed by conditional edge route_by_diagnosis → antia-logic) ┐
-  │ ① Ingest: validate reproduce envelope + review_verdict=PASS ✓  │
-  │ ② Work: apply fix                                              │
-  │ ③ Test: build + compile clean (decidable); retry ≤4 turns     │
-  │ ④ Handoff: envelope{artifacts:[task.go diff], exit_criteria}   │
-  │ ⑤ Review-agent: PASS / NEEDS-FIX → back to fix (w/ findings)  │
-  └────────────────────────────────────────────────────────────────┘
-       │ checkpoint
+  │ (walker: RUN_NODE id=fix mutating=true attempt=1)                  │
+  │ ① Ingest: validate reproduce envelope + review_verdict=PASS ✓     │
+  │ ⓪ Snapshot: git stash / patch-snapshot BEFORE ② (mutating node)   │
+  │ ② Work: apply fix                                                   │
+  │ ③ Test: build + compile clean (DECIDABLE); on FAIL → restore ⓪,   │
+  │        retry ② ≤4 turns                                             │
+  │ ④ Handoff: envelope{artifacts:[task.go path+diff], exit_criteria,  │
+  │            factual_claim, attempt_history (shows prior tries)}      │
+  │ ⑤ Review-agent (separate context): INDEPENDENTLY grep all deref   │
+  │     sites of player.SubTask; finds task.go:187 unchecked →          │
+  │     NEEDS-FIX + finding; walker restores ⓪, routes back-edge to   │
+  │     fix (same-node, attempt=2) — BEFORE checkpoint                 │
+  └─────────────────────────────────────────────────────────────────────┘
+       │ (⑤ PASS after retry) checkpoint — human FLOW gate
        ▼
-  ┌─ verify (clean_context: true — fresh agent, envelope only) ┐
-  │ ① Ingest: validate fix envelope + review_verdict=PASS ✓     │
-  │ ② Work: run test suite                                        │
-  │ ③ Test: tests_pass + no_new_lint + build_ok — all decidable  │
-  │   FAIL → self-retry; exhausted → back-edge to fix             │
-  │ ④ Handoff: envelope{verdict:PASS, test_results}              │
-  │ ⑤ Review-agent: PASS / NEEDS-FIX → back to verify or fix     │
-  └─────────────────────────────────────────────────────────────┘
+  ┌─ verify (clean_context: true — fresh agent, envelope of paths) ┐
+  │ (walker: RUN_NODE id=verify mutating=false)                    │
+  │ ① Ingest: validate fix envelope + review_verdict=PASS ✓        │
+  │ ② Work: run test suite                                          │
+  │ ③ Test: tests_pass + no_new_lint + build_ok — all DECIDABLE     │
+  │   FAIL → self-retry; exhausted → walker back-edge to fix,        │
+  │           skipping reproduce (back_edges[].skip)                 │
+  │ ④ Handoff: envelope{verdict:PASS, test_results, evidence}      │
+  │ ⑤ Review-agent: re-derives by re-running tests + grep — PASS    │
+  └─────────────────────────────────────────────────────────────────┘
        │ checkpoint
        ▼
   ┌─ review (clean_context: true) — the code-reviewer PERSONA node │
-  │ ① Ingest: validate verify envelope + review_verdict=PASS ✓    │
-  │ ② Work: code-reviewer persona (5-axis)                         │
-  │ ③ Test: 0 Critical + every finding has file:line+fix — decidable│
-  │ ④ Handoff: envelope{verdict:PASS, report}                     │
-  │ ⑤ Review-agent (meta-review of the persona's report):         │
-  │     PASS / NEEDS-FIX → back to review node                    │
-  └────────────────────────────────────────────────────────────────┘
+  │ ① Ingest: validate verify envelope + review_verdict=PASS ✓     │
+  │ ② Work: code-reviewer persona (5-axis)                          │
+  │ ③ Test: report shape (DECIDABLE: every finding has file:line+fix)│
+  │         finding-count=0 is SOFT (signal only, not sole PASS)    │
+  │ ④ Handoff: envelope{verdict:PASS, report path}                  │
+  │ ⑤ Review-agent (meta-review): INDEPENDENTLY re-greps touched    │
+  │     files to confirm persona's findings are real; PASS / NEEDS-FIX│
+  └─────────────────────────────────────────────────────────────────┘
        │
        ▼ Post-game review (5-type; handoff_reject + ⑤ NEEDS-FIX → Type 1 memory)
 ```
@@ -325,12 +373,29 @@ For each case: run under **old (chain) Summoner** and **new (graph+⑤) Summoner
 
 ## 7. Out of Scope (YAGNI)
 
-- No new runtime engine (no Python/Go graph executor). The graph is walked by the SKILL.md markdown-protocol flow + trace/scorer enforcement — consistent with how Summoner already works.
+- ~~No new runtime engine~~ — **revised after adversarial review (H4):** a small Go walker IS in scope (§10). What remains out of scope: no Python runtime, no remote orchestration service. The walker is a local binary that reads a YAML graph + emits trace events + tells the SKILL.md flow which node to run next; it is not a full agent runtime.
 - No per-project predeclared workflow graphs in `summoner.yaml` (only node types + routing rules). Per-task graphs live in plan artifacts.
 - No replacing the checkpoint human *flow* gate. The review agent (⑤) offloads *quality* judgment from the human; the *flow* decision (continue/recall/skip/done/stop) stays human. The two are deliberately not merged.
 - No review agent making flow decisions. ⑤ returns PASS/NEEDS-FIX only; it never picks the next node. (If a future need arises for agent-decided flow, that is a separate spec — explicitly out of scope here.)
 - No auto-promotion of memory patterns into skills (existing manual review path stays).
 - No new *domain* personas. One generic `review-agent` persona is added (⑤ is the same role per node, parameterized by the node's `exit_criteria`); the existing 4 domain personas become node-capable as-is.
+
+## 7.5 Adversarial Review Corrections (audit trail)
+
+This spec was adversarially reviewed by an independent-context agent against 8 frontier principles. Six holes + four contradictions were found and fixed in this revision. Audit trail (so implementers and reviewers can verify each fix landed):
+
+| ID | Hole (from review) | Fix in this spec |
+|---|---|---|
+| H1 | ⑤ isolation is a paper promise; scorer only checks self-reported `input_scope` label | §2.1 ⑤ + §2.2: reviewer **independently re-derives** findings with own Read/grep; envelope carries paths only, **no producer reasoning** (`factual_claim` replaces `handoff_note`); `evidence_tool_calls` logged as the verdict's evidence. Isolation enforced by tool-use, not prompt promise. |
+| H2 | No rollback before ③ retry on mutating nodes → compounding half-applied Edits | §2.1 step ⓪: snapshot working tree before mutating ②; restore ⓪ before any ③ retry or ⑤ back-edge to a mutating node. §2.5 `mutating: true` flag per node. |
+| H3 | No accumulating state; envelope-chaining loses failed-attempt history + budget | §2.2: `attempt_history` (accumulates across back-edges so a re-run node sees what it tried) + `budget_remaining` fields in envelope. |
+| H4 | Markdown protocol cannot walk a cyclic graph with skip-sets; "no new runtime" was false | §10: a real Go walker tracks walk-state (back-edge-return-path, skip-sets, per-finding + global counters, budget) and tells SKILL.md which node to run. §7 revised. |
+| H5 | `review` "0 Critical = deterministic" was a category error (finding count is LLM judgment) | §2.4: criteria split DECIDABLE (evidence = reviewer's own tool calls) vs SOFT (explicitly labeled, never alone yields PASS). |
+| H6 | Alternating-findings loop unbounded; no global budget | §2.5 `budget` block: `max_graph_turns` + `total_token_budget` + `max_back_edges_total` + `alternating_finding_window` escalation. |
+| C1 | ⑤ "never reads producer context" vs "judges exit_criteria" (which needs producer output) | §2.1 clarification: boundary = no producer *reasoning*; reviewer reads *artifact paths* (the product), re-derives independently. |
+| C2 | "no auto-advance past checkpoint" vs ⑤ back-edge "before checkpoint" | §2.1 clarification: same-node ⑤ back-edge = node-internal (bounded, no checkpoint); cross-node back-edge = inter-node, auto-routed but next forward checkpoint reports the round-trip. |
+| C3 | `summoner.schema.json` enum has no `after_node`; `oneOf [chain,fan_out]` rejects graph | §10.3: schema updated — add `after_node` to checkpoints enum, add graph `oneOf` branch. |
+| Infra | `node-contract.md`, `review-agent.md`, 3 scorers, trace events all don't exist | §3 marks them **New**; §10.1 lists walker + new files as implementation deliverables (this is a spec, implementation follows). |
 
 ## 8. Risks & Mitigations
 
@@ -342,7 +407,7 @@ For each case: run under **old (chain) Summoner** and **new (graph+⑤) Summoner
 | Back-edge loops forever | `max_inner_turns` per node + 3-reject-same-reason escalation to checkpoint |
 | Scorers give false confidence (rubric "pinned to file:line" still soft) | Iron law preserved: deterministic scorers dominate; rubric only where no deterministic check exists; human calibration stays |
 | "判不了" criteria sneak back into exit_criteria | `verifier-checklist-check.sh` explicitly flags any criterion not matchable to a deterministic scorer or a pinned structural check |
-| ⑤ Review-agent rubber-stamps (agent stamps its own work) | ⑤ runs in **separate context** with envelope-only input (invariant #6); `review-isolation-check` scorer enforces it; C5 adversarially tests it |
+| ⑤ Review-agent rubber-stamps (agent stamps its own work) | ⑤ **independently re-derives** findings with own tool calls against artifact paths; envelope carries no producer reasoning; `review-isolation-check` verifies `evidence_tool_calls` present + `stripped` includes producer reasoning (invariant #6); C5 adversarially tests it |
 | ⑤ Review-agent too strict → loops on nitpicks | ⑤ judges only the node's declared `exit_criteria`, not free-form quality; 3× same-finding escalation (C9) surfaces stuck loops to the human |
 | ⑤ adds latency/tokens per node | ⑤ uses a fast model on a tiny envelope (≤120 tok in, ≤80 tok verdict); for C1 trivial path, ⑤ is the single node's only quality gate (cheaper than full chain) |
 
@@ -353,3 +418,48 @@ The upgrade succeeds when, across cases C1–C9:
 2. **Human intervention ↓:** fewer checkpoint content-feedback + recall events per task in new vs old (measured from trace `checkpoint` + `handoff_reject` + ⑤ NEEDS-FIX events). This is the headline win — ⑤ catches defective handoffs *before* the human would have had to read them.
 3. **Smoother:** post-game Type-4 rating ≥ old; Type-1 (direction correction) frequency ↓ (reject-redo handled inside graph before reaching the human).
 4. **Real-world:** at least one case run against a real bug in this repo (not only synthetic fixtures), demonstrating ⑤ catching a defect the old chain would have let through to the human reviewer (C4 control comparison).
+
+## 10. The Walker (real graph runtime — H4 fix)
+
+The adversarial review established that a markdown protocol (prose instructions to an LLM) cannot deterministically walk a cyclic graph with skip-sets, conditional edges, per-finding counters, and global budgets — the "no new runtime" claim was false. This section adds the real, minimal runtime. **Design principle: the walker does NOT execute agents.** It only (a) reads the per-task graph, (b) tracks walk-state, (c) decides which node runs next, (d) emits trace events, (e) tells the SKILL.md flow what to do. All actual work (② Work, ③ Test, ⑤ Review) stays in agents/skills the SKILL.md invokes. The walker is a router + bookkeeper, not an executor.
+
+### 10.1 Deliverable
+
+`cmd/summoner-walker/` — a small Go binary (consistent with the existing `cmd/summoner-ctx/` and `hooks/hooks/` Go codebase; reuses `internal/`). Single responsibility: given a `summoner-task-graph` YAML + a stream of node-completion signals, emit the next-node directive + trace events.
+
+```
+summoner-walker --graph <plan.md#summoner-task-graph> --trace <trace.jsonl> next
+  → prints: RUN_NODE id=fix skill=antia-logic clean_context=false mutating=true attempt=2
+summoner-walker --graph ... record --node fix --step handoff --envelope <envelope.json>
+  → appends handoff event to trace, updates walk-state, prints next directive
+summoner-walker --graph ... record --node fix --step review_verdict --verdict NEEDS-FIX --findings <findings.json>
+  → computes back-edge target from graph.back_edges + skip-set, prints: RUN_NODE id=fix ... (same-node, attempt 3) OR BACK_EDGE to=fix skip=[verify]
+summoner-walker --graph ... status
+  → prints: node=fix attempt=3/4 graph_turns=11/20 budget=38000/50000 back_edges=3/8
+```
+
+### 10.2 Walk-state (what the walker tracks — the thing the LLM could not)
+
+| State | Purpose | Fixes |
+|---|---|---|
+| current node + attempt # | which node, which retry | ③ bound |
+| per-finding reject counter | 3× same-finding escalation | H6 (partial) |
+| findings-seen-this-window | alternating-finding detection (rotate within window → escalate) | H6 (the unbounded case) |
+| back-edge-return-path stack | "I am returning from verify→fix; on forward, skip reproduce" | H4 (skip-sets) |
+| graph_turns / token / back_edges totals | global budget; halt at 0 | H6 |
+| attempt_history (read from trace) | hand to re-running node so it doesn't repeat a failed approach | H3 |
+| next forward checkpoint pending | report round-trips to the human at the next gate | C2 |
+
+The walker writes walk-state to `$HOME/.claude/plugins/summoner/walk-state/{session_id}.json` (not the trace — the trace is the append-only log; walk-state is the mutable machine state the LLM was wrongly keeping in its head).
+
+### 10.3 Schema + protocol changes (C3 fix)
+
+- `summoner.schema.json` (or the manifest validator `scripts/validate-manifest.sh`): add `after_node` to the `workflows.checkpoints` enum (currently `[after_each, after_merge, none]`); add a `graph` `oneOf` branch alongside `chain`/`fan_out` so per-task graph blocks validate.
+- `references/checkpoint-protocol.md`: extend `RECALL` grammar to `recall to <node> reason=...` (the walker parses this; the LLM no longer improvises the target).
+- `references/trace-protocol.md`: add event types `handoff`, `handoff_reject`, `node_test_loop`, `node_turn`, `review_verdict` (with `evidence_tool_calls`).
+- `skills/summoner/SKILL.md`: Phase Execution calls `summoner-walker next` to get the next node, runs it, calls `summoner-walker record` with the handoff/review_verdict, repeats. Chain fallback stays for graph-less plans.
+
+### 10.4 Why this is "minimal" and not over-engineered
+
+- The walker is ~one Go package, no external deps beyond what `internal/` + `hooks/` already use. It does not call models, does not run tools, does not touch the working tree (that's ⓪ snapshot, a separate shell helper). It is a state machine for graph routing — exactly what LangGraph's `compile()` produces, but as a local binary instead of a Python library.
+- It preserves the article's core: control flow is now in a structure (the walker's state machine), not in the model's ad-hoc judgment. The LLM's job shrinks to "run the node the walker tells me to run" — which is what makes the graph *real* instead of a "loop wearing a graph skin."
