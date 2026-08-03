@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -143,9 +142,6 @@ func rv(env, node, verdict string, fs []Finding) ReviewVerdict {
 		EvidenceToolCalls: []string{"grep -n player.SubTask player/task/task.go"},
 	}
 }
-
-// suppress unused-import warning for strings if not otherwise used
-var _ = strings.TrimSpace
 
 func TestWalker_HaltsOnBudgetExhaustion(t *testing.T) {
 	withTempStateDir(t)
