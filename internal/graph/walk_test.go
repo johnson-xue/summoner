@@ -143,6 +143,30 @@ func rv(env, node, verdict string, fs []Finding) ReviewVerdict {
 	}
 }
 
+func TestRecordReviewVerdict_UnknownNode_NoPanic(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(c4GraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-unknown-node", tr)
+
+	// Record a NEEDS-FIX verdict whose Node is not declared in the graph.
+	// Pre-Fix-1(a) this nil-derefed on node.MaxInnerTurns (NodeByID → nil, false;
+	// the false was discarded). Now it must escalate to Checkpoint, not panic.
+	d, err := w.RecordReviewVerdict(ReviewVerdict{
+		EnvelopeID: "h-999", Node: "nonexistent", Reviewer: "review-agent",
+		Verdict: "NEEDS-FIX",
+	})
+	if err != nil {
+		t.Fatalf("RecordReviewVerdict returned error: %v", err)
+	}
+	if d.Kind != Checkpoint {
+		t.Fatalf("expected Checkpoint for unknown node, got %v (node=%q)", d.Kind, d.Node)
+	}
+}
+
 func TestWalker_HaltsOnBudgetExhaustion(t *testing.T) {
 	withTempStateDir(t)
 	g, _ := ParseGraph([]byte(`

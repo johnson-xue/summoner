@@ -16,10 +16,10 @@ const (
 
 // ExitCriterion is one entry in a node's exit_criteria list (§2.2).
 type ExitCriterion struct {
-	Name        string      `yaml:"name"`
-	VerdictType VerdictType `yaml:"verdict_type"`
-	Pin         string      `yaml:"pin,omitempty"`
-	GrepPattern string      `yaml:"grep_pattern,omitempty"`
+	Name        string      `yaml:"name" json:"name"`
+	VerdictType VerdictType `yaml:"verdict_type" json:"verdict_type"`
+	Pin         string      `yaml:"pin,omitempty" json:"pin,omitempty"`
+	GrepPattern string      `yaml:"grep_pattern,omitempty" json:"grep_pattern,omitempty"`
 }
 
 // Node is one node in the per-task graph.

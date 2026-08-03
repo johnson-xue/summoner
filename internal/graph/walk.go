@@ -133,7 +133,11 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 	backTarget := w.g.backEdgeTarget(v.Node)
 	if backTarget == v.Node || backTarget == "" {
 		// same-node retry (node_review_retry) — bounded by max_inner_turns
-		node, _ := w.g.NodeByID(v.Node)
+		node, ok := w.g.NodeByID(v.Node)
+		if !ok {
+			// unknown/empty node id — cannot route a same-node retry; escalate to human
+			return Directive{Kind: Checkpoint, Node: v.Node}, nil
+		}
 		if w.state.Attempt >= node.MaxInnerTurns {
 			// exhausted → escalate to checkpoint
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil

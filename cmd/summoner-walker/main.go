@@ -27,7 +27,10 @@ func main() {
 	root.AddCommand(recordCmd())
 	root.AddCommand(explainCmd())
 	root.AddCommand(statusCmd())
-	_ = root.Execute()
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func loadGraph() (*graph.Graph, error) {
@@ -104,7 +107,7 @@ func nextCmd() *cobra.Command {
 }
 
 func recordCmd() *cobra.Command {
-	var step, envelopePath, envelopeID, verdict, findingsPath string
+	var step, envelopePath, envelopeID, verdict, findingsPath, nodeID, evidencePath string
 	c := &cobra.Command{
 		Use: "record", Short: "record a handoff or review_verdict",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -131,16 +134,31 @@ func recordCmd() *cobra.Command {
 			case "review_verdict":
 				var fs []graph.Finding
 				if findingsPath != "" {
-					b, _ := ioutil.ReadFile(findingsPath)
-					json.Unmarshal(b, &fs)
+					b, err := ioutil.ReadFile(findingsPath)
+					if err != nil {
+						return err
+					}
+					if err := json.Unmarshal(b, &fs); err != nil {
+						return err
+					}
+				}
+				var ev []string
+				if evidencePath != "" {
+					b, err := ioutil.ReadFile(evidencePath)
+					if err != nil {
+						return err
+					}
+					if err := json.Unmarshal(b, &ev); err != nil {
+						return err
+					}
 				}
 				v := graph.ReviewVerdict{
 					EnvelopeID:        envelopeID,
-					Node:              "",
+					Node:              nodeID,
 					Reviewer:          "review-agent",
 					Verdict:           verdict,
 					Findings:          fs,
-					EvidenceToolCalls: []string{"(recorded by SKILL.md)"},
+					EvidenceToolCalls: ev,
 				}
 				d, err := w.RecordReviewVerdict(v)
 				if err != nil {
@@ -159,6 +177,8 @@ func recordCmd() *cobra.Command {
 	c.Flags().StringVar(&envelopeID, "envelope_id", "", "envelope id (review_verdict)")
 	c.Flags().StringVar(&verdict, "verdict", "", "PASS | NEEDS-FIX (review_verdict)")
 	c.Flags().StringVar(&findingsPath, "findings", "", "path to findings json (review_verdict)")
+	c.Flags().StringVar(&nodeID, "node", "", "node id being reviewed (review_verdict)")
+	c.Flags().StringVar(&evidencePath, "evidence", "", "path to evidence_tool_calls json array (review_verdict)")
 	return c
 }
 
