@@ -51,8 +51,8 @@ A plan artifact may carry a fenced ` ```yaml summoner-task-graph ` block. When p
 
 **Graph red flags (review-isolation invariant — these are fails, not warnings):**
 - ✗ A review-agent verdict with empty `evidence_tool_calls` — a rubber-stamp ⑤. The verdict MUST be grounded in grep hits / file:line citations.
-- ✗ ⑤ reading producer reasoning — the review-agent receives `envelope_id` (paths + exit_criteria ONLY). If the handoff envelope's `stripped` payload still contains `producer_reasoning_trace` or `producer_verdict_self_report`, the handoff is malformed.
-- ✗ A handoff whose `stripped` lacks `producer_reasoning_trace`/`producer_verdict_self_report` — these MUST be stripped from the producer payload before the envelope reaches ⑤ (the whole point of review-isolation is that ⑤ re-derives, never reads the producer's self-report).
+- ✗ ⑤ reading producer reasoning — the review-agent receives `envelope_id` (paths + exit_criteria ONLY). The handoff envelope body must NOT carry `producer_reasoning_trace` or `producer_verdict_self_report`; exposing them to ⑤ defeats review-isolation (⑤ must re-derive, never read the producer's self-report).
+- ✗ A handoff whose `stripped` array omits `producer_reasoning_trace`/`producer_verdict_self_report` — the `stripped` field is the list of fields that WERE removed, and it MUST list these two (recording that they were actually stripped before the envelope reached ⑤).
 
 **Writing-plans contract:** when a plan includes a graph block, the `budget` (max_graph_turns / total_token_budget / max_back_edges_total), `nodes` (each with `id`, `label`, `skill`, `exit_criteria`, `max_inner_turns`), and `edges` must all be present. The walker parses this block via the fenced-yaml extractor (M4) — a malformed fence means the walker falls back to chain mode, silently. Validate the fence before committing the plan.
 
@@ -69,7 +69,7 @@ A plan artifact may carry a fenced ` ```yaml summoner-task-graph ` block. When p
 - ✗ Personas calling other personas instead of reporting
 - ✗ Graph-mode: review-agent verdict with empty `evidence_tool_calls` (rubber-stamp ⑤)
 - ✗ Graph-mode: review-agent reading producer reasoning (review-isolation break)
-- ✗ Graph-mode: handoff envelope whose `stripped` still carries `producer_reasoning_trace`/`producer_verdict_self_report`
+- ✗ Graph-mode: handoff envelope whose `stripped` array omits `producer_reasoning_trace`/`producer_verdict_self_report` (review-isolation invariant #6 — see §Per-Task Graph red flags above)
 
 ## Verification Checklist
 
