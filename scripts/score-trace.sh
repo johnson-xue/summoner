@@ -94,6 +94,39 @@ if [[ "$PRIORITY" == "P0" ]]; then
     fi
   done
 
+  # P0 Contract Gates — enforcement scorers. A FAIL (exit 1) is a hard fail
+  # regardless of points (these are contract invariants, not point scorers;
+  # SKIP/exit 2 is non-fatal — chain-mode traces legitimately have no handoffs).
+  CONTRACT_SCORERS=(
+    "handoff-contract-check"
+    "verifier-checklist-check"
+    "review-isolation-check"
+  )
+  for scorer in "${CONTRACT_SCORERS[@]}"; do
+    scorer_path="$SCORERS_DIR/deterministic/${scorer}.sh"
+    if [[ -f "$scorer_path" ]]; then
+      bash "$scorer_path" "$TRACE_FILE" > "$TEMP_OUTPUT" 2>&1
+      gate_exit=$?
+      if [[ $gate_exit -eq 0 ]]; then
+        echo "🔒 $scorer: GATE PASS"
+      elif [[ $gate_exit -eq 2 ]]; then
+        echo "⊘ $scorer: GATE SKIP (non-fatal)"
+      else
+        echo "🚫 $scorer: GATE FAIL — contract violated"
+        cat "$TEMP_OUTPUT"
+        PASS_STATUS="false"
+        CONTRACT_FAILED=1
+      fi
+    fi
+  done
+  if [[ "${CONTRACT_FAILED:-0}" == "1" ]]; then
+    echo ""
+    echo "🚫 Contract gate failed — overall result FAIL regardless of points"
+    TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    echo "{\"type\":\"scoring_result\",\"timestamp\":\"$TIMESTAMP\",\"priority\":\"$PRIORITY\",\"total_score\":$TOTAL_SCORE,\"max_score\":$MAX_SCORE,\"pass\":false,\"details\":[]}" >> "$TRACE_FILE"
+    exit 1
+  fi
+
   # P0 Rubric Scorers (TODO: implement LLM-as-Judge)
   # Currently skipped - will be implemented in follow-up PR
   echo ""
