@@ -43,6 +43,19 @@ Phases are offered as skippable (not auto-skipped — user confirms):
 | "User usually says yes, I'll auto-continue" | The ONE time they want to stop is the ONE time it matters. |
 | "Manifest says 'none' for security, just warn" | Ask: "No security phase. Proceed without audit?" |
 
+## Per-Task Graph
+
+A plan artifact may carry a fenced ` ```yaml summoner-task-graph ` block. When present, SKILL.md drives the graph walker (`summoner-walker next` → directive → `record` → route) instead of the linear phase chain. When absent, the plain chain runs (backward compat, spec §2.6).
+
+**Emission rule (M12):** the plan emits a graph block iff the task has ≥3 nodes OR any mutating node carries a back-edge. A ≤2-node task with no back-edge is a plain chain — do not wrap it in a graph (the walker's bookkeeping overhead buys nothing there).
+
+**Graph red flags (review-isolation invariant — these are fails, not warnings):**
+- ✗ A review-agent verdict with empty `evidence_tool_calls` — a rubber-stamp ⑤. The verdict MUST be grounded in grep hits / file:line citations.
+- ✗ ⑤ reading producer reasoning — the review-agent receives `envelope_id` (paths + exit_criteria ONLY). If the handoff envelope's `stripped` payload still contains `producer_reasoning_trace` or `producer_verdict_self_report`, the handoff is malformed.
+- ✗ A handoff whose `stripped` lacks `producer_reasoning_trace`/`producer_verdict_self_report` — these MUST be stripped from the producer payload before the envelope reaches ⑤ (the whole point of review-isolation is that ⑤ re-derives, never reads the producer's self-report).
+
+**Writing-plans contract:** when a plan includes a graph block, the `budget` (max_graph_turns / total_token_budget / max_back_edges_total), `nodes` (each with `id`, `label`, `skill`, `exit_criteria`, `max_inner_turns`), and `edges` must all be present. The walker parses this block via the fenced-yaml extractor (M4) — a malformed fence means the walker falls back to chain mode, silently. Validate the fence before committing the plan.
+
 ## Red Flags
 
 - ✗ Advancing past checkpoint without user confirmation
@@ -54,6 +67,9 @@ Phases are offered as skippable (not auto-skipped — user confirms):
 - ✗ Hardcoding project names or domain skill names in framework output
 - ✗ Skipping post-game review after workflow completion
 - ✗ Personas calling other personas instead of reporting
+- ✗ Graph-mode: review-agent verdict with empty `evidence_tool_calls` (rubber-stamp ⑤)
+- ✗ Graph-mode: review-agent reading producer reasoning (review-isolation break)
+- ✗ Graph-mode: handoff envelope whose `stripped` still carries `producer_reasoning_trace`/`producer_verdict_self_report`
 
 ## Verification Checklist
 

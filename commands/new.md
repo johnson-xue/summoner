@@ -6,7 +6,7 @@ end_action: post_game_review
 
 # /summoner:new
 
-Invoke define → plan → implement → test → review phases from `summoner.yaml`. Phase 3 routes to subsystem / rpc / gmt / migrate skill based on function type.
+Invoke define → plan → implement → test → review phases from `summoner.yaml`. Phase 3 routes to a function-type skill (subsystem / rpc / gmt / migrate) via the project's `route_by_function_type` routing rule.
 
 ## Workflow
 
@@ -25,12 +25,13 @@ Phase 5 ──→ 审查       (phase.review)
 2. 用户回复若是内容反馈（方案不对/漏了边界/方向有问题），先处理反馈再重新输出 CHECKPOINT——勿当 CONTINUE 推进。
 3. Phase 1-2 不可跳过（没 spec 不动工，没 plan 不写码）。
 4. **Phase 3 按功能类型路由**（四选一）：
-   - 全新子系统（玩家特性/玩法系统，需注册枚举+建目录+SubSystem 接口）→ `phase.subsystem` = antia-subsystem
-   - 既有子系统加对外接口（proto + handler + 业务方法联动）→ `phase.rpc` = antia-rpc
-   - GMT 后台 HTTP 接口（直接操作 DB / 踢玩家下线）→ `phase.gmt` = antia-gmt
-   - 新增 DB 表 / 改 XDB XML schema / 迁移（数据层先行，无对外接口）→ `phase.migrate` = antia-migrate
-   - 多类型混合（如新子系统含新表）→ 取主类型，次要类型作为该 skill 内的子步（如 antia-subsystem 内可选调 antia-migrate）
+   - 全新子系统（玩家特性/玩法系统，需注册枚举+建目录+SubSystem 接口）→ `phase.subsystem`
+   - 既有子系统加对外接口（proto + handler + 业务方法联动）→ `phase.rpc`
+   - GMT 后台 HTTP 接口（直接操作 DB / 踢玩家下线）→ `phase.gmt`
+   - 新增 DB 表 / 改 XDB XML schema / 迁移（数据层先行，无对外接口）→ `phase.migrate`
+   - 多类型混合（如新子系统含新表）→ 取主类型，次要类型作为该 skill 内的子步
    - 判定不清 → 停下问用户，不在轨道上硬猜
+   - 路由映射声明在项目 `summoner.yaml` 的 `routing_rules.route_by_function_type`（`input_field` + `map`，纯表查找，§2.6.1）。本命令不硬编码任何项目 skill 名。
 5. 如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
 6. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
 
