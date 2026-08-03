@@ -24,8 +24,10 @@ type Phase struct {
 }
 
 type Workflow struct {
-	Chain       []string `yaml:"chain"`
-	Checkpoints string   `yaml:"checkpoints"`
+	Chain       []string    `yaml:"chain"`
+	FanOut      interface{} `yaml:"fan_out,omitempty"`
+	Graph       interface{} `yaml:"graph,omitempty"`
+	Checkpoints string      `yaml:"checkpoints"`
 }
 
 type Option func(*config)
@@ -188,14 +190,14 @@ func validateWorkflows(m *Manifest, root *yaml.Node) []ValidationError {
 	// 定位 root 里 workflows 段的 chain SequenceNode 以取行号/列号
 	wfNodes := locateWorkflowChains(root) // map[workflowName] -> chain SequenceNode
 	for wfName, wf := range m.Workflows {
-		if len(wf.Chain) == 0 {
+		if len(wf.Chain) == 0 && wf.Graph == nil && wf.FanOut == nil {
 			errs = append(errs, ValidationError{Code: "empty_chain", Fields: map[string]string{"workflow": wfName}})
 			continue
 		}
 		if wf.Checkpoints == "" {
 			errs = append(errs, ValidationError{Code: "missing_field", Fields: map[string]string{"field": "checkpoints", "workflow": wfName}})
-		} else if wf.Checkpoints != "after_each" && wf.Checkpoints != "manual" && wf.Checkpoints != "none" {
-			errs = append(errs, ValidationError{Code: "invalid_enum", Fields: map[string]string{"workflow": wfName, "field": "checkpoints", "actual": wf.Checkpoints, "expected": "after_each|manual|none"}})
+		} else if wf.Checkpoints != "after_each" && wf.Checkpoints != "after_merge" && wf.Checkpoints != "after_node" && wf.Checkpoints != "none" {
+			errs = append(errs, ValidationError{Code: "invalid_enum", Fields: map[string]string{"workflow": wfName, "field": "checkpoints", "actual": wf.Checkpoints, "expected": "after_each|after_merge|after_node|none"}})
 		}
 		chainNode := wfNodes[wfName]
 		for idx, p := range wf.Chain {
