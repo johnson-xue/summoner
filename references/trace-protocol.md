@@ -61,6 +61,57 @@ Every line is a JSON object with a `type` field:
 | `post_game_review` | Review completed | `review_type`, `answers` |
 | `error` | Any error occurs | `phase`, `message`, `recoverable` |
 
+## Graph-Mode Event Types
+
+These events appear when a plan carries a `summoner-task-graph` block (§node-contract). They are emitted by the walker (`cmd/summoner-walker`) and SKILL.md; scorers join on `envelope_id`.
+
+### `handoff`
+Typed envelope produced by a node's ④ step. Fields:
+- `envelope_id` (string, required) — e.g. `h-001`. Correlation key shared with the `review_verdict` that reviews it (§2.2.1). `h-000` is reserved for the bootstrap envelope.
+- `from_node` (string, required) — producer node id; `phase0` for the bootstrap.
+- `to_node` (string, required) — consumer node id.
+- `label` (string, required) — human-facing verb from the graph node (M9).
+- `artifacts` (array of strings, required, non-empty) — validated product paths / file:line refs.
+- `exit_criteria` (array, required) — each entry `{name, verdict_type: "DECIDABLE"|"SOFT", pin?, grep_pattern?}`. SOFT SHOULD carry `grep_pattern`.
+- `factual_claim` (string, required) — one line, fact only, NO producer reasoning.
+- `attempt_history` (array, required) — each entry `{node, attempts, verifier}` only; MUST NOT carry `passed`.
+- `budget_remaining` (object, required) — `{graph_turns_left, token_budget_left}`.
+- `stripped` (array, required) — intentionally-dropped fields; MUST include `producer_reasoning_trace` AND `producer_verdict_self_report`.
+
+Allow-list for `handoff` events: only the fields above. A `handoff` carrying `producer_reasoning_trace`, `handoff_note`, or `passed` = producer-reasoning leak (scorer FAIL). (`passed` is legitimate on `node_test_loop`, NOT on `handoff` — the filter is per-event-type.)
+
+### `review_verdict` (standalone event, §2.2.1)
+Emitted by the ⑤ Review-agent. Fields:
+- `envelope_id` (string, required) — joins to the `handoff` it reviews.
+- `node` (string, required) — the node whose ④ was reviewed.
+- `reviewer` (string, required) — e.g. `review-agent:fix`.
+- `verdict` (string, required) — `PASS` | `NEEDS-FIX`.
+- `findings` (array) — on NEEDS-FIX: each `{file, line?, issue, fix}`.
+- `evidence_tool_calls` (array of strings, required, NON-EMPTY) — the reviewer's OWN Read/grep/Bash invocations (invariant #6; empty = rubber-stamp = FAIL).
+
+### `node_test_loop`
+Node-internal ③ verifier result. Fields:
+- `node` (string, required), `label` (string, required).
+- `criterion` (string, required) — the exit-criteria name tested.
+- `passed` (boolean, required) — legitimate HERE (not on `handoff`).
+- `exhausted` (boolean) — `true` when `max_inner_turns` hit (§5).
+
+### `node_turn`
+Walker directive-to-trace echo. Fields:
+- `node` (string, required), `label` (string, required), `attempt` (int, required).
+- `step` (string, required) — e.g. `review-scheduled`.
+- `walker_directive` (string, required) — the raw directive, e.g. `RUN_NODE id=fix attempt=2 snapshot=before_②` or `RUN_REVIEW envelope_id=h-002`.
+
+### `node_review_retry` (same-node ⑤ NEEDS-FIX, §2.1 clarification)
+Emitted by the walker when ⑤ returns NEEDS-FIX and `from_node == to_node` (node-internal retry). Fields:
+- `envelope_id` (string, required), `from_node` (string, required), `reason` (string, required), `findings` (array), `executor` (string, required, `"walker"`).
+- Does NOT increment the global back-edge counter (bounded by `max_inner_turns`).
+
+### `handoff_reject` (cross-node reject)
+Emitted by the walker on a cross-node ⑤ NEEDS-FIX or ① Ingest reject. Fields:
+- `envelope_id` (string, required), `from_node` (string, required), `reason` (string, required), `findings` (array), `executor` (string, required, `"walker"`).
+- Increments the global `max_back_edges_total` counter; 3× same-finding escalates to checkpoint.
+
 ## Implementation
 
 ### In SKILL.md
