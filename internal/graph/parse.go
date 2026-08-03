@@ -2,8 +2,6 @@ package graph
 
 import (
 	"fmt"
-	"io/ioutil"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -58,22 +56,22 @@ type BackEdge struct {
 
 // Budget is the global bound (§2.5).
 type Budget struct {
-	MaxGraphTurns          int `yaml:"max_graph_turns"`
-	TotalTokenBudget       int `yaml:"total_token_budget"`
-	MaxBackEdgesTotal      int `yaml:"max_back_edges_total"`
+	MaxGraphTurns         int `yaml:"max_graph_turns"`
+	TotalTokenBudget      int `yaml:"total_token_budget"`
+	MaxBackEdgesTotal     int `yaml:"max_back_edges_total"`
 	AlternatingFindingWin int `yaml:"alternating_finding_window"`
-	Phase0CostTurns        int `yaml:"phase0_cost_turns,omitempty"`
-	Phase0CostTokens       int `yaml:"phase0_cost_tokens,omitempty"`
+	Phase0CostTurns       int `yaml:"phase0_cost_turns,omitempty"`
+	Phase0CostTokens      int `yaml:"phase0_cost_tokens,omitempty"`
 }
 
 // Graph is the parsed per-task graph.
 type Graph struct {
-	Budget           Budget           `yaml:"budget"`
-	Nodes            []Node           `yaml:"nodes"`
-	Edges            []Edge           `yaml:"edges"`
+	Budget           Budget            `yaml:"budget"`
+	Nodes            []Node            `yaml:"nodes"`
+	Edges            []Edge            `yaml:"edges"`
 	ConditionalEdges []ConditionalEdge `yaml:"conditional_edges"`
-	BackEdges        []BackEdge       `yaml:"back_edges"`
-	Checkpoints      string           `yaml:"checkpoints"`
+	BackEdges        []BackEdge        `yaml:"back_edges"`
+	Checkpoints      string            `yaml:"checkpoints"`
 }
 
 // ParseGraph decodes a summoner-task-graph YAML block and validates it.
@@ -131,12 +129,6 @@ func (g *Graph) validate() error {
 	return nil
 }
 
-// io_ReadAll is a test-helper alias for io/ioutil.ReadAll of a reader.
-// (Kept in parse.go so the test file can use it without re-importing.)
-func io_ReadAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
-	return ioutil.ReadAll(r)
-}
-
 // NodeByID looks up a node by id.
 func (g *Graph) NodeByID(id string) (*Node, bool) {
 	for i := range g.Nodes {
@@ -164,6 +156,3 @@ func (g *Graph) firstNode() string {
 	}
 	return ""
 }
-
-// suppress unused-import warnings if strings is only used elsewhere later.
-var _ = strings.TrimSpace
