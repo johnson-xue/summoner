@@ -196,3 +196,155 @@ edges: []
 		t.Fatalf("expected Halt after graph_turns exhausted, got %+v", d)
 	}
 }
+
+// alternatingGraphYAML is a single self-looping node with the window enabled.
+const alternatingGraphYAML = `
+budget:
+  max_graph_turns: 20
+  total_token_budget: 50000
+  max_back_edges_total: 8
+  alternating_finding_window: 4
+nodes:
+  - id: fix
+    label: "补 nil 判空"
+    skill: antia-logic
+    exit_criteria:
+      - {name: diff_applied, verdict_type: DECIDABLE}
+    max_inner_turns: 5
+    mutating: true
+edges: []
+back_edges:
+  - {from: fix, to: fix, reason: review_needs_fix}
+`
+
+// TestRecordReviewVerdict_AlternatingWindow_Escalation feeds A,B,A,B on the
+// same node (max_inner_turns:5 so it doesn't fire first). The 4th finding
+// completes the rotate → Checkpoint BEFORE a node_review_retry is emitted for
+// that final verdict (mirrors the 3× rule's early-return-before-append).
+func TestRecordReviewVerdict_AlternatingWindow_Escalation(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(alternatingGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-alt-esc", tr)
+	// bootstrap so CurrentNode/Attempt are set + a handoff to schedule ⑤
+	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
+		Label: "补 nil 判空", Artifacts: []string{"a.go"},
+		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
+		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
+	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
+	fB := []Finding{{File: "b.go", Line: 2, Issue: "race on write"}}
+	// A → NodeRetry (window: [A], not full)
+	r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fA))
+	if r.Kind != NodeRetry {
+		t.Fatalf("1st finding A: expected NodeRetry, got %v", r.Kind)
+	}
+	// B → NodeRetry (window: [A,B], not full)
+	r, _ = w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fB))
+	if r.Kind != NodeRetry {
+		t.Fatalf("2nd finding B: expected NodeRetry, got %v", r.Kind)
+	}
+	// A → NodeRetry (window: [A,B,A], not full)
+	r, _ = w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fA))
+	if r.Kind != NodeRetry {
+		t.Fatalf("3rd finding A: expected NodeRetry, got %v", r.Kind)
+	}
+	// B → window full [A,B,A,B], A and B both reappear non-contiguously → escalate
+	r, _ = w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fB))
+	if r.Kind != Checkpoint {
+		t.Fatalf("4th finding B: expected Checkpoint (rotate escalation), got %v", r.Kind)
+	}
+	// the escalation early-returns BEFORE emitting node_review_retry for the 4th:
+	// exactly 3 retry events (A,B,A), not 4.
+	retryCount := 0
+	for _, e := range tr.events {
+		if e["type"] == "node_review_retry" && e["envelope_id"] == "h-001" {
+			retryCount++
+		}
+	}
+	if retryCount != 3 {
+		t.Fatalf("expected 3 node_review_retry events (A,B,A), got %d — the 4th must escalate not retry", retryCount)
+	}
+	// window recorded the findings
+	if win := w.state.Windows["fix"]; len(win) != 4 {
+		t.Fatalf("expected Windows[fix] len 4, got %d (%v)", len(win), win)
+	}
+}
+
+// TestRecordReviewVerdict_AlternatingWindow_SingleFindingNoEscalate feeds
+// A,A,A on a node with max_inner_turns:5 (so max_inner_turns doesn't fire)
+// and alternating_finding_window:4. A single repeating finding is NOT a
+// rotation → the window must NOT escalate (returns NodeRetry). The 3× rule
+// (cross-node) and max_inner_turns bound single-finding loops, not the window.
+func TestRecordReviewVerdict_AlternatingWindow_SingleFindingNoEscalate(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(alternatingGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-alt-single", tr)
+	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
+		Label: "补 nil 判空", Artifacts: []string{"a.go"},
+		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
+		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
+	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
+	for i := 0; i < 3; i++ {
+		r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fA))
+		if r.Kind != NodeRetry {
+			t.Fatalf("finding A iteration %d: expected NodeRetry (no window escalate for single finding), got %v", i, r.Kind)
+		}
+	}
+	// window has [A,A,A] but only 1 distinct finding → no escalate
+	if win := w.state.Windows["fix"]; len(win) != 3 {
+		t.Fatalf("expected Windows[fix] len 3, got %d", len(win))
+	}
+}
+
+// TestRecordReviewVerdict_AlternatingWindow_Disabled_WhenZero feeds A,B,A,B
+// with alternating_finding_window:0 (disabled). Asserts NO window escalation
+// (returns NodeRetry up to max_inner_turns) — zero means disabled.
+func TestRecordReviewVerdict_AlternatingWindow_Disabled_WhenZero(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(`
+budget:
+  max_graph_turns: 20
+  total_token_budget: 50000
+  max_back_edges_total: 8
+  alternating_finding_window: 0
+nodes:
+  - id: fix
+    label: "补 nil 判空"
+    skill: antia-logic
+    exit_criteria:
+      - {name: diff_applied, verdict_type: DECIDABLE}
+    max_inner_turns: 5
+    mutating: true
+edges: []
+back_edges:
+  - {from: fix, to: fix, reason: review_needs_fix}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-alt-disabled", tr)
+	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
+		Label: "补 nil 判空", Artifacts: []string{"a.go"},
+		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
+		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
+	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
+	fB := []Finding{{File: "b.go", Line: 2, Issue: "race on write"}}
+	for i, f := range [][]Finding{fA, fB, fA, fB} {
+		r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", f))
+		if r.Kind != NodeRetry {
+			t.Fatalf("finding %d: expected NodeRetry (window disabled when 0), got %v", i, r.Kind)
+		}
+	}
+	// window map untouched (disabled)
+	if _, ok := w.state.Windows["fix"]; ok {
+		t.Fatal("expected Windows[fix] absent (window disabled), got entry")
+	}
+}

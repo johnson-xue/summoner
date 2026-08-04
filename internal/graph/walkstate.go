@@ -34,16 +34,16 @@ type Directive struct {
 
 // WalkState is the mutable machine state (§10.2). Lives in a file, not the LLM head.
 type WalkState struct {
-	SessionID     string         `json:"session_id"`
-	CurrentNode   string         `json:"current_node"`
-	Attempt       int            `json:"attempt"`
-	GraphTurns    int            `json:"graph_turns"`
-	TokensUsed    int            `json:"tokens_used"`
-	BackEdges     int            `json:"back_edges"`               // cross-node only
-	FindingsSeen  map[string]int `json:"findings_seen"`            // finding-text → count (3× escalation)
-	Window        []string       `json:"window"`                   // last N finding texts (alternating)
-	PendingReview string         `json:"pending_review,omitempty"` // envelope_id awaiting review_verdict
-	RouteMap      []routeEntry   `json:"route_map"`                // for explain render
+	SessionID     string              `json:"session_id"`
+	CurrentNode   string              `json:"current_node"`
+	Attempt       int                 `json:"attempt"`
+	GraphTurns    int                 `json:"graph_turns"`
+	TokensUsed    int                 `json:"tokens_used"`
+	BackEdges     int                 `json:"back_edges"`               // cross-node only
+	FindingsSeen  map[string]int      `json:"findings_seen"`            // finding-text → count (3× escalation)
+	Windows       map[string][]string `json:"windows"`                  // per-node last N finding texts (alternating)
+	PendingReview string              `json:"pending_review,omitempty"` // envelope_id awaiting review_verdict
+	RouteMap      []routeEntry        `json:"route_map"`                // for explain render
 }
 
 type routeEntry struct {
@@ -79,7 +79,7 @@ func LoadState(sessionID string) (*WalkState, error) {
 	b, err := ioutil.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &WalkState{SessionID: sessionID, FindingsSeen: map[string]int{}}, nil
+			return &WalkState{SessionID: sessionID, FindingsSeen: map[string]int{}, Windows: map[string][]string{}}, nil
 		}
 		return nil, err
 	}
@@ -89,6 +89,9 @@ func LoadState(sessionID string) (*WalkState, error) {
 	}
 	if s.FindingsSeen == nil {
 		s.FindingsSeen = map[string]int{}
+	}
+	if s.Windows == nil {
+		s.Windows = map[string][]string{}
 	}
 	return &s, nil
 }

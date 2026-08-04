@@ -142,6 +142,23 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 			// exhausted → escalate to checkpoint
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil
 		}
+		// alternating_finding_window (M7): same-node ⑤ keeps raising different
+		// findings → rotate escalation. N≤0 disables. Check fires AFTER
+		// max_inner_turns (precedence §2.7 #2) and BEFORE node_review_retry
+		// (mirrors the 3× rule's early-return-before-append at line ~160).
+		if w.g.Budget.AlternatingFindingWin > 0 {
+			w.state.Windows[v.Node] = append(w.state.Windows[v.Node], findingText)
+			win := w.state.Windows[v.Node]
+			n := w.g.Budget.AlternatingFindingWin
+			if len(win) > n {
+				win = win[len(win)-n:]
+				w.state.Windows[v.Node] = win
+			}
+			if alternatingWindowEscalates(win, n) {
+				w.state.Save()
+				return Directive{Kind: Checkpoint, Node: v.Node}, nil
+			}
+		}
 		w.trace.Append(map[string]interface{}{
 			"type": "node_review_retry", "envelope_id": v.EnvelopeID,
 			"from_node": v.Node, "reason": "review_needs_fix",
@@ -219,6 +236,40 @@ func findingStrings(fs []Finding) []string {
 		out[i] = fmt.Sprintf("%s:%d %s", f.File, f.Line, f.Issue)
 	}
 	return out
+}
+
+// alternatingWindowEscalates reports whether the same-node ⑤ finding window
+// shows a "rotate" (M7): the window is full (len==n) AND ≥2 distinct
+// finding-texts AND at least one of them reappears non-contiguously (a
+// finding at indices i<j with a different finding at some k, i<k<j).
+// A single repeating finding (contiguous-equivalent) does NOT escalate here
+// — that case is bounded by max_inner_turns (same-node) and the 3× rule
+// (cross-node). The ≥2-distinct + non-contiguous condition IS the rotation.
+func alternatingWindowEscalates(win []string, n int) bool {
+	if n <= 0 || len(win) < n {
+		return false
+	}
+	distinct := map[string]bool{}
+	nonContiguous := map[string]bool{}
+	for i := 0; i < len(win); i++ {
+		t := win[i]
+		distinct[t] = true
+		// find a later occurrence j>i with a different finding between them
+		for j := i + 1; j < len(win); j++ {
+			if win[j] != t {
+				continue
+			}
+			// j is a repeat of t; is there a different finding in (i, j)?
+			for k := i + 1; k < j; k++ {
+				if win[k] != t {
+					nonContiguous[t] = true
+					break
+				}
+			}
+			break
+		}
+	}
+	return len(distinct) >= 2 && len(nonContiguous) >= 1
 }
 
 func toMap(v interface{}) map[string]interface{} {
