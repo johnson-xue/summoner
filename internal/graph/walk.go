@@ -239,12 +239,16 @@ func findingStrings(fs []Finding) []string {
 }
 
 // alternatingWindowEscalates reports whether the same-node ⑤ finding window
-// shows a "rotate" (M7): the window is full (len==n) AND ≥2 distinct
-// finding-texts AND at least one of them reappears non-contiguously (a
-// finding at indices i<j with a different finding at some k, i<k<j).
-// A single repeating finding (contiguous-equivalent) does NOT escalate here
-// — that case is bounded by max_inner_turns (same-node) and the 3× rule
-// (cross-node). The ≥2-distinct + non-contiguous condition IS the rotation.
+// shows a "rotate" (M7, §5): the window is full (len==n) AND ≥2 distinct
+// finding-texts AND each of those ≥2 findings reappears non-contiguously
+// (a finding at indices i<j with a different finding at some k, i<k<j).
+// "Each" is the operative word from the spec — merely having ≥1 reappearing
+// finding (e.g. A,B,A,C where only A reappears) is NOT a rotation: the
+// reviewer is fixating on one finding, not cycling through several, so the
+// 3× same-finding rule / max_inner_turns are the right backstop, not this
+// window. A single repeating finding (contiguous-equivalent) also does NOT
+// escalate here. The ≥2-distinct + each-non-contiguous condition IS the
+// cross-finding rotation that this rule (and only this rule) bounds.
 func alternatingWindowEscalates(win []string, n int) bool {
 	if n <= 0 || len(win) < n {
 		return false
@@ -269,7 +273,11 @@ func alternatingWindowEscalates(win []string, n int) bool {
 			break
 		}
 	}
-	return len(distinct) >= 2 && len(nonContiguous) >= 1
+	// Spec (§5/M7): "≥2 distinct findings each reappear" — require ≥2
+	// distinct findings that each reappear non-contiguously, not just ≥1.
+	// len(nonContiguous)>=2 implies len(distinct)>=2 (nonContiguous ⊆
+	// distinct), but both terms are kept for spec-faithful readability.
+	return len(distinct) >= 2 && len(nonContiguous) >= 2
 }
 
 func toMap(v interface{}) map[string]interface{} {

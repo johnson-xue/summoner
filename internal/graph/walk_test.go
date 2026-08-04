@@ -303,6 +303,43 @@ func TestRecordReviewVerdict_AlternatingWindow_SingleFindingNoEscalate(t *testin
 	}
 }
 
+// TestRecordReviewVerdict_AlternatingWindow_SingleReappearanceNoEscalate
+// feeds A,B,A,C on the same node (max_inner_turns:5 so it doesn't fire
+// first, window n=4). Per spec §5/M7 the rotate rule escalates only when
+// "≥2 distinct findings each reappear" non-contiguously. Here only A
+// reappears (B and C appear once each), so this is NOT a rotation — the
+// window must NOT escalate; all four verdicts return NodeRetry. This guards
+// against the over-fire defect where the predicate required only ≥1
+// reappearing finding (A,B,A,C wrongly escalated).
+func TestRecordReviewVerdict_AlternatingWindow_SingleReappearanceNoEscalate(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(alternatingGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-alt-single-reappear", tr)
+	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
+		Label: "补 nil 判空", Artifacts: []string{"a.go"},
+		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
+		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
+	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
+	fB := []Finding{{File: "b.go", Line: 2, Issue: "race on write"}}
+	fC := []Finding{{File: "c.go", Line: 3, Issue: "unchecked error"}}
+	// A,B,A,C: only A reappears non-contiguously; B and C appear once each.
+	// Spec: ≥2 distinct findings EACH reappear → only 1 qualifies → no escalate.
+	for i, f := range [][]Finding{fA, fB, fA, fC} {
+		r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", f))
+		if r.Kind != NodeRetry {
+			t.Fatalf("finding %d (%v): expected NodeRetry (window must not escalate when only 1 finding reappears), got %v", i, f, r.Kind)
+		}
+	}
+	// window recorded all 4 findings, [A,B,A,C], but did not escalate
+	if win := w.state.Windows["fix"]; len(win) != 4 {
+		t.Fatalf("expected Windows[fix] len 4, got %d (%v)", len(win), win)
+	}
+}
+
 // TestRecordReviewVerdict_AlternatingWindow_Disabled_WhenZero feeds A,B,A,B
 // with alternating_finding_window:0 (disabled). Asserts NO window escalation
 // (returns NodeRetry up to max_inner_turns) — zero means disabled.
