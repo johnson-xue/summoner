@@ -23,7 +23,7 @@ while IFS= read -r line; do
   # bootstrap h-000 exempt from review_verdict correlation (§5)
   if [[ "$env_id" == "h-000" ]]; then continue; fi
   # required fields
-  for f in envelope_id from_node to_node label artifacts factual_claim attempt_history budget_remaining stripped; do
+  for f in envelope_id from_node to_node label artifacts exit_criteria factual_claim attempt_history budget_remaining stripped; do
     if ! printf '%s\n' "$line" | jq -e --arg f "$f" 'has($f)' >/dev/null 2>&1; then
       echo "FAIL: handoff $env_id missing field $f"; FAILS=$((FAILS+1))
     fi

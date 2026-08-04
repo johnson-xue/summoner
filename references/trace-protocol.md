@@ -91,10 +91,12 @@ Emitted by the ⑤ Review-agent. Fields:
 
 ### `node_test_loop`
 Node-internal ③ verifier result. Fields:
-- `node` (string, required), `label` (string, required).
-- `criterion` (string, required) — the exit-criteria name tested.
+- `node` (string, required), `verifier` (string, required) — the exit-criteria name/anchor tested (e.g. `build_clean`, `root_cause_pin:file:line`).
+- `verdict_type` (string, required) — DECIDABLE | SOFT (declared in the graph block, B3).
 - `passed` (boolean, required) — legitimate HERE (not on `handoff`).
+- `turns` (int) — inner-turns consumed on this node (§5).
 - `exhausted` (boolean) — `true` when `max_inner_turns` hit (§5).
+- `note` (string, optional).
 
 ### `node_turn`
 Walker directive-to-trace echo. Fields:

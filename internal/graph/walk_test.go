@@ -385,3 +385,215 @@ back_edges:
 		t.Fatal("expected Windows[fix] absent (window disabled), got entry")
 	}
 }
+
+// escalation3xGraphYAML is a 3-node graph diagnose→fix→verify with a CROSS-NODE
+// back-edge verify→fix (so a NEEDS-FIX ⑤ on verify is cross-node, hitting the
+// 3× same-finding path in RecordReviewVerdict). max_back_edges_total:8 (high so
+// the budget check doesn't fire before escalation needs ≥2 back-edges),
+// alternating_finding_window:0 (disabled — the I2 window needs ≥2 distinct
+// reappearing findings to fire; a single repeating finding never triggers it,
+// but 0 is the clean disable used here so nothing interferes with the 3× rule),
+// max_inner_turns:5 on verify (high so same-node exhaustion never fires first).
+const escalation3xGraphYAML = `
+budget:
+  max_graph_turns: 20
+  total_token_budget: 50000
+  max_back_edges_total: 8
+  alternating_finding_window: 0
+nodes:
+  - id: diagnose
+    label: "定位根因"
+    skill: phase.debug
+    exit_criteria:
+      - {name: root_cause, verdict_type: SOFT, pin: "file:line"}
+    max_inner_turns: 3
+    mutating: false
+  - id: fix
+    label: "补 nil 判空"
+    skill: antia-logic
+    exit_criteria:
+      - {name: diff_applied, verdict_type: DECIDABLE}
+      - {name: all_deref_sites_covered, verdict_type: SOFT, grep_pattern: "player.SubTask"}
+    max_inner_turns: 4
+    mutating: true
+  - id: verify
+    label: "跑测试套件"
+    skill: phase.verify
+    exit_criteria:
+      - {name: tests_pass, verdict_type: DECIDABLE}
+    max_inner_turns: 5
+    mutating: false
+edges:
+  - {from: diagnose, to: fix}
+  - {from: fix, to: verify}
+back_edges:
+  - {from: verify, to: fix, reason: verifier_failed}
+`
+
+// TestRecordReviewVerdict_3xEscalation_Checkpoint drives the 3× same-finding
+// cross-node escalation (§2.7 #2). Three NEEDS-FIX verdicts on `verify` carry
+// the SAME finding (same findingKey = file:line). The 1st and 2nd increment
+// FindingsSeen[key] to 1 then 2 (both <3) and each emits a cross-node
+// handoff_reject (BackEdgeKind). The 3rd makes FindingsSeen[key]=3 ≥3 → the
+// walker returns Checkpoint BEFORE the handoff_reject append (walk.go ~179,
+// early-return precedes the append at ~187) → NO 3rd handoff_reject is emitted.
+// So the trace holds exactly 2 handoff_reject events + the final Checkpoint.
+// This is the unit-test counterpart to the C9 trace fixture; it guards against
+// the regression where a test asserts a 3rd handoff_reject (the C9 defect).
+func TestRecordReviewVerdict_3xEscalation_Checkpoint(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(escalation3xGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-3x-escalation", tr)
+
+	// bootstrap → RUN_NODE diagnose
+	d := w.Next()
+	if d.Kind != RunNode || d.Node != "diagnose" {
+		t.Fatalf("expected RUN_NODE diagnose, got %+v", d)
+	}
+	// h-001 diagnose→fix → RUN_REVIEW
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	// ⑤ PASS on diagnose → Checkpoint (advances to fix)
+	r, _ := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil))
+	if r.Kind != Checkpoint {
+		t.Fatalf("diagnose PASS: expected Checkpoint, got %v", r.Kind)
+	}
+	// h-002 fix→verify → RUN_REVIEW (⑤ runs on verify)
+	if _, err := w.RecordHandoff(h002()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same finding across all 3 NEEDS-FIX verdicts on verify (cross-node —
+	// verify's back-edge target is fix, ≠ verify). The findingKey dedup key
+	// is fs[0].File + ":" + fs[0].Line, so keep File+Line identical.
+	same := []Finding{{File: "player/task/task.go", Line: 187, Issue: "unchecked deref"}}
+	// 1st NEEDS-FIX → FindingsSeen[key]=1 <3 → BackEdgeKind + handoff_reject #1
+	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", same))
+	if r.Kind != BackEdgeKind {
+		t.Fatalf("1st NEEDS-FIX: expected BackEdgeKind, got %v", r.Kind)
+	}
+	// 2nd NEEDS-FIX → FindingsSeen[key]=2 <3 → BackEdgeKind + handoff_reject #2
+	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", same))
+	if r.Kind != BackEdgeKind {
+		t.Fatalf("2nd NEEDS-FIX: expected BackEdgeKind, got %v", r.Kind)
+	}
+	// 3rd NEEDS-FIX → FindingsSeen[key]=3 ≥3 → Checkpoint (early-return-before-append)
+	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", same))
+	if r.Kind != Checkpoint {
+		t.Fatalf("3rd NEEDS-FIX: expected Checkpoint (3× escalation), got %v", r.Kind)
+	}
+
+	// Exactly 2 handoff_reject events — the 3rd verdict escalates WITHOUT
+	// emitting a 3rd handoff_reject (the >=3 early-return precedes the append).
+	rejects := 0
+	for _, e := range tr.events {
+		if e["type"] == "handoff_reject" && e["envelope_id"] == "h-002" {
+			rejects++
+		}
+	}
+	if rejects != 2 {
+		t.Fatalf("expected exactly 2 handoff_reject events, got %d — the 3rd verdict must escalate (Checkpoint) without emitting a 3rd reject", rejects)
+	}
+	// the finding counter did reach 3 (escalation key in state)
+	if seen := w.state.FindingsSeen["player/task/task.go:187"]; seen != 3 {
+		t.Fatalf("expected FindingsSeen key count 3, got %d", seen)
+	}
+	// BackEdges incremented on ALL 3 cross-node verdicts (walk.go ~175 runs
+	// BEFORE the >=3 early-return at ~178), so the counter reaches 3 even though
+	// the 3rd verdict escalates without emitting a handoff_reject (the append at
+	// ~187 is skipped by the early-return). The 2-rejects invariant is on the
+	// emitted handoff_reject events (asserted above), NOT the counter.
+	if w.state.BackEdges != 3 {
+		t.Fatalf("expected BackEdges=3 (increments before the >=3 early-return), got %d", w.state.BackEdges)
+	}
+}
+
+// TestRecordReviewVerdict_MaxBackEdgesHalt drives the MaxBackEdgesTotal
+// exhaustion path via RecordReviewVerdict (distinct from
+// TestWalker_HaltsOnBudgetExhaustion, which tests max_graph_turns via Next()).
+// max_back_edges_total:2 (low), max_graph_turns:20 (high so it doesn't fire
+// first), alternating_finding_window:0 (disabled). Three cross-node NEEDS-FIX
+// on verify with DISTINCT findings each time (so the 3× same-finding rule does
+// NOT fire — a different findingKey each verdict means FindingsSeen[key] stays
+// at 1 per key, never reaching 3). The 1st and 2nd → BackEdgeKind
+// (BackEdges=1, then 2); the 3rd → BackEdges would be 3 ≥ max_back_edges_total:2
+// → Checkpoint (budget-exhaustion early-return, walk.go ~182-184).
+func TestRecordReviewVerdict_MaxBackEdgesHalt(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(`
+budget:
+  max_graph_turns: 20
+  total_token_budget: 50000
+  max_back_edges_total: 2
+  alternating_finding_window: 0
+nodes:
+  - id: diagnose
+    label: "定位根因"
+    skill: phase.debug
+    exit_criteria:
+      - {name: root_cause, verdict_type: SOFT}
+    max_inner_turns: 3
+    mutating: false
+  - id: fix
+    label: "补 nil 判空"
+    skill: antia-logic
+    exit_criteria:
+      - {name: diff_applied, verdict_type: DECIDABLE}
+    max_inner_turns: 4
+    mutating: true
+  - id: verify
+    label: "跑测试套件"
+    skill: phase.verify
+    exit_criteria:
+      - {name: tests_pass, verdict_type: DECIDABLE}
+    max_inner_turns: 5
+    mutating: false
+edges:
+  - {from: diagnose, to: fix}
+  - {from: fix, to: verify}
+back_edges:
+  - {from: verify, to: fix, reason: verifier_failed}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-max-backedges", tr)
+
+	w.Next() // bootstrap → RUN_NODE diagnose
+	w.RecordHandoff(h001())
+	w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)) // → Checkpoint, advance to fix
+	w.RecordHandoff(h002())                                     // fix→verify → RUN_REVIEW on verify
+
+	// DISTINCT findings each verdict → different findingKey each time →
+	// FindingsSeen[key] stays 1, the 3× rule never fires (it needs the SAME
+	// key 3×). Only the global BackEdges counter accumulates.
+	f1 := []Finding{{File: "player/task/task.go", Line: 187, Issue: "deref unchecked"}}
+	f2 := []Finding{{File: "player/task/task.go", Line: 53, Issue: "missing nil check"}}
+	// 1st → BackEdges=1 < max(2) → BackEdgeKind + handoff_reject
+	r, _ := w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", f1))
+	if r.Kind != BackEdgeKind {
+		t.Fatalf("1st NEEDS-FIX: expected BackEdgeKind (BackEdges=1 <2), got %v", r.Kind)
+	}
+	// 2nd → BackEdges=2 ≥ max(2) → Checkpoint (budget exhausted)
+	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", f2))
+	if r.Kind != Checkpoint {
+		t.Fatalf("2nd NEEDS-FIX: expected Checkpoint (BackEdges=2 ≥ max_back_edges_total:2), got %v", r.Kind)
+	}
+	// BackEdges reached the cap (2) — the walker halted on the 2nd verdict via
+	// the MaxBackEdgesTotal exhaustion early-return (walk.go ~182-184), NOT the
+	// 3× rule: each findingKey was distinct, so no FindingsSeen[key] reached 3.
+	if w.state.BackEdges != 2 {
+		t.Fatalf("expected BackEdges=2 (the cap reached), got %d", w.state.BackEdges)
+	}
+	// per-key finding counts stayed at 1 — confirms the 3× rule was inert
+	// (distinct findings) and the halt was purely the budget exhaustion path
+	if w.state.FindingsSeen[findingKey(f1)] != 1 || w.state.FindingsSeen[findingKey(f2)] != 1 {
+		t.Fatalf("expected per-key FindingsSeen=1 for the two fed findings (3× rule inert for distinct findings), got %+v", w.state.FindingsSeen)
+	}
+}
