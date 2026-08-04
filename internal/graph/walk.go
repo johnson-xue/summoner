@@ -136,10 +136,12 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 		node, ok := w.g.NodeByID(v.Node)
 		if !ok {
 			// unknown/empty node id — cannot route a same-node retry; escalate to human
+			w.state.Save()
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil
 		}
 		if w.state.Attempt >= node.MaxInnerTurns {
 			// exhausted → escalate to checkpoint
+			w.state.Save()
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil
 		}
 		// alternating_finding_window (M7): same-node ⑤ keeps raising different
@@ -174,9 +176,11 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 	w.state.FindingsSeen[findingText]++
 	// 3× same-finding escalation (§2.7 #2)
 	if w.state.FindingsSeen[findingText] >= 3 {
+		w.state.Save()
 		return Directive{Kind: Checkpoint, Node: v.Node}, nil
 	}
 	if w.state.BackEdges >= w.g.Budget.MaxBackEdgesTotal {
+		w.state.Save()
 		return Directive{Kind: Checkpoint, Node: v.Node}, nil
 	}
 	skip := w.g.backEdgeSkip(v.Node)
