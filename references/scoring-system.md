@@ -297,6 +297,59 @@ scoring:
   pass_threshold: 24
 ```
 
+### 8. Handoff Contract Check (`scorers/deterministic/handoff-contract-check.sh`) — **P0 Contract Gate**
+
+```bash
+#!/bin/bash
+# Checks: typed-envelope contract — every handoff carries the required fields
+# (envelope_id, from_node, to_node, label, artifacts, factual_claim,
+# attempt_history, budget_remaining, stripped), artifacts non-empty, each
+# exit_criterion declares a verdict_type, no producer-reasoning leak fields
+# (producer_reasoning_trace / handoff_note / passed), attempt_history entries
+# carry no 'passed', and every non-bootstrap (h-000) handoff correlates to a
+# review_verdict by envelope_id (B1/B2/B3).
+```
+
+**Contract-gate scoring (NOT a point scorer):**
+- PASS (exit 0) → gate cleared, no effect on point total
+- FAIL (exit 1) → hard overall fail regardless of points (contract invariant violated)
+- SKIP (exit 2) → non-fatal (chain-mode trace with no handoffs)
+
+### 9. Verifier Checklist Check (`scorers/deterministic/verifier-checklist-check.sh`) — **P0 Contract Gate**
+
+```bash
+#!/bin/bash
+# Checks: DECIDABLE/SOFT discipline — every DECIDABLE criterion a handoff claims
+# satisfied must be backed by a passed node_test_loop (verdict_type=="DECIDABLE",
+# passed==true) on the SAME node that produced the handoff (from_node). Joins at
+# the NODE level (node + verdict_type + passed), NOT by criterion name — a single
+# verifier run can legitimately satisfy multiple DECIDABLE criteria. Enforces that
+# "判不了" (un-decidable) criteria are not masquerading as passed (§2.4 + §2.5 B3).
+```
+
+**Contract-gate scoring (NOT a point scorer):**
+- PASS (exit 0) → gate cleared, no effect on point total
+- FAIL (exit 1) → hard overall fail regardless of points (DECIDABLE claim unbacked)
+- SKIP (exit 2) → non-fatal (no handoffs / no DECIDABLE criteria claimed)
+
+### 10. Review Isolation Check (`scorers/deterministic/review-isolation-check.sh`) — **P0 Contract Gate**
+
+```bash
+#!/bin/bash
+# Checks: ⑤ independence (invariant #6, §2.7) — every review_verdict carries
+# non-empty evidence_tool_calls (no rubber-stamp verdicts), and the correlated
+# handoff's stripped list includes producer_reasoning_trace AND
+# producer_verdict_self_report (B2), with no 'passed' field leaking into
+# attempt_history.
+```
+
+**Contract-gate scoring (NOT a point scorer):**
+- PASS (exit 0) → gate cleared, no effect on point total
+- FAIL (exit 1) → hard overall fail regardless of points (isolation invariant #6 violated)
+- SKIP (exit 2) → non-fatal (no review_verdict events)
+
+> **Note:** Scorers #8–#10 are **contract gates**, wired into `scripts/score-trace.sh` as a separate loop after the points SCORERS array. They are NOT added to the points SCORERS array — doing so would inflate `MAX_SCORE` and let a contract-violating trace still pass on points. A single contract-gate FAIL (exit 1) forces overall fail regardless of the point total; SKIP (exit 2) is non-fatal because chain-mode traces legitimately have no handoff/review events.
+
 ## Scoring Execution
 
 ### Running Scorers

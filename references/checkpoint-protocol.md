@@ -116,7 +116,7 @@ The framework scans EVERY user reply after the CHECKPOINT block. Matching is cas
 | CONTINUE | enter, 继续, next, proceed, yes, ok, go, 好, 收到 | Advance to next phase |
 | SKIP | skip, 跳过, 不用, 不需要, skip this | Skip the NEXT phase (not the current one) |
 | DONE | done, 够了, 可以了, 完成, finish, good | Mark workflow complete, trigger post-game review, exit |
-| RECALL | recall, 回城, 方向不对, 换个思路, go back, redo | Return to previous phase, discard current phase output |
+| RECALL | recall, 回城, 方向不对, 换个思路, go back, redo | Return to previous phase, discard current phase output. In graph mode: `recall to <node-label>` where `<node-label>` is the human-facing verb (not the id) — the WALKER parses the target (the LLM no longer improvises it). Reason codes: `receiver_rejected_handoff \| direction_wrong \| verifier_failed`. |
 | STOP | stop, 停, 我自己来, 退出, quit, abort | Exit framework immediately, preserve all artifacts, NO post-game review |
 | VERBOSE | 别废话, 简洁点, 太啰嗦, too verbose, be brief, tldr | Record Type 5 complaint, condense current and future output |
 
@@ -154,6 +154,18 @@ If user input matches multiple signals:
 **正例 — 纯确认才 CONTINUE:**
 - 用户回复: `"好，继续"` → 纯确认词 → CONTINUE ✓
 - 用户回复: `"enter"` → CONTINUE ✓
+
+### Graph-Mode Checkpoint Rendering (M9)
+
+In graph mode, SKILL.md renders `summoner-walker explain` into the CHECKPOINT block (the walker precomputes the human-facing view; the LLM does not assemble it). The render shows:
+
+- **Node `label`** (never the id) — the human-facing verb the author wrote in the graph (e.g. "定位根因", not "diagnose").
+- **Internal step names ①②③④⑤ HIDDEN** — the closed-loop ① Ingest+Validate → ⓪ → ② Work → ③ Test → ④ Handoff → ⑤ Review are machine internals; the human sees the node label and its outcome, not the step jargon.
+- **A "you are here" route map** — each node shown as one of: ✓ (pass), ✗ (needs-fix), ▶ (current), ⊘ (skipped). This is the `route_map` the walker carries in walk-state (§10.2).
+- **The ⑤ evidence** — grep hits, `file:line` citations the review-agent produced, as proof the verdict is grounded (a verdict with empty `evidence_tool_calls` is a fail, not a checkpoint).
+- **A walker-precomputed default recall option** — when the verdict is NEEDS-FIX, the walker already knows the target node; the checkpoint surfaces "recall to <node-label>" rather than asking the human to name it.
+
+`summoner-walker status` stays for debug/scorers (raw machine state: graph_turns, tokens_used, back_edges, findings_seen) — it is NOT shown in the human checkpoint. The human-facing surface is `explain` only.
 
 ## Recovery
 

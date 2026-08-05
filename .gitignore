@@ -21,3 +21,7 @@ hooks/bin/*
 *.swp
 *.swo
 *~
+.idea/
+
+# Claude local config (contains project-local credentials — never commit)
+.claude/settings.json
