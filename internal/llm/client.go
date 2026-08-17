@@ -113,10 +113,17 @@ func (c *Client) Extract(fullOutput, projectGuide string) (*ExtractionResult, er
 		systemPrompt += fmt.Sprintf("\n\n项目特定指南：\n%s", projectGuide)
 	}
 
-	// Truncate long output to avoid token limits
-	maxInputLen := 20000 // ~5k tokens
+	// Truncate long output to avoid token limits. Slice on a rune boundary:
+	// fullOutput[:maxInputLen] cuts at a byte index, which can split a
+	// multi-byte UTF-8 sequence (CJK = 3 bytes/char) and produce invalid UTF-8
+	// that the LLM API rejects or mangles. Convert to []rune, cap, convert back.
+	maxInputLen := 20000 // ~5k tokens (byte budget; rune count is lower for CJK)
 	if len(fullOutput) > maxInputLen {
-		fullOutput = fullOutput[:maxInputLen] + "\n\n[... 输出过长，已截断 ...]"
+		runes := []rune(fullOutput)
+		if len(runes) > maxInputLen {
+			runes = runes[:maxInputLen]
+		}
+		fullOutput = string(runes) + "\n\n[... 输出过长，已截断 ...]"
 	}
 
 	// Prepare request

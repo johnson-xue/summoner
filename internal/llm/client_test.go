@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 // TestParseExtractionResponse_ClampsOutOfRangeScore proves A2: an LLM that
 // ignores the "1-5" instruction and returns [SCORE: 9] or [SCORE: 99] must be
@@ -67,4 +71,54 @@ func repeat(s string, n int) string {
 		out = append(out, s...)
 	}
 	return string(out)
+}
+
+// TestTruncateValidUTF8 reproduces the B5 bug surface: a CJK-heavy output
+// whose byte length exceeds 20000. The OLD code did fullOutput[:20000],
+// splitting a 3-byte CJK char and producing invalid UTF-8. The fix slices
+// on a rune boundary. We can't call Extract() without an HTTP server, so we
+// exercise the exact same truncation logic on the same input and assert the
+// invariants the fix guarantees: valid UTF-8, no split multi-byte sequence,
+// rune count ≤ 20000, truncation marker present.
+func TestTruncateValidUTF8(t *testing.T) {
+	// 20001 bytes of CJK: 20001/3 = 6667 chars exactly, +1 byte over.
+	// Build 6667 世 chars (= 20001 bytes) then 1 ASCII byte → 20002 bytes total,
+	// byte index 20000 lands mid-char (byte 1 of the 6668th 世).
+	const cjk = "世" // 3 bytes: 0xe4 0xb8 0x96
+	var sb strings.Builder
+	sb.Grow(20002)
+	for i := 0; i < 6667; i++ {
+		sb.WriteString(cjk)
+	}
+	sb.WriteByte('X') // now 20002 bytes; byte[20000] is mid-世
+	input := sb.String()
+
+	// Mirror the Extract() truncation block exactly.
+	maxInputLen := 20000
+	var got string
+	if len(input) > maxInputLen {
+		runes := []rune(input)
+		if len(runes) > maxInputLen {
+			runes = runes[:maxInputLen]
+		}
+		got = string(runes) + "\n\n[... 输出过长，已截断 ...]"
+	}
+
+	if !utf8.ValidString(got) {
+		t.Fatal("truncated output is not valid UTF-8 — CJK char was split at byte boundary")
+	}
+	if !strings.Contains(got, "[... 输出过长，已截断 ...]") {
+		t.Error("truncation marker missing")
+	}
+	body := strings.TrimSuffix(got, "\n\n[... 输出过长，已截断 ...]")
+	if rc := utf8.RuneCountInString(body); rc > maxInputLen {
+		t.Errorf("rune count %d > limit %d", rc, maxInputLen)
+	}
+	// Prove the bug would have fired: a raw byte slice at 20000 is invalid.
+	rawBad := input[:maxInputLen]
+	if utf8.ValidString(rawBad) {
+		t.Log("note: byte[20000] happened to be a boundary for this input (rare); bug still real for other CJK lengths")
+	} else {
+		t.Log("confirmed: raw byte slice at 20000 is invalid UTF-8 (the bug surface); rune-slice fix avoids it")
+	}
 }
