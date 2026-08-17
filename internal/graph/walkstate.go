@@ -2,7 +2,6 @@ package graph
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 )
@@ -76,7 +75,7 @@ func LoadState(sessionID string) (*WalkState, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := ioutil.ReadFile(p)
+	b, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &WalkState{SessionID: sessionID, FindingsSeen: map[string]int{}, Windows: map[string][]string{}}, nil
@@ -109,5 +108,5 @@ func (s *WalkState) Save() error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(p, b, 0o644)
+	return os.WriteFile(p, b, 0o644)
 }

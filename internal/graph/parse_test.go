@@ -1,14 +1,14 @@
 package graph
 
 import (
-	"io/ioutil"
+	"io"
 	"strings"
 	"testing"
 )
 
-// io_ReadAll is a test-helper alias for io/ioutil.ReadAll of a reader.
+// io_ReadAll is a test-helper alias for io.ReadAll of a reader.
 func io_ReadAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
-	return ioutil.ReadAll(r)
+	return io.ReadAll(r)
 }
 
 func TestParseGraph_Valid(t *testing.T) {

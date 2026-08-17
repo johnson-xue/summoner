@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"regexp"
 
@@ -34,7 +33,7 @@ func main() {
 }
 
 func loadGraph() (*graph.Graph, error) {
-	b, err := ioutil.ReadFile(graphFile)
+	b, err := os.ReadFile(graphFile)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +116,7 @@ func recordCmd() *cobra.Command {
 			}
 			switch step {
 			case "handoff":
-				b, err := ioutil.ReadFile(envelopePath)
+				b, err := os.ReadFile(envelopePath)
 				if err != nil {
 					return err
 				}
@@ -134,7 +133,7 @@ func recordCmd() *cobra.Command {
 			case "review_verdict":
 				var fs []graph.Finding
 				if findingsPath != "" {
-					b, err := ioutil.ReadFile(findingsPath)
+					b, err := os.ReadFile(findingsPath)
 					if err != nil {
 						return err
 					}
@@ -144,7 +143,7 @@ func recordCmd() *cobra.Command {
 				}
 				var ev []string
 				if evidencePath != "" {
-					b, err := ioutil.ReadFile(evidencePath)
+					b, err := os.ReadFile(evidencePath)
 					if err != nil {
 						return err
 					}
