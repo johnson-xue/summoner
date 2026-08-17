@@ -297,6 +297,16 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 			"from_node": v.Node, "reason": "review_needs_fix",
 			"findings": findingStrings(v.Findings), "executor": "walker",
 		})
+		// A5 (S8 fix): the NEEDS-FIX preamble marked v.Node "needs_fix", but a
+		// same-node RETRY means the node is still ACTIVE (being re-run). Re-promote
+		// it to "current" so the route renders ▶ (not ✗ with zero current — the
+		// render regression the S8 review caught on self-loop graphs). The failure
+		// is still conveyed by the "(第 N 次尝试)" suffix in Explain's header; the
+		// route's job is to show WHERE the walk is, which is still this node. The
+		// escalation early-returns above (unknown-node, max_inner, alternating)
+		// do NOT reach here, so they correctly leave v.Node as "needs_fix" (✗,
+		// walk stopped). setRoute overwrites in place (no sweep) — safe.
+		w.setRoute(v.Node, "current")
 		w.state.Attempt++
 		w.saveStateOrLog()
 		return Directive{Kind: NodeRetry, Node: v.Node, Attempt: w.state.Attempt,

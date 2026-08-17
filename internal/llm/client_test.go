@@ -93,15 +93,14 @@ func TestTruncateValidUTF8(t *testing.T) {
 	sb.WriteByte('X') // now 20002 bytes; byte[20000] is mid-世
 	input := sb.String()
 
-	// Mirror the Extract() truncation block exactly.
+	// Mirror the Extract() truncation block: cap at a byte budget on a rune
+	// boundary. This input (20002 bytes, 6668 runes) is INSIDE the S8 gap
+	// window (20001–60000 bytes ↔ 6667–20000 runes) where the old
+	// byte-guard/rune-cap mismatch appended the marker WITHOUT truncating.
 	maxInputLen := 20000
 	var got string
 	if len(input) > maxInputLen {
-		runes := []rune(input)
-		if len(runes) > maxInputLen {
-			runes = runes[:maxInputLen]
-		}
-		got = string(runes) + "\n\n[... 输出过长，已截断 ...]"
+		got = truncateOnRuneBoundary(input, maxInputLen) + "\n\n[... 输出过长，已截断 ...]"
 	}
 
 	if !utf8.ValidString(got) {
@@ -111,14 +110,56 @@ func TestTruncateValidUTF8(t *testing.T) {
 		t.Error("truncation marker missing")
 	}
 	body := strings.TrimSuffix(got, "\n\n[... 输出过长，已截断 ...]")
+	// S8 fix assertion: ACTUAL truncation occurred — body byte length must be
+	// ≤ maxInputLen AND strictly less than the input. The old code produced a
+	// body of 20002 bytes (the full input) + marker (20037 total) — longer
+	// than input, falsely labelled "已截断".
+	if len(body) > maxInputLen {
+		t.Errorf("S8 gap: body byte length %d > limit %d — no actual truncation occurred (the byte-guard/rune-cap mismatch)", len(body), maxInputLen)
+	}
+	if len(body) >= len(input) {
+		t.Errorf("S8 gap: body (%d bytes) not shorter than input (%d) — truncation was a no-op", len(body), len(input))
+	}
+	// The rune count of the body is ≤ the limit (and ≤ 6667 for this input).
 	if rc := utf8.RuneCountInString(body); rc > maxInputLen {
 		t.Errorf("rune count %d > limit %d", rc, maxInputLen)
 	}
-	// Prove the bug would have fired: a raw byte slice at 20000 is invalid.
+	// Prove the bug surface: a raw byte slice at 20000 is invalid UTF-8.
 	rawBad := input[:maxInputLen]
 	if utf8.ValidString(rawBad) {
 		t.Log("note: byte[20000] happened to be a boundary for this input (rare); bug still real for other CJK lengths")
 	} else {
-		t.Log("confirmed: raw byte slice at 20000 is invalid UTF-8 (the bug surface); rune-slice fix avoids it")
+		t.Log("confirmed: raw byte slice at 20000 is invalid UTF-8 (the bug surface); rune-boundary fix avoids it")
+	}
+}
+
+// TestTruncateOnRuneBoundary_DenseCJK (S8 fix): pure-CJK input at 30000 bytes
+// (10000 runes) — squarely inside the old gap window. The old code entered the
+// branch (30000 > 20000 bytes) but the rune cap (10000 > 20000) did NOT fire,
+// so it appended the marker to the full 30000 bytes. The fix must truncate to
+// ≤20000 bytes (6666 世 = 19998 bytes), strictly shorter than input.
+func TestTruncateOnRuneBoundary_DenseCJK(t *testing.T) {
+	const cjk = "世" // 3 bytes
+	var sb strings.Builder
+	for i := 0; i < 10000; i++ {
+		sb.WriteString(cjk)
+	}
+	input := sb.String() // 30000 bytes, 10000 runes
+	if len(input) != 30000 {
+		t.Fatalf("setup: expected 30000 bytes, got %d", len(input))
+	}
+	got := truncateOnRuneBoundary(input, 20000)
+	if !utf8.ValidString(got) {
+		t.Fatal("not valid UTF-8")
+	}
+	if len(got) > 20000 {
+		t.Errorf("got %d bytes > 20000 budget — byte budget not enforced", len(got))
+	}
+	if len(got) >= len(input) {
+		t.Errorf("got %d bytes, not shorter than input %d — truncation was a no-op (the S8 gap)", len(got), len(input))
+	}
+	// Must end on a rune boundary: the last 3 bytes form a complete 世.
+	if utf8.RuneCountInString(got) != len(got)/3 {
+		t.Errorf("output not rune-aligned: %d runes over %d bytes", utf8.RuneCountInString(got), len(got))
 	}
 }

@@ -258,23 +258,65 @@ func TestA5_RouteMapBoundedByNodeCount(t *testing.T) {
 	}
 }
 
+// TestA5_SameNodeRetry_KeepsCurrentMarker (S8 fix): the NEEDS-FIX preamble
+// marks v.Node "needs_fix", but a same-node RETRY (self-loop back-edge where
+// backTarget==v.Node==CurrentNode) means the node is still ACTIVE — it must be
+// re-promoted to "current" so the route renders ▶ (not ✗ with zero current).
+// The S8 review caught this render regression: pre-fix, a fix→fix self-loop
+// retry showed "✓定位根因→✗补 nil 判空" with NO ▶ anywhere, making the
+// actively-retried node indistinguishable from an escalated-to-checkpoint node.
+// The failure is still conveyed by the "(第 N 次尝试)" header suffix; the route
+// shows WHERE the walk is (still on fix). The escalation early-returns
+// (max_inner_turns, alternating) keep "needs_fix" (✗, walk stopped) — covered
+// by TestA5_3xEscalation_MarksFailedNode.
+func TestA5_SameNodeRetry_KeepsCurrentMarker(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(c4GraphYAML)) // has back_edges: fix→fix (self-loop)
+	w := NewWalker(g, "a5-samenode", &memTrace{})
+	w.Next()                                                // bootstrap → diagnose=current
+	w.RecordHandoff(h001())                                 // diagnose→fix
+	w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)) // diagnose→pass, fix→current
+	// fix NEEDS-FIX → same-node retry (backTarget==fix==v.Node, max_inner_turns=4 not exhausted).
+	d, _ := w.RecordReviewVerdict(rv("h-002", "fix", "NEEDS-FIX", []Finding{{File: "task.go", Line: 1, Issue: "x"}}))
+	if d.Kind != NodeRetry {
+		t.Fatalf("expected NodeRetry (same-node), got %v", d.Kind)
+	}
+	// The fix: the retried node stays "current" (▶), NOT demoted to needs_fix.
+	if got := routeStatus(w, "fix"); got != "current" {
+		t.Fatalf("S8 REGRESSION: same-node retry demoted fix to %q, want current — the ▶ marker must survive an active retry", got)
+	}
+	if got := routeStatus(w, "diagnose"); got != "pass" {
+		t.Fatalf("diagnose status=%q, want pass", got)
+	}
+	if countStatus(w, "current") != 1 {
+		t.Fatalf("want exactly 1 current (the retried fix node), got %d", countStatus(w, "current"))
+	}
+	// Explain must still surface a ▶ for the active node.
+	out := w.Explain()
+	if !strings.Contains(out, "▶") {
+		t.Fatalf("explain should show ▶ for the actively-retried fix node, got: %s", out)
+	}
+	if !strings.Contains(out, "补 nil 判空") {
+		t.Fatalf("explain should contain fix label 补 nil 判空, got: %s", out)
+	}
+}
+
 // TestA5_RenderIsolationNoLeak: the two render tests must use withTempStateDir
 // so a stale walk-state file from a prior run cannot make Explain nondeterministic.
-// This confirms the test-isolation fix (no real home-dir file written).
+// This confirms the no-Save design invariant (S8 fix): NewWalker's bootstrap path
+// must NOT persist state — the first transition's saveStateOrLog persists RouteMap.
+// Asserting NewWalker alone writes NO state file is falsifiable: if a future
+// change adds a Save to the bootstrap, this test fails.
 func TestA5_RenderIsolationNoLeak(t *testing.T) {
 	withTempStateDir(t)
 	g, _ := ParseGraph([]byte(c4GraphYAML))
 	w := NewWalker(g, "test-render", &memTrace{})
 	_ = w.Explain()
-	// No state file should escape the temp dir.
+	// Invariant: NewWalker did NOT Save. After NewWalker + Explain (no
+	// RecordHandoff/RecordReviewVerdict), NO state file should exist yet —
+	// the bootstrap setRoute is in-memory only. If a regression adds a Save
+	// to the bootstrap path, this file appears and the test fails.
 	if _, err := os.Stat(filepath.Join(stateDirOverride, "test-render.json")); err == nil {
-		// A file existing is fine ONLY if it's inside the temp dir (it is,
-		// since withTempStateDir redirected stateDirOverride). The point of
-		// this test is that NewWalker does NOT Save to the REAL home dir.
-		// Assert the real home-dir walk-state dir has no test-render.json.
+		t.Fatalf("NewWalker leaked a state file — bootstrap must NOT Save (in-memory only); found test-render.json in state dir")
 	}
-	// The real invariant: the bootstrap path did not call Save (no file at
-	// all yet), OR any file is under stateDirOverride (the temp dir). Both
-	// are acceptable; a Save to the real home dir is the failure mode we
-	// avoid. The withTempStateDir wrapper guarantees the latter.
 }

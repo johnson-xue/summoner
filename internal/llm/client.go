@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Client represents an LLM API client
@@ -81,9 +82,17 @@ type ChatResponse struct {
 type ExtractionResult struct {
 	Summary    string
 	Score      int
-	Fallback   bool // true when the score was defaulted (no/bad [SCORE:] line) — NOT a real LLM rating
+	Fallback   bool // true when the score was defaulted (no/bad [SCORE:] line) or clamped — NOT a real LLM rating
 	TokenUsage *TokenUsage
 }
+
+// NOTE (S8 review): Fallback is computed here but NOT yet consumed downstream —
+// SavePhase persists only Score (and the LLM-down path writes score=0 as a
+// separate sentinel), so the checkpoint UI cannot today distinguish a real
+// 3/5 from a defaulted 3. Wiring it through (Phase.Fallback field + DB column
+// + checkpoint render marker) is a v0.1.9 item. The flag is kept so that work
+// is additive, and so the A2 clamp (the actual panic fix) can signal which
+// scores were massaged. Do not assume UI-distinguishability is live.
 
 // TokenUsage represents token consumption
 type TokenUsage struct {
@@ -113,17 +122,24 @@ func (c *Client) Extract(fullOutput, projectGuide string) (*ExtractionResult, er
 		systemPrompt += fmt.Sprintf("\n\n项目特定指南：\n%s", projectGuide)
 	}
 
-	// Truncate long output to avoid token limits. Slice on a rune boundary:
-	// fullOutput[:maxInputLen] cuts at a byte index, which can split a
-	// multi-byte UTF-8 sequence (CJK = 3 bytes/char) and produce invalid UTF-8
-	// that the LLM API rejects or mangles. Convert to []rune, cap, convert back.
-	maxInputLen := 20000 // ~5k tokens (byte budget; rune count is lower for CJK)
+	// Truncate long output to a ~5k-token byte budget, slicing on a rune
+	// boundary so no multi-byte UTF-8 sequence (CJK = 3 bytes/char) is split.
+	// fullOutput[:maxInputLen] cuts at a BYTE index and can produce invalid
+	// UTF-8 that the LLM API rejects or mangles.
+	//
+	// S8 fix: the prior version guarded on byte length (len(fullOutput) >
+	// maxInputLen) but then capped by RUNE count (len(runes) > maxInputLen) — a
+	// units mismatch. For CJK between 20001 and ~60000 bytes (6667–20000 runes)
+	// the guard entered the branch but the cap never fired, so the truncation
+	// marker was appended to the FULL un-truncated content (output LONGER than
+	// input, falsely labelled "已截断"). The fix caps by a BYTE budget enforced
+	// on a rune boundary: walk runes, accumulate byte length, stop once the
+	// budget would be exceeded. This always truncates when the input exceeds
+	// the byte budget, regardless of CJK density, and always on a valid UTF-8
+	// boundary.
+	maxInputLen := 20000 // ~5k tokens (byte budget)
 	if len(fullOutput) > maxInputLen {
-		runes := []rune(fullOutput)
-		if len(runes) > maxInputLen {
-			runes = runes[:maxInputLen]
-		}
-		fullOutput = string(runes) + "\n\n[... 输出过长，已截断 ...]"
+		fullOutput = truncateOnRuneBoundary(fullOutput, maxInputLen) + "\n\n[... 输出过长，已截断 ...]"
 	}
 
 	// Prepare request
@@ -311,6 +327,31 @@ func parseExtractionResponse(content string) (summary string, score int, fallbac
 }
 
 // Validate checks if the client is properly configured
+// truncateOnRuneBoundary returns the longest prefix of s whose byte length is
+// ≤ maxBytes, cut on a UTF-8 rune boundary (never mid-rune). It assumes
+// len(s) > maxBytes (the caller guards on that). For ASCII it is equivalent to
+// s[:maxBytes]; for CJK it stops at the last rune boundary that fits within
+// maxBytes, so the result is always valid UTF-8 and at most maxBytes long.
+func truncateOnRuneBoundary(s string, maxBytes int) string {
+	var (
+		out  []byte
+		n    int
+		size int
+	)
+	for i := 0; i < len(s); i += size {
+		_, size = utf8.DecodeRuneInString(s[i:])
+		if size == 0 {
+			break // invalid encoding; stop to avoid an infinite loop
+		}
+		if n+size > maxBytes {
+			break // the next rune would exceed the byte budget — stop here
+		}
+		out = append(out, s[i:i+size]...)
+		n += size
+	}
+	return string(out)
+}
+
 func (c *Client) Validate() error {
 	apiKey := os.Getenv(c.config.APIKeyEnv)
 	if apiKey == "" {
