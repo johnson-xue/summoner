@@ -3,6 +3,7 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,13 +63,48 @@ type Walker struct {
 	trace TraceWriter
 }
 
+// NewWalker loads persisted state for a session and returns a ready Walker.
+// B11 (止血): the OLD code did `s, _ := LoadState(sessionID)` and then
+// dereferenced s — if the state file existed but was corrupt (partial write
+// from a crashed process), LoadState returned (nil, err), and the very next
+// line `s.CurrentNode` panicked with nil-deref. A corrupt walk-state file
+// thus killed the whole CLI invocation with a panic instead of recovering.
+// Now: on ANY LoadState error, fall back to a fresh zero state (same as the
+// os.IsNotExist branch inside LoadState) and log the recovery. The walk
+// restarts from the first node with a clean slate rather than crashing.
 func NewWalker(g *Graph, sessionID string, trace TraceWriter) *Walker {
-	s, _ := LoadState(sessionID)
+	s, err := LoadState(sessionID)
+	if err != nil || s == nil {
+		s = &WalkState{SessionID: sessionID, FindingsSeen: map[string]int{}, Windows: map[string][]string{}}
+	}
 	if s.CurrentNode == "" {
 		s.CurrentNode = g.firstNode()
 		s.Attempt = 1
 	}
 	return &Walker{g: g, state: s, trace: trace}
+}
+
+// saveStateOrLog persists walk-state, logging (not dropping silently) on
+// failure (B11). Walk-state is best-effort persistence: the routing decision
+// is already made by the time Save is called, so a persistence failure must
+// not change the returned Directive. But silently dropping the error hid
+// "state file not writable" (disk full, permissions) — the walk appeared to
+// progress but no checkpoint survived, so the next process restarted from
+// scratch. Now it logs; the caller keeps the Directive as decided.
+func (w *Walker) saveStateOrLog() {
+	if err := w.state.Save(); err != nil {
+		log.Printf("walk-state save failed (session=%s): %v — routing continues but checkpoint may not persist", w.state.SessionID, err)
+	}
+}
+
+// traceOrLog appends a trace event, logging on failure (B10). The trace is
+// the audit log; a write failure (broken pipe, disk full) was previously
+// dropped at all 5 call sites with no signal. Now it logs. Trace failure
+// never changes routing — the walk continues with a degraded audit trail.
+func (w *Walker) traceOrLog(event map[string]interface{}) {
+	if err := w.trace.Append(event); err != nil {
+		log.Printf("trace append failed (session=%s): %v — walk continues with degraded audit trail", w.state.SessionID, err)
+	}
 }
 
 // Next returns the directive for the current state (bootstrap → first node).
@@ -100,8 +136,8 @@ func (w *Walker) Next() Directive {
 // and returns RUN_REVIEW for that envelope (B4: walker schedules ⑤).
 func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
 	// emit handoff event
-	w.trace.Append(toMap(env))
-	w.trace.Append(map[string]interface{}{
+	w.traceOrLog(toMap(env))
+	w.traceOrLog(map[string]interface{}{
 		"type": "node_turn", "node": env.ToNode, "label": env.Label,
 		"step":             "review-scheduled",
 		"walker_directive": "RUN_REVIEW envelope_id=" + env.EnvelopeID,
@@ -111,20 +147,20 @@ func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
 	if env.EnvelopeID != "h-000" {
 		w.state.GraphTurns++
 	}
-	w.state.Save()
+	w.saveStateOrLog()
 	return Directive{Kind: RunReview, EnvelopeID: env.EnvelopeID, Node: env.ToNode, Label: env.Label}, nil
 }
 
 // RecordReviewVerdict records a ⑤ verdict and routes the next directive.
 func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
-	w.trace.Append(toMap(v))
+	w.traceOrLog(toMap(v))
 	if v.Verdict == "PASS" {
 		// advance to next forward node
 		next := w.g.forwardFrom(v.Node)
 		w.state.CurrentNode = next
 		w.state.Attempt = 1
 		w.state.PendingReview = ""
-		w.state.Save()
+		w.saveStateOrLog()
 		if next == "" {
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil // terminal
 		}
@@ -138,12 +174,12 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 		node, ok := w.g.NodeByID(v.Node)
 		if !ok {
 			// unknown/empty node id — cannot route a same-node retry; escalate to human
-			w.state.Save()
+			w.saveStateOrLog()
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil
 		}
 		if w.state.Attempt >= node.MaxInnerTurns {
 			// exhausted → escalate to checkpoint
-			w.state.Save()
+			w.saveStateOrLog()
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil
 		}
 		// alternating_finding_window (M7): same-node ⑤ keeps raising different
@@ -159,17 +195,17 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 				w.state.Windows[v.Node] = win
 			}
 			if alternatingWindowEscalates(win, n) {
-				w.state.Save()
+				w.saveStateOrLog()
 				return Directive{Kind: Checkpoint, Node: v.Node}, nil
 			}
 		}
-		w.trace.Append(map[string]interface{}{
+		w.traceOrLog(map[string]interface{}{
 			"type": "node_review_retry", "envelope_id": v.EnvelopeID,
 			"from_node": v.Node, "reason": "review_needs_fix",
 			"findings": findingStrings(v.Findings), "executor": "walker",
 		})
 		w.state.Attempt++
-		w.state.Save()
+		w.saveStateOrLog()
 		return Directive{Kind: NodeRetry, Node: v.Node, Attempt: w.state.Attempt,
 			Restore: node.Mutating, Label: node.Label}, nil
 	}
@@ -178,22 +214,22 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 	w.state.FindingsSeen[findingText]++
 	// 3× same-finding escalation (§2.7 #2)
 	if w.state.FindingsSeen[findingText] >= 3 {
-		w.state.Save()
+		w.saveStateOrLog()
 		return Directive{Kind: Checkpoint, Node: v.Node}, nil
 	}
 	if w.state.BackEdges >= w.g.Budget.MaxBackEdgesTotal {
-		w.state.Save()
+		w.saveStateOrLog()
 		return Directive{Kind: Checkpoint, Node: v.Node}, nil
 	}
 	skip := w.g.backEdgeSkip(v.Node)
-	w.trace.Append(map[string]interface{}{
+	w.traceOrLog(map[string]interface{}{
 		"type": "handoff_reject", "envelope_id": v.EnvelopeID,
 		"from_node": v.Node, "reason": "review_needs_fix",
 		"findings": findingStrings(v.Findings), "executor": "walker",
 	})
 	w.state.CurrentNode = backTarget
 	w.state.Attempt = 1
-	w.state.Save()
+	w.saveStateOrLog()
 	return Directive{Kind: BackEdgeKind, Node: backTarget, Skip: skip, Label: w.labelOf(backTarget)}, nil
 }
 

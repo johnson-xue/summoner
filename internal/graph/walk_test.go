@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -690,5 +692,44 @@ back_edges:
 	// The 3× rule never fired: each key's count is 1, none reached 3.
 	if w.state.FindingsSeen[k1] != 1 || w.state.FindingsSeen[k2] != 1 || w.state.FindingsSeen[k3] != 1 {
 		t.Fatalf("each distinct multi-finding key should be seen once (no 3× escalation): %+v", w.state.FindingsSeen)
+	}
+}
+
+// TestNewWalker_CorruptStateRecoversNotPanics (B11): if the walk-state JSON
+// file is corrupt (partial write from a crashed process — the walker writes
+// this file itself across CLI invocations, so a mid-write crash leaves
+// truncated JSON), LoadState returns (nil, err). The OLD NewWalker did
+// `s, _ := LoadState(sessionID)` then `s.CurrentNode` — nil-deref panic,
+// killing the whole CLI invocation. The fix falls back to a fresh zero
+// state and restarts from the first node. This test writes invalid JSON to
+// the state file path and asserts NewWalker does not panic and bootstraps.
+func TestNewWalker_CorruptStateRecoversNotPanics(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(escalation3xGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// Write corrupt JSON to the path statePath("test-corrupt") resolves to.
+	dir := stateDirOverride
+	corruptPath := filepath.Join(dir, "test-corrupt.json")
+	if err := os.WriteFile(corruptPath, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatalf("seed corrupt state: %v", err)
+	}
+	// Must not panic — recover() catches if it did.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("NewWalker panicked on corrupt state: %v", r)
+		}
+	}()
+	w := NewWalker(g, "test-corrupt", &memTrace{})
+	// Recovered to a fresh state: bootstraps to first node.
+	if w.state == nil {
+		t.Fatal("recovered state is nil")
+	}
+	if w.state.CurrentNode != g.firstNode() {
+		t.Fatalf("expected bootstrap to first node %q, got %q", g.firstNode(), w.state.CurrentNode)
+	}
+	if w.state.Attempt != 1 {
+		t.Fatalf("expected Attempt=1 on recovery, got %d", w.state.Attempt)
 	}
 }
