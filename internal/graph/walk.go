@@ -3,7 +3,9 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 // TraceWriter appends a JSONL event. The CLI wires this to the trace file.
@@ -228,11 +230,33 @@ func (w *Walker) labelOf(id string) string {
 	return id
 }
 
+// findingKey returns a stable, order-insensitive dedup key for a verdict's
+// finding set. The 3× same-finding escalation (§2.7 #2) and the cross-node
+// FindingsSeen counter key on this: two verdicts are "the same finding" iff
+// their finding SETS are equal, not merely iff their FIRST finding matches.
+//
+// OLD BUG (B12): only fs[0] was used. Two verdicts [{A:1},{B:2}] and
+// [{A:1},{C:3}] collapsed to "A:1" and counted as the same finding — so a
+// reviewer cycling through different 2nd findings would wrongly hit the 3×
+// escalation after the 3rd verdict even though no single finding repeated.
+// Also, an empty finding set returned "" — colliding ALL no-finding verdicts
+// into one bucket, so any 3 NEEDS-FIX-with-no-findings would escalate even
+// though the reviewer reported nothing repeatable.
+//
+// Fix: sort all file:line entries (order-insensitive), join with "|". For a
+// single finding the key is unchanged ("file:line") — so existing single-
+// finding tests keep asserting the literal key. Empty set returns a sentinel
+// that won't collide with any real file:line key.
 func findingKey(fs []Finding) string {
 	if len(fs) == 0 {
-		return ""
+		return "__no_findings__"
 	}
-	return fs[0].File + ":" + strconv.Itoa(fs[0].Line)
+	parts := make([]string, len(fs))
+	for i, f := range fs {
+		parts[i] = f.File + ":" + strconv.Itoa(f.Line)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
 func findingStrings(fs []Finding) []string {
 	out := make([]string, len(fs))

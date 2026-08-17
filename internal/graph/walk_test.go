@@ -597,3 +597,98 @@ back_edges:
 		t.Fatalf("expected per-key FindingsSeen=1 for the two fed findings (3× rule inert for distinct findings), got %+v", w.state.FindingsSeen)
 	}
 }
+
+// TestRecordReviewVerdict_FindingKey_MultiFindingDedup (B12): the findingKey
+// must hash the WHOLE finding set, not just fs[0]. OLD code returned
+// fs[0].File+":"+line, so verdicts [{A:1},{B:2}] and [{A:1},{C:3}] both
+// keyed "A:1" → after a 3rd such verdict the 3× escalation fired even
+// though no single finding set repeated. This test feeds three cross-node
+// NEEDS-FIX verdicts that all SHARE their first finding (A:187) but have a
+// DIFFERENT second finding each time — three distinct finding SETS. With the
+// B12 fix each set keys distinctly, FindingsSeen stays at 1 per key, the 3×
+// rule never fires, and the walk halts only on MaxBackEdgesTotal (set to 5
+// here so all 3 verdicts run before the budget fires).
+func TestRecordReviewVerdict_FindingKey_MultiFindingDedup(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(`
+budget:
+  max_graph_turns: 20
+  total_token_budget: 50000
+  max_back_edges_total: 5
+  alternating_finding_window: 0
+nodes:
+  - id: diagnose
+    label: "定位根因"
+    skill: phase.debug
+    exit_criteria:
+      - {name: root_cause, verdict_type: SOFT}
+    max_inner_turns: 3
+    mutating: false
+  - id: fix
+    label: "补 nil 判空"
+    skill: antia-logic
+    exit_criteria:
+      - {name: diff_applied, verdict_type: DECIDABLE}
+    max_inner_turns: 4
+    mutating: true
+  - id: verify
+    label: "回归验证"
+    skill: verify.test
+    exit_criteria:
+      - {name: tests_pass, verdict_type: DECIDABLE}
+    max_inner_turns: 2
+    mutating: false
+edges:
+  - {from: diagnose, to: fix}
+  - {from: fix, to: verify}
+back_edges:
+  - {from: verify, to: fix, reason: verifier_failed}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-fk-multifind", tr)
+	w.Next()                                                 // bootstrap → diagnose
+	w.RecordHandoff(h001())                                  // diagnose→fix
+	w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)) // → Checkpoint, advance to fix
+	w.RecordHandoff(h002())                                  // fix→verify → RUN_REVIEW on verify
+
+	// Three verdicts sharing the FIRST finding (A:187) but a distinct 2nd.
+	set1 := []Finding{{File: "player/task/task.go", Line: 187, Issue: "x"}, {File: "player/queue.go", Line: 12, Issue: "q"}}
+	set2 := []Finding{{File: "player/task/task.go", Line: 187, Issue: "x"}, {File: "player/conn.go", Line: 8, Issue: "c"}}
+	set3 := []Finding{{File: "player/task/task.go", Line: 187, Issue: "x"}, {File: "player/hub.go", Line: 4, Issue: "h"}}
+
+	// Distinct keys → each FindingsSeen[key] stays 1, no 3× escalation.
+	k1 := findingKey(set1)
+	k2 := findingKey(set2)
+	k3 := findingKey(set3)
+	if k1 == k2 || k2 == k3 || k1 == k3 {
+		t.Fatalf("multi-finding sets with distinct 2nd findings must key distinctly: k1=%q k2=%q k3=%q", k1, k2, k3)
+	}
+	// Single-finding backward-compat: a 1-element set keys "file:line" (no join).
+	one := findingKey([]Finding{{File: "player/task/task.go", Line: 187}})
+	if one != "player/task/task.go:187" {
+		t.Fatalf("single-finding key must be plain file:line (backward compat), got %q", one)
+	}
+	// Empty set returns the sentinel, not "".
+	if ek := findingKey(nil); ek == "" {
+		t.Fatal("empty finding set must return a non-empty sentinel, not \"\" (empty collided all no-finding verdicts)")
+	}
+
+	// Drive the three verdicts through the walker. None should escalate via
+	// the 3× rule (distinct keys); all produce BackEdgeKind (BackEdges < 5).
+	for i, fs := range [][]Finding{set1, set2, set3} {
+		r, _ := w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", fs))
+		if r.Kind != BackEdgeKind {
+			t.Fatalf("verdict %d: expected BackEdgeKind (3× rule inert for distinct multi-finding sets), got %v", i+1, r.Kind)
+		}
+	}
+	if w.state.BackEdges != 3 {
+		t.Fatalf("expected BackEdges=3 (all three ran without escalation), got %d", w.state.BackEdges)
+	}
+	// The 3× rule never fired: each key's count is 1, none reached 3.
+	if w.state.FindingsSeen[k1] != 1 || w.state.FindingsSeen[k2] != 1 || w.state.FindingsSeen[k3] != 1 {
+		t.Fatalf("each distinct multi-finding key should be seen once (no 3× escalation): %+v", w.state.FindingsSeen)
+	}
+}
