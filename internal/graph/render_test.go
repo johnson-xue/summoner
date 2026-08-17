@@ -6,6 +6,10 @@ import (
 )
 
 func TestExplain_ShowsLabelNotId(t *testing.T) {
+	// A5: isolate walk-state to a temp dir so a stale test-render.json from a
+	// prior run/machine cannot make LoadState return non-empty state (which
+	// would skip the bootstrap and render a stale route → flaky).
+	withTempStateDir(t)
 	g, _ := ParseGraph([]byte(c4GraphYAML))
 	tr := &memTrace{}
 	w := NewWalker(g, "test-render", tr)
@@ -19,6 +23,7 @@ func TestExplain_ShowsLabelNotId(t *testing.T) {
 }
 
 func TestStatus_ShowsMachineState(t *testing.T) {
+	withTempStateDir(t)
 	g, _ := ParseGraph([]byte(c4GraphYAML))
 	tr := &memTrace{}
 	w := NewWalker(g, "test-render", tr)

@@ -77,11 +77,20 @@ func NewWalker(g *Graph, sessionID string, trace TraceWriter) *Walker {
 	if err != nil || s == nil {
 		s = &WalkState{SessionID: sessionID, FindingsSeen: map[string]int{}, Windows: map[string][]string{}}
 	}
+	w := &Walker{g: g, state: s, trace: trace}
+	// A5: heal any crash-induced RouteMap/CurrentNode disagreement and refresh
+	// stale labels/prune renamed nodes from a prior process before any Save.
+	w.reconcileRoute()
 	if s.CurrentNode == "" {
 		s.CurrentNode = g.firstNode()
 		s.Attempt = 1
+		// Bootstrap the first node as "current" (in-memory only; the first
+		// transition's saveStateOrLog persists RouteMap). No Save here: some
+		// callers (e.g. TestExplain_ShowsLabelNotId) invoke NewWalker without
+		// withTempStateDir and a Save would leak a file to the real home dir.
+		w.setRoute(s.CurrentNode, "current")
 	}
-	return &Walker{g: g, state: s, trace: trace}
+	return w
 }
 
 // saveStateOrLog persists walk-state, logging (not dropping silently) on
@@ -104,6 +113,77 @@ func (w *Walker) saveStateOrLog() {
 func (w *Walker) traceOrLog(event map[string]interface{}) {
 	if err := w.trace.Append(event); err != nil {
 		log.Printf("trace append failed (session=%s): %v — walk continues with degraded audit trail", w.state.SessionID, err)
+	}
+}
+
+// setRoute is the SINGLE mutator for w.state.RouteMap (A5). It upserts a
+// routeEntry keyed by node ID: if an entry for nodeID exists its Status and
+// Label are overwritten in place; otherwise a new entry is appended.
+//
+// CRITICAL CONTRACT (the bug the adversarial panel caught): setRoute NEVER
+// touches any entry other than nodeID. The responsibility for demoting a
+// prior "current" belongs to the CALLER, at the transition that KNOWS the
+// old node's fate. An earlier draft auto-swept every "current"→"pass" on
+// each write; that let the cross-node back-edge path (which sets
+// backTarget="current") silently demote the FAILING node (v.Node) to "pass",
+// rendering a ✗ as a ✓ — a lie. By not sweeping, setRoute keeps v.Node's
+// explicitly-written "needs_fix" intact. RouteMap is dedup-by-Node, so its
+// size is bounded by len(g.Nodes) — O(nodes), never O(turns): a 200-turn
+// walk with a self-looping node yields a 3-entry route, not 200.
+func (w *Walker) setRoute(nodeID, status string) {
+	for i := range w.state.RouteMap {
+		if w.state.RouteMap[i].Node == nodeID {
+			w.state.RouteMap[i].Status = status
+			w.state.RouteMap[i].Label = w.labelOf(nodeID) // refresh on overwrite
+			return
+		}
+	}
+	w.state.RouteMap = append(w.state.RouteMap, routeEntry{Node: nodeID, Label: w.labelOf(nodeID), Status: status})
+}
+
+// reconcileRoute is the load-time self-heal (A5). Called in NewWalker after
+// LoadState, before any Save. It repairs three crash/evolution hazards the
+// adversarial panel raised:
+//  1. stale entries after a node is renamed/removed from the graph YAML —
+//     pruned (only entries whose Node still exists in g survive).
+//  2. duplicate entries for one node (a buggy write) — dedup, keeping the
+//     last occurrence.
+//  3. a dangling "current" marker disagreeing with CurrentNode (a process
+//     crash between mutating CurrentNode and mutating RouteMap) — the entry
+//     for the (now-loaded) CurrentNode is forced "current"; any other
+//     "current" is neutralized to "pass".
+// All surviving labels are refreshed from the live graph, so a node marked
+// "pass" at invocation 1 whose YAML label later changed shows the NEW label
+// on the next load without needing a re-touching write. O(nodes) per load.
+// This makes the single-"current" invariant a load-time GUARANTEE, not a hope.
+func (w *Walker) reconcileRoute() {
+	valid := map[string]bool{}
+	for _, n := range w.g.Nodes {
+		valid[n.ID] = true
+	}
+	// prune stale + dedup-by-Node keeping LAST occurrence, refreshing labels.
+	last := map[string]int{}
+	for i, re := range w.state.RouteMap {
+		if !valid[re.Node] {
+			continue
+		}
+		last[re.Node] = i
+	}
+	kept := w.state.RouteMap[:0]
+	for i, re := range w.state.RouteMap {
+		if valid[re.Node] && last[re.Node] == i {
+			re.Label = w.labelOf(re.Node)
+			kept = append(kept, re)
+		}
+	}
+	w.state.RouteMap = kept
+	// enforce single-"current" invariant vs CurrentNode.
+	for i := range w.state.RouteMap {
+		if w.state.RouteMap[i].Node == w.state.CurrentNode {
+			w.state.RouteMap[i].Status = "current"
+		} else if w.state.RouteMap[i].Status == "current" {
+			w.state.RouteMap[i].Status = "pass" // dangling current (crash mid-transition) → pass
+		}
 	}
 }
 
@@ -155,17 +235,30 @@ func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
 func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 	w.traceOrLog(toMap(v))
 	if v.Verdict == "PASS" {
+		// A5: v.Node passed → "pass". The caller demotes explicitly (no sweep);
+		// setRoute won't touch any other entry, so the prior "current" on v.Node
+		// is overwritten to "pass" here, and next (if any) becomes "current".
+		w.setRoute(v.Node, "pass")
 		// advance to next forward node
 		next := w.g.forwardFrom(v.Node)
 		w.state.CurrentNode = next
 		w.state.Attempt = 1
 		w.state.PendingReview = ""
+		if next != "" {
+			w.setRoute(next, "current") // mark new current; terminal (next=="") leaves NO current — walk done
+		}
 		w.saveStateOrLog()
 		if next == "" {
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil // terminal
 		}
 		return Directive{Kind: Checkpoint, Node: v.Node, Label: w.labelOf(v.Node)}, nil
 	}
+	// A5: NEEDS-FIX preamble — v.Node failed review → "needs_fix". This runs
+	// BEFORE the same/cross split, so ALL escalation early-returns (unknown
+	// node, max_inner_turns, alternating window, 3×, MaxBackEdgesTotal) and
+	// the cross-node advance persist "needs_fix" on the failing node. Because
+	// setRoute does NOT sweep, the legitimate "current" elsewhere is untouched.
+	w.setRoute(v.Node, "needs_fix")
 	// NEEDS-FIX: same-node (node_review_retry) vs cross-node (handoff_reject)
 	findingText := findingKey(v.Findings)
 	backTarget := w.g.backEdgeTarget(v.Node)
@@ -227,6 +320,12 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 		"from_node": v.Node, "reason": "review_needs_fix",
 		"findings": findingStrings(v.Findings), "executor": "walker",
 	})
+	// A5: going BACK to a prior node — mark it "current". It was "pass" (or
+	// "needs_fix" from a prior visit); overwriting to "current" signals a
+	// revisit so the route shows non-linear progress (▶ on an earlier node
+	// after the failed node's ✗). NO sweep → v.Node stays "needs_fix" (the
+	// bug-fix for the panel's caught cross-node-demotes-failing-node defect).
+	w.setRoute(backTarget, "current")
 	w.state.CurrentNode = backTarget
 	w.state.Attempt = 1
 	w.saveStateOrLog()
