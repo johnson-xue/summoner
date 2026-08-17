@@ -81,6 +81,7 @@ type ChatResponse struct {
 type ExtractionResult struct {
 	Summary    string
 	Score      int
+	Fallback   bool // true when the score was defaulted (no/bad [SCORE:] line) — NOT a real LLM rating
 	TokenUsage *TokenUsage
 }
 
@@ -233,14 +234,15 @@ func (c *Client) doRequest(reqBody ChatRequest) (*ExtractionResult, error) {
 
 	// Parse extraction result
 	content := chatResp.Choices[0].Message.Content
-	summary, score, err := parseExtractionResponse(content)
+	summary, score, fallback, err := parseExtractionResponse(content)
 	if err != nil {
 		return nil, err
 	}
 
 	result := &ExtractionResult{
-		Summary: summary,
-		Score:   score,
+		Summary:  summary,
+		Score:    score,
+		Fallback: fallback,
 	}
 
 	// Add token usage if available
@@ -257,30 +259,48 @@ func (c *Client) doRequest(reqBody ChatRequest) (*ExtractionResult, error) {
 	return result, nil
 }
 
-func parseExtractionResponse(content string) (summary string, score int, err error) {
+// parseExtractionResponse splits the LLM's reply into a summary and a 1-5 score.
+// The score is CLAMPED to [0,5]: an LLM that ignores the "1-5" instruction and
+// returns [SCORE: 9] would otherwise make a downstream consumer
+// (checkpoint.go: strings.Repeat("░", 5-score)) panic on a negative count. A
+// fallback flag marks scores that were defaulted (no [SCORE:] line or unparseable)
+// so the UI can distinguish "real 3/5" from "couldn't parse, assumed 3" (B6).
+func parseExtractionResponse(content string) (summary string, score int, fallback bool, err error) {
 	lines := strings.Split(content, "\n")
 
 	// Extract score from first line
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "[SCORE:") {
-		_, err := fmt.Sscanf(lines[0], "[SCORE: %d]", &score)
-		if err == nil {
+		_, parseErr := fmt.Sscanf(lines[0], "[SCORE: %d]", &score)
+		if parseErr == nil {
 			summary = strings.Join(lines[1:], "\n")
 		} else {
-			// Score parsing failed, treat whole content as summary
+			// Score line present but unparseable (e.g. "[SCORE: abc]") — defaulted.
 			score = 3
+			fallback = true
 			summary = content
 		}
 	} else {
 		score = 3 // Default score
+		fallback = true
 		summary = content
+	}
+
+	// Clamp to valid range (A2): an out-of-range LLM score must never reach a
+	// consumer that does slice/repeat arithmetic on (5 - score).
+	if score < 0 {
+		score = 0
+		fallback = true
+	} else if score > 5 {
+		score = 5
+		fallback = true
 	}
 
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
-		return "", 0, fmt.Errorf("empty summary")
+		return "", 0, false, fmt.Errorf("empty summary")
 	}
 
-	return summary, score, nil
+	return summary, score, fallback, nil
 }
 
 // Validate checks if the client is properly configured

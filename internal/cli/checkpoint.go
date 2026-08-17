@@ -66,8 +66,17 @@ func printCheckpoint(phase *context.Phase) {
 	fmt.Printf("│ ✓ Phase %d (%s) — %s\n", phase.Sequence, phase.PhaseName, phase.SkillName)
 	fmt.Println("│")
 
-	// Score indicator
-	scoreBar := strings.Repeat("█", phase.SummaryScore) + strings.Repeat("░", 5-phase.SummaryScore)
+	// Score indicator (defensive clamp: an out-of-range SummaryScore, e.g. from
+	// a malformed LLM extraction, must never make strings.Repeat panic on a
+	// negative count. Source clamps in parseExtractionResponse; this is the
+	// defense-in-depth at the render site.)
+	score := phase.SummaryScore
+	if score < 0 {
+		score = 0
+	} else if score > 5 {
+		score = 5
+	}
+	scoreBar := strings.Repeat("█", score) + strings.Repeat("░", 5-score)
 	editedMarker := ""
 	if phase.SummaryEdited {
 		editedMarker = " ✏️"
