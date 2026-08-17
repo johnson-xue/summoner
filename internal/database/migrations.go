@@ -108,6 +108,20 @@ CREATE INDEX IF NOT EXISTS idx_phases_token ON phases(token_cost);
 -- If this migration fails, search will fall back to LIKE queries
 		`,
 	},
+	{
+		Version:     4,
+		Description: "Add updated_at to phases (EditSummary writes it; was missing → edit feature errored 'no such column: updated_at')",
+		SQL: `
+-- phases.updated_at was referenced by EditSummary (memory.go) but never declared;
+-- only workflows carried updated_at. This migration adds the column so the edit
+-- feature works. The Migrate() wrapper records v4 in schema_migrations on success,
+-- so it runs exactly once per DB — re-running migrations is a no-op. If a DB
+-- somehow already has the column (manual fix), ALTER ADD COLUMN errors "duplicate
+-- column name", the migration tx rolls back, and v4 stays unapplied — the operator
+-- can INSERT v4 into schema_migrations manually to mark it applied.
+ALTER TABLE phases ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+		`,
+	},
 }
 
 // Migrate applies all pending migrations
