@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Client represents an LLM API client
@@ -81,8 +82,17 @@ type ChatResponse struct {
 type ExtractionResult struct {
 	Summary    string
 	Score      int
+	Fallback   bool // true when the score was defaulted (no/bad [SCORE:] line) or clamped — NOT a real LLM rating
 	TokenUsage *TokenUsage
 }
+
+// NOTE (S8 review): Fallback is computed here but NOT yet consumed downstream —
+// SavePhase persists only Score (and the LLM-down path writes score=0 as a
+// separate sentinel), so the checkpoint UI cannot today distinguish a real
+// 3/5 from a defaulted 3. Wiring it through (Phase.Fallback field + DB column
+// + checkpoint render marker) is a v0.1.9 item. The flag is kept so that work
+// is additive, and so the A2 clamp (the actual panic fix) can signal which
+// scores were massaged. Do not assume UI-distinguishability is live.
 
 // TokenUsage represents token consumption
 type TokenUsage struct {
@@ -112,10 +122,24 @@ func (c *Client) Extract(fullOutput, projectGuide string) (*ExtractionResult, er
 		systemPrompt += fmt.Sprintf("\n\n项目特定指南：\n%s", projectGuide)
 	}
 
-	// Truncate long output to avoid token limits
-	maxInputLen := 20000 // ~5k tokens
+	// Truncate long output to a ~5k-token byte budget, slicing on a rune
+	// boundary so no multi-byte UTF-8 sequence (CJK = 3 bytes/char) is split.
+	// fullOutput[:maxInputLen] cuts at a BYTE index and can produce invalid
+	// UTF-8 that the LLM API rejects or mangles.
+	//
+	// S8 fix: the prior version guarded on byte length (len(fullOutput) >
+	// maxInputLen) but then capped by RUNE count (len(runes) > maxInputLen) — a
+	// units mismatch. For CJK between 20001 and ~60000 bytes (6667–20000 runes)
+	// the guard entered the branch but the cap never fired, so the truncation
+	// marker was appended to the FULL un-truncated content (output LONGER than
+	// input, falsely labelled "已截断"). The fix caps by a BYTE budget enforced
+	// on a rune boundary: walk runes, accumulate byte length, stop once the
+	// budget would be exceeded. This always truncates when the input exceeds
+	// the byte budget, regardless of CJK density, and always on a valid UTF-8
+	// boundary.
+	maxInputLen := 20000 // ~5k tokens (byte budget)
 	if len(fullOutput) > maxInputLen {
-		fullOutput = fullOutput[:maxInputLen] + "\n\n[... 输出过长，已截断 ...]"
+		fullOutput = truncateOnRuneBoundary(fullOutput, maxInputLen) + "\n\n[... 输出过长，已截断 ...]"
 	}
 
 	// Prepare request
@@ -233,14 +257,15 @@ func (c *Client) doRequest(reqBody ChatRequest) (*ExtractionResult, error) {
 
 	// Parse extraction result
 	content := chatResp.Choices[0].Message.Content
-	summary, score, err := parseExtractionResponse(content)
+	summary, score, fallback, err := parseExtractionResponse(content)
 	if err != nil {
 		return nil, err
 	}
 
 	result := &ExtractionResult{
-		Summary: summary,
-		Score:   score,
+		Summary:  summary,
+		Score:    score,
+		Fallback: fallback,
 	}
 
 	// Add token usage if available
@@ -257,33 +282,76 @@ func (c *Client) doRequest(reqBody ChatRequest) (*ExtractionResult, error) {
 	return result, nil
 }
 
-func parseExtractionResponse(content string) (summary string, score int, err error) {
+// parseExtractionResponse splits the LLM's reply into a summary and a 1-5 score.
+// The score is CLAMPED to [0,5]: an LLM that ignores the "1-5" instruction and
+// returns [SCORE: 9] would otherwise make a downstream consumer
+// (checkpoint.go: strings.Repeat("░", 5-score)) panic on a negative count. A
+// fallback flag marks scores that were defaulted (no [SCORE:] line or unparseable)
+// so the UI can distinguish "real 3/5" from "couldn't parse, assumed 3" (B6).
+func parseExtractionResponse(content string) (summary string, score int, fallback bool, err error) {
 	lines := strings.Split(content, "\n")
 
 	// Extract score from first line
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "[SCORE:") {
-		_, err := fmt.Sscanf(lines[0], "[SCORE: %d]", &score)
-		if err == nil {
+		_, parseErr := fmt.Sscanf(lines[0], "[SCORE: %d]", &score)
+		if parseErr == nil {
 			summary = strings.Join(lines[1:], "\n")
 		} else {
-			// Score parsing failed, treat whole content as summary
+			// Score line present but unparseable (e.g. "[SCORE: abc]") — defaulted.
 			score = 3
+			fallback = true
 			summary = content
 		}
 	} else {
 		score = 3 // Default score
+		fallback = true
 		summary = content
+	}
+
+	// Clamp to valid range (A2): an out-of-range LLM score must never reach a
+	// consumer that does slice/repeat arithmetic on (5 - score).
+	if score < 0 {
+		score = 0
+		fallback = true
+	} else if score > 5 {
+		score = 5
+		fallback = true
 	}
 
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
-		return "", 0, fmt.Errorf("empty summary")
+		return "", 0, false, fmt.Errorf("empty summary")
 	}
 
-	return summary, score, nil
+	return summary, score, fallback, nil
 }
 
 // Validate checks if the client is properly configured
+// truncateOnRuneBoundary returns the longest prefix of s whose byte length is
+// ≤ maxBytes, cut on a UTF-8 rune boundary (never mid-rune). It assumes
+// len(s) > maxBytes (the caller guards on that). For ASCII it is equivalent to
+// s[:maxBytes]; for CJK it stops at the last rune boundary that fits within
+// maxBytes, so the result is always valid UTF-8 and at most maxBytes long.
+func truncateOnRuneBoundary(s string, maxBytes int) string {
+	var (
+		out  []byte
+		n    int
+		size int
+	)
+	for i := 0; i < len(s); i += size {
+		_, size = utf8.DecodeRuneInString(s[i:])
+		if size == 0 {
+			break // invalid encoding; stop to avoid an infinite loop
+		}
+		if n+size > maxBytes {
+			break // the next rune would exceed the byte budget — stop here
+		}
+		out = append(out, s[i:i+size]...)
+		n += size
+	}
+	return string(out)
+}
+
 func (c *Client) Validate() error {
 	apiKey := os.Getenv(c.config.APIKeyEnv)
 	if apiKey == "" {

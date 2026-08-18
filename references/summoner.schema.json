@@ -48,7 +48,8 @@
           "required": ["checkpoints"],
           "oneOf": [
             { "required": ["chain"] },
-            { "required": ["fan_out"] }
+            { "required": ["fan_out"] },
+            { "required": ["graph"] }
           ],
           "properties": {
             "chain": {
@@ -67,10 +68,40 @@
               },
               "minItems": 1
             },
+            "graph": {
+              "type": "object",
+              "description": "Plan-time graph definition (spec §2.6); manifest accepts the shape, walker/parse.go validates internals",
+              "properties": {
+                "nodes": { "type": "array", "items": { "type": "object" } },
+                "edges": { "type": "array" },
+                "conditional_edges": { "type": "array" },
+                "back_edges": { "type": "array" },
+                "budget": { "type": "object" }
+              }
+            },
             "merge": { "type": "string" },
             "checkpoints": {
               "type": "string",
-              "enum": ["after_each", "after_merge", "none"]
+              "enum": ["after_each", "after_merge", "after_node", "none"]
+            }
+          }
+        }
+      }
+    },
+    "routing_rules": {
+      "type": "object",
+      "description": "Top-level routing rules mapping a shared input field to node-id per workflow (spec §2.6.1)",
+      "patternProperties": {
+        "^[a-z_-]+$": {
+          "type": "object",
+          "required": ["input_field", "map"],
+          "properties": {
+            "input_field": { "type": "string" },
+            "map": {
+              "type": "object",
+              "patternProperties": {
+                "^[a-z_-]+$": { "type": "string" }
+              }
             }
           }
         }

@@ -1,0 +1,21 @@
+{"type":"session_start","timestamp":"2026-07-27T10:00:00Z","workflow":"fix","session_id":"c4-old-001","project":"example","model":"claude-opus-4-8","note":"OLD chain Summoner — fix node applied a nil-check at the deref site (task.go:142, where the stack pointed) but MISSED a 2nd caller of the same nilable field (task.go:187, same function). No per-node ⑤ review agent; no machine-checked acceptance at node boundary; the entire session context flows phase→phase. The defect reaches the HUMAN reviewer at Phase 5, who catches it by reading the checkpoint block — 1 full rework round."}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:05Z","phase":0,"name":"memory","skill":null}
+{"type":"phase_end","timestamp":"2026-07-27T10:00:10Z","phase":0,"status":"completed","artifacts":["patterns: 0 matches"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:00:10Z","phase":0,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:12Z","phase":1,"name":"diagnose","skill":"debug"}
+{"type":"reasoning","timestamp":"2026-07-27T10:00:20Z","step":"root_cause_analysis","content":"player.SubTask nil at task.go:142 when player offline","confidence":0.9}
+{"type":"phase_end","timestamp":"2026-07-27T10:00:35Z","phase":1,"status":"completed","artifacts":["root_cause: task.go:142 nil deref"]}
+{"type":"checkpoint","timestamp":"2026-07-27T10:00:35Z","phase":1,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:40Z","phase":3,"name":"fix","skill":"freeform"}
+{"type":"tool_call","timestamp":"2026-07-27T10:00:45Z","tool":"Edit","args":{"file_path":"player/task/task.go","line":142},"result":"success"}
+{"type":"phase_end","timestamp":"2026-07-27T10:00:50Z","phase":3,"status":"completed","artifacts":["edited: task.go:142"],"note":"fix only patched the stack-pointed site; no independent check for sibling deref sites"}
+{"type":"checkpoint","timestamp":"2026-07-27T10:00:50Z","phase":3,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:00:55Z","phase":4,"name":"verify","skill":"test-suite"}
+{"type":"tool_call","timestamp":"2026-07-27T10:01:00Z","tool":"Bash","args":{"command":"go test ./..."},"result":"success"}
+{"type":"phase_end","timestamp":"2026-07-27T10:01:05Z","phase":4,"status":"completed","artifacts":["tests: all passed"],"note":"tests pass because they cover :142 only — :187 is not exercised"}
+{"type":"checkpoint","timestamp":"2026-07-27T10:01:05Z","phase":4,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-07-27T10:01:10Z","phase":5,"name":"review","skill":"code-reviewer"}
+{"type":"phase_end","timestamp":"2026-07-27T10:01:20Z","phase":5,"status":"completed","artifacts":["review: the HUMAN reviewer notices task.go:187 also derefs player.SubTask unchecked; sends back to fix"],"note":"the human, reading the checkpoint block, catches what no machine checked — this is the §1.3 '人疏忽就遗漏' failure mode in the benign case (human was alert here)"}
+{"type":"checkpoint","timestamp":"2026-07-27T10:01:20Z","phase":5,"user_input":"recall"}
+{"type":"session_end","timestamp":"2026-07-27T10:01:25Z","status":"stopped","total_duration_ms":85000,"total_phases":5,"skipped_phases":0,"human_interventions":5,"defects_caught_before_human":0,"human_rework_rounds":1,"note":"human interventions: 4 checkpoint continues (memory/diagnose/fix/verify) + 1 recall at review = 5. Defect reached the human at Phase 5 (defects_caught_before_human=0). Cost: 1 full graph traverse to Phase 5 + human read of verify AND review checkpoint blocks + 1 rework round. Compare new fixture: 3 interventions (continue-only, all on ⑤-PASS products), defects_caught_before_human=1, human_rework_rounds=0."}
+

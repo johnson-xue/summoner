@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"strings"
 )
 
 // Migration represents a database migration
@@ -108,6 +109,39 @@ CREATE INDEX IF NOT EXISTS idx_phases_token ON phases(token_cost);
 -- If this migration fails, search will fall back to LIKE queries
 		`,
 	},
+	{
+		Version:     4,
+		Description: "Add updated_at to phases (EditSummary writes it; was missing → edit feature errored 'no such column: updated_at')",
+		SQL: `
+-- phases.updated_at was referenced by EditSummary (memory.go) but never declared;
+-- only workflows carried updated_at. This migration adds the column so the edit
+-- feature works.
+--
+-- BLOCKER FIX (S8 review): the original v4 used "DEFAULT CURRENT_TIMESTAMP",
+-- but SQLite forbids a NON-CONSTANT default in ALTER TABLE ADD COLUMN when the
+-- table already has rows — it errors "Cannot add a column with non-constant
+-- default" and rolls back, permanently bricking the memory layer on upgrade of
+-- any populated production DB (v4 never records, every Open() retries + fails).
+-- The DEFAULT was never load-bearing: EditSummary sets updated_at = CURRENT_TIMESTAMP
+-- explicitly on every edit, so rows that are never edited simply carry NULL (they
+-- predate the edit feature — NULL is the honest value). Dropping the DEFAULT makes
+-- the ALTER succeed on a populated table.
+--
+-- IDEMPOTENCY: SQLite ADD COLUMN has no IF NOT EXISTS, so if the column was added
+-- out-of-band (manual fix) while v4 was unrecorded, the ALTER errors "duplicate
+-- column name". Migrate() now treats that specific error as success (the column
+-- exists — the migration's goal is met) and records v4, so re-runs are a true
+-- no-op rather than a permanent-failure landmine.
+ALTER TABLE phases ADD COLUMN updated_at TIMESTAMP;
+		`,
+	},
+}
+
+// isDuplicateColumnError reports whether err is SQLite's "duplicate column
+// name" error from ALTER TABLE ADD COLUMN on a column that already exists.
+// Used to make ADD-COLUMN migrations idempotent against out-of-band pre-adds.
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 // Migrate applies all pending migrations
@@ -153,6 +187,22 @@ func (db *DB) Migrate() error {
 
 		// Execute migration SQL
 		if _, err := tx.Exec(m.SQL); err != nil {
+			// Idempotency tolerance (S8 review): SQLite ADD COLUMN has no IF NOT
+			// EXISTS, so a migration that adds a column errors "duplicate column
+			// name" if the column was added out-of-band (manual fix) while the
+			// migration was unrecorded. That error means the migration's GOAL is
+			// already met (the column exists), so treat it as success: roll back
+			// the failed tx and record the migration as applied in a fresh tx so
+			// future Open() calls skip it. Without this, a single manual pre-add
+			// permanently bricked the memory layer (v4 retried + failed forever).
+			if isDuplicateColumnError(err) {
+				log.Printf("Migration v%d: column already exists (duplicate column name) — treating as applied", m.Version)
+				tx.Rollback()
+				if _, err := db.Exec(`INSERT INTO schema_migrations (version, description) VALUES (?, ?)`, m.Version, m.Description); err != nil {
+					return fmt.Errorf("record migration v%d (duplicate-column path): %w", m.Version, err)
+				}
+				continue
+			}
 			tx.Rollback()
 			return fmt.Errorf("migration v%d failed: %w", m.Version, err)
 		}
