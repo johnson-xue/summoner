@@ -36,11 +36,18 @@ echo "-------------------------"
 
 PLUGIN_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
 MARKETPLACE_VERSION=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
+ROOT_VERSION=$(jq -r '.version' plugin.json)
 
 if [ "$PLUGIN_VERSION" = "$VERSION" ]; then
     check_pass "plugin.json version matches: $PLUGIN_VERSION"
 else
     check_fail "plugin.json version mismatch: expected $VERSION, got $PLUGIN_VERSION"
+fi
+
+if [ "$ROOT_VERSION" = "$VERSION" ]; then
+    check_pass "root plugin.json version matches: $ROOT_VERSION"
+else
+    check_fail "root plugin.json version mismatch: expected $VERSION, got $ROOT_VERSION (historical drift source — release skill must bump ALL THREE)"
 fi
 
 if [ "$MARKETPLACE_VERSION" = "$VERSION" ]; then
@@ -49,10 +56,10 @@ else
     check_fail "marketplace.json version mismatch: expected $VERSION, got $MARKETPLACE_VERSION"
 fi
 
-if [ "$PLUGIN_VERSION" = "$MARKETPLACE_VERSION" ]; then
-    check_pass "Version files are synchronized"
+if [ "$PLUGIN_VERSION" = "$MARKETPLACE_VERSION" ] && [ "$PLUGIN_VERSION" = "$ROOT_VERSION" ]; then
+    check_pass "Version files are synchronized (all 3 manifests)"
 else
-    check_fail "Version drift detected: plugin=$PLUGIN_VERSION, marketplace=$MARKETPLACE_VERSION"
+    check_fail "Version drift detected: .claude-plugin/plugin.json=$PLUGIN_VERSION, marketplace.json=$MARKETPLACE_VERSION, root plugin.json=$ROOT_VERSION"
 fi
 
 echo ""
@@ -178,19 +185,27 @@ echo ""
 echo "📋 7. Marketplace Configuration"
 echo "--------------------------------"
 
-REPO_URL=$(jq -r '.plugins[0].source.repo' .claude-plugin/marketplace.json)
-if [ "$REPO_URL" = "johnson-xue/summoner" ]; then
-    check_pass "Marketplace repo configured correctly"
-else
-    check_fail "Marketplace repo misconfigured: $REPO_URL"
-fi
-
-MARKETPLACE_SOURCE=$(jq -r '.plugins[0].source.source' .claude-plugin/marketplace.json)
-if [ "$MARKETPLACE_SOURCE" = "github" ]; then
-    check_pass "Marketplace source is GitHub"
-else
-    check_warn "Marketplace source is not GitHub: $MARKETPLACE_SOURCE"
-fi
+# `source` is either the string "./" (installs from the marketplace checkout —
+# the 2026-09 form, same pattern as anthropics/skills) or an object
+# {"source":"github","repo":...}. Handle both; `jq` on `.source.repo` would
+# throw on the string form and kill this script (found in review).
+MARKETPLACE_SOURCE=$(jq -r '.plugins[0].source | if type == "string" then . else (.source // "invalid") end' .claude-plugin/marketplace.json)
+case "$MARKETPLACE_SOURCE" in
+    "./")
+        check_pass "Marketplace source is ./ (installs from the checkout tree)"
+        ;;
+    github)
+        REPO_URL=$(jq -r '.plugins[0].source.repo // empty' .claude-plugin/marketplace.json)
+        if [ "$REPO_URL" = "johnson-xue/summoner" ]; then
+            check_pass "Marketplace repo configured correctly (github)"
+        else
+            check_fail "Marketplace repo misconfigured: $REPO_URL"
+        fi
+        ;;
+    *)
+        check_fail "Marketplace source unsupported: $MARKETPLACE_SOURCE"
+        ;;
+esac
 
 echo ""
 

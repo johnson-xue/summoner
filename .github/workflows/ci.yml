@@ -1,0 +1,95 @@
+# CI — runs what the repo already owns, plus the mechanical invariants whose
+# absence let real defects ship (version drift, manifest omissions, dead
+# references, hardcoded project names, duplicate hook trees).
+# See scripts/validate-repo.sh and scripts/run-trace-fixtures.sh for details.
+
+name: CI
+
+on:
+  push:
+    branches: [master, release/*]
+  pull_request:
+
+jobs:
+  go:
+    name: Go modules — build / vet / test + router-contract fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go 1.16 = the repo's declared minimum toolchain (both go.mod files).
+          # Do NOT casually "upgrade": vet/lint semantics differ across versions
+          # and 1.16 is the oldest-supported target by design.
+          go-version: "1.16"
+
+      - name: Root module — build, vet, test
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Hooks module — build, vet, test
+        working-directory: hooks
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Router contract — validate-manifest fixtures (skills_check ON)
+        working-directory: hooks
+        run: |
+          make build
+          cd "$GITHUB_WORKSPACE"
+          F=tests/fixtures/manifests
+          S=$F/skills
+          # valid manifests must pass (with skills-dir where relevant)
+          ./hooks/bin/validate-manifest "$F/valid-minimal.yaml"
+          ./hooks/bin/validate-manifest "$F/valid-with-skills.yaml" --skills-dir "$S"
+          ./hooks/bin/validate-manifest "$F/valid-plugin-qualified.yaml" --skills-dir "$S"
+          # invalid manifests must FAIL (a pass here means the validator is off)
+          if ./hooks/bin/validate-manifest "$F/invalid-undeclared-phase.yaml"; then
+            echo "✗ undeclared-phase fixture unexpectedly VALID"; exit 1
+          fi
+          if ./hooks/bin/validate-manifest "$F/invalid-skill-not-found.yaml" --skills-dir "$S"; then
+            echo "✗ missing-skill fixture unexpectedly VALID (skills_check regression?)"; exit 1
+          fi
+
+  scorers:
+    name: Trace-fixture matrix (7 scorers × fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert expected-outcome table
+        run: bash scripts/run-trace-fixtures.sh
+
+  lint:
+    name: Repo mechanical invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tag-existence check on master needs tags
+
+      - name: validate-repo
+        run: |
+          python3 --version
+          bash scripts/validate-repo.sh
+
+  install-smoke:
+    name: Install from this checkout (pre-publish gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install-path smoke test
+        run: bash scripts/install-smoke-test.sh

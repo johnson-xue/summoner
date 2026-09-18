@@ -1,0 +1,137 @@
+# Release — on tag v*: verify invariants + tag/version match, build all
+# platform binaries unattended (M-A1: ends the hand-built-binary rot class),
+# publish a GitHub Release with checksums.
+#
+# NOTE: hooks/bin/* binaries also remain committed in the tree while
+# marketplace installs read the git tree (P8-binary relocation is gated on the
+# install smoke test proving a fetch path — see ci.yml's install-smoke job).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify invariants + tag ↔ manifest version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags for validate-repo's master check
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.16"
+
+      - name: Repo mechanical invariants
+        run: bash scripts/validate-repo.sh
+
+      - name: Tag must match manifest version
+        run: |
+          VERSION=$(python3 -c 'import json; print(json.load(open("plugin.json"))["version"])')
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "✗ tag $GITHUB_REF_NAME != v$VERSION (manifest version)"
+            exit 1
+          fi
+          echo "✓ tag $GITHUB_REF_NAME matches manifest version $VERSION"
+
+  build-hooks:
+    name: Hook binaries (all platforms, CGO-free)
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.16"
+
+      - name: Build + cross-compile
+        working-directory: hooks
+        run: make release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hooks-bin
+          # platform-suffixed set + unsuffixed hooks (excludes .gitkeep)
+          path: |
+            hooks/bin/*-*
+            hooks/bin/session-start
+            hooks/bin/pretooluse-skill
+            hooks/bin/stop
+            hooks/bin/validate-manifest
+
+  build-cli-linux:
+    name: summoner-ctx + summoner-walker (linux-amd64, cgo)
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.16"
+
+      - name: Build
+        run: |
+          go build -o dist/summoner-ctx-linux-amd64 ./cmd/summoner-ctx
+          CGO_ENABLED=0 go build -o dist/summoner-walker-linux-amd64 ./cmd/summoner-walker
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: dist/*
+
+  build-cli-darwin:
+    name: summoner-ctx + summoner-walker (darwin amd64/arm64, cgo)
+    runs-on: macos-14
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.16"
+
+      - name: Build (both darwin arches)
+        run: |
+          CGO_ENABLED=1 GOARCH=arm64 go build -o dist/summoner-ctx-darwin-arm64 ./cmd/summoner-ctx
+          CGO_ENABLED=1 GOARCH=amd64 go build -o dist/summoner-ctx-darwin-amd64 ./cmd/summoner-ctx
+          CGO_ENABLED=0 GOARCH=arm64 go build -o dist/summoner-walker-darwin-arm64 ./cmd/summoner-walker
+          CGO_ENABLED=0 GOARCH=amd64 go build -o dist/summoner-walker-darwin-amd64 ./cmd/summoner-walker
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-darwin
+          path: dist/*
+
+  publish:
+    name: GitHub Release + checksums
+    runs-on: ubuntu-latest
+    needs: [build-hooks, build-cli-linux, build-cli-darwin]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          shasum -a 256 * > SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*

@@ -1,0 +1,10 @@
+version: "1"
+project:
+  name: fixture-project
+phases:
+  debug:
+    skill: none
+workflows:
+  fix:
+    chain: [debug, nonexistent_phase]
+    checkpoints: after_each

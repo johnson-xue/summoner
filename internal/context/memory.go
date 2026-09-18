@@ -37,6 +37,7 @@ func NewMemory(projectName string) (*Memory, error) {
 
 	// Get database path (with env override support)
 	dbPath := getDatabasePath(projectHash)
+	migrateLegacyDatabase(dbPath, projectHash)
 
 	// Open database
 	db, err := database.Open(dbPath)
@@ -85,15 +86,56 @@ func getDatabasePath(projectHash string) string {
 	return getDefaultDatabasePath(projectHash)
 }
 
-// getDefaultDatabasePath returns the default database path
+// getDefaultDatabasePath returns the default database path.
+//
+// 2026-09: the default moved to ~/.summoner/memory/ — a VERSION-INDEPENDENT
+// root. The old default (~/.claude/plugins/summoner/memory/) sits in a
+// directory that changes (or gets abandoned) on every plugin upgrade, which
+// orphaned context DBs on each version bump. Existing DBs migrate on first
+// open (copy-if-missing, non-destructive).
 func getDefaultDatabasePath(projectHash string) string {
+	if base := os.Getenv("SUMMONER_MEMORY_DIR"); base != "" {
+		return filepath.Join(base, projectHash+".db")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// Security: fail fast instead of using current directory
 		log.Fatalf("Fatal: cannot determine home directory: %v", err)
 	}
+	return filepath.Join(home, ".summoner", "memory", projectHash+".db")
+}
 
-	return filepath.Join(home, ".claude", "plugins", "summoner", "memory", projectHash+".db")
+// migrateLegacyDatabase copies a pre-2026-09 DB (old default root) to its new
+// location if the new one doesn't exist yet. Copy, not move: the legacy file
+// stays as a rollback fossil; the copy is idempotent.
+func migrateLegacyDatabase(newPath, projectHash string) {
+	if _, err := os.Stat(newPath); err == nil {
+		return // already migrated (or brand new)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	legacy := filepath.Join(home, ".claude", "plugins", "summoner", "memory", projectHash+".db")
+	if _, err := os.Stat(legacy); err != nil {
+		return // nothing to migrate
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+		return
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		src := legacy + suffix
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(newPath+suffix, data, 0644); err == nil {
+			log.Printf("Summoner: migrated legacy context DB %s -> %s", src, newPath+suffix)
+		}
+	}
 }
 
 // validateDatabaseBasePath validates the base path for security

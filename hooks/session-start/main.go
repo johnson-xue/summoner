@@ -12,72 +12,56 @@ import (
 )
 
 func main() {
-	pluginRoot := shared.PluginRoot()
-	projectDir := shared.ProjectDir()
+	shared.EmitOutput("SessionStart", renderContext(shared.PluginRoot(), shared.ProjectDir()))
+}
 
-	// --- Detect project state ---
-	var status []string
+// renderContext builds the SessionStart injection: project status + one
+// pointer. (M-C1) The old block carried a hand-maintained command catalog —
+// which went stale once: it said "Six" while seven commands existed — plus a
+// Rules section duplicating skills/summoner/SKILL.md: ~30 lines injected into
+// EVERY session, Summoner used or not. The host UI already lists plugin
+// commands; the hook's legitimate job is status + pointer. Budget: the whole
+// block stays ≤300 bytes even with marketplace-length plugin roots
+// (enforced by TestRenderContextByteBudget).
+func renderContext(pluginRoot, projectDir string) string {
 	manifest := filepath.Join(projectDir, "summoner.yaml")
 
 	if _, err := os.Stat(manifest); err == nil {
 		projectName := extractProjectName(manifest)
-		// Reject path traversal: project.name must be a plain name, not a path
-		if projectName != filepath.Base(projectName) || strings.ContainsAny(projectName, "/\\.") {
+		// Reject path-SHAPED names (traversal), not dotted names: "my.project"
+		// is a legal project name (found in review — the old guard mapped it
+		// to "unknown" and then reported the wrong DB state).
+		if projectName != filepath.Base(projectName) || projectName == "." || projectName == ".." ||
+			strings.ContainsAny(projectName, "/\\") {
 			projectName = "unknown"
 		}
-		status = append(status, fmt.Sprintf("✅ summoner.yaml found (project: %s)", projectName))
-
-		// Check memory DB
-		dbFile := filepath.Join(pluginRoot, "memory", projectName+".db")
-		if _, err := os.Stat(dbFile); err == nil {
-			count := countPatterns(dbFile)
-			status = append(status, fmt.Sprintf("✅ Memory DB ready (%s patterns)", count))
-		} else {
-			status = append(status, fmt.Sprintf(
-				"WARNING:  Memory DB not initialized. Run: %s/scripts/init-memory-db.sh %s",
-				pluginRoot, projectName,
-			))
+		// Display-only truncation keeps the 300B byte budget deterministic for
+		// long project names (the DB lookup below uses the full name).
+		display := projectName
+		if len(display) > 40 {
+			display = display[:37] + "…"
 		}
-
-		// Count configured phases
-		phaseCount := countPhases(manifest)
-		status = append(status, fmt.Sprintf("   %d phases configured", phaseCount))
-	} else {
-		status = append(status, "⚠️  No summoner.yaml found — Summoner not initialized for this project")
-		status = append(status, "")
-		status = append(status, "🔮 To get started, just say:")
-		status = append(status, "   \"setup summoner\"")
-		status = append(status, "")
-		status = append(status, "Or run manually:")
-		status = append(status, fmt.Sprintf(
-			"   %s/scripts/summoner-setup.sh", pluginRoot,
-		))
-		status = append(status, "")
-		status = append(status, "💡 This takes <10 seconds and sets up everything automatically.")
+		status := fmt.Sprintf("project: %s (%d phases, memory: ", display, countPhases(manifest))
+		dbFile := filepath.Join(shared.MemoryDir(), projectName+".db")
+		legacyFile := filepath.Join(pluginRoot, "memory", projectName+".db")
+		if _, err := os.Stat(dbFile); err == nil {
+			status += countPatterns(dbFile) + " patterns)"
+		} else if _, err := os.Stat(legacyFile); err == nil {
+			status += "legacy DB found — scripts/init-memory-db.sh migrates it)"
+		} else {
+			status += "DB not initialized — scripts/init-memory-db.sh)"
+		}
+		return fmt.Sprintf(`<SUMMONER-HOOK>
+Summoner %s. Workflows: read %s/skills/summoner/SKILL.md
+</SUMMONER-HOOK>`, status, pluginRoot)
 	}
 
-	// --- Build context ---
-	context := fmt.Sprintf(`<SUMMONER-HOOK>
-Summoner AI Agent Orchestration Framework is active. Six workflow commands are available:
-
-  /summoner:fix    Bug fix pipeline (diagnose→reproduce→fix→verify→review)
-  /summoner:new    New feature pipeline (define→plan→implement→test→review)
-  /summoner:ship   Pre-launch review (adaptive fan-out 1-3 personas→merge)
-  /summoner:debug  Diagnose only, no code changes
-  /summoner:ops    Server operations via project ops skill
-  /summoner:review Standalone code review
-
-Project status:
-%s
-
-Rules:
-- Every /summoner:* workflow has checkpoints between phases — pause and wait for user input.
-- Phase 1 is iron law for /summoner:fix and /summoner:debug — no code changes before root cause.
-- Post-game review is mandatory at workflow end.
-- Read %s/skills/summoner/SKILL.md for full workflow definitions.
-</SUMMONER-HOOK>`, strings.Join(status, "\n"), pluginRoot)
-
-	shared.EmitOutput("SessionStart", context)
+	// Uninitialized: the actionable next step IS the pointer — the setup
+	// script. The workflow skill is irrelevant until a manifest exists
+	// (auto-setup-summoner takes over from this warning).
+	return fmt.Sprintf(`<SUMMONER-HOOK>
+Summoner not initialized (no summoner.yaml) — say "setup summoner" or run %s/scripts/summoner-setup.sh
+</SUMMONER-HOOK>`, pluginRoot)
 }
 
 // extractProjectName reads the project.name field from summoner.yaml.
@@ -147,10 +131,13 @@ func countPhases(manifest string) int {
 			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
 				break
 			}
-			// Count phase entries: 2-space indent, word, colon, possibly value
-			// Matches "  debug:" or "  debug:\n" but not "    skill: ..." (3+ spaces = sub-key)
+			// Count phase entries: 2-space indent, key, colon, optional inline
+			// value. Matches "  debug:", "  debug: none" (inline values are
+			// legal YAML — found in review: the space check undercounted them
+			// to "0 phases"), but not "    skill: ..." (3+ spaces = sub-key).
 			if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "  #") {
-				if strings.ContainsRune(trimmed, ':') && !strings.Contains(trimmed, " ") {
+				key := trimmed
+				if i := strings.Index(key, ":"); i > 0 && key[:i] != "" && !strings.ContainsAny(key[:i], " \t") {
 					count++
 				}
 			}

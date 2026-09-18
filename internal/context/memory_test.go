@@ -62,8 +62,8 @@ func TestGetDatabasePath(t *testing.T) {
 		os.Unsetenv("SUMMONER_DB_PATH")
 		path := getDatabasePath("test123")
 
-		if !strings.Contains(path, ".claude/plugins/summoner/memory") {
-			t.Errorf("getDatabasePath() = %v, want path containing .claude/plugins/summoner/memory", path)
+		if !strings.Contains(path, ".summoner/memory") {
+			t.Errorf("getDatabasePath() = %v, want path containing .summoner/memory (version-independent root, 2026-09)", path)
 		}
 		if !strings.HasSuffix(path, "test123.db") {
 			t.Errorf("getDatabasePath() = %v, want path ending with test123.db", path)
@@ -87,7 +87,7 @@ func TestGetDatabasePath(t *testing.T) {
 
 		path := getDatabasePath("test789")
 
-		if !strings.Contains(path, ".claude/plugins/summoner/memory") {
+		if !strings.Contains(path, ".summoner/memory") {
 			t.Errorf("getDatabasePath() should fallback to default, got %v", path)
 		}
 	})
@@ -104,8 +104,8 @@ func TestGetDefaultDatabasePath(t *testing.T) {
 		t.Errorf("getDefaultDatabasePath() = %v, want path containing abc123.db", path)
 	}
 
-	if !strings.Contains(path, ".claude") {
-		t.Errorf("getDefaultDatabasePath() = %v, want path containing .claude", path)
+	if !strings.Contains(path, ".summoner") {
+		t.Errorf("getDefaultDatabasePath() = %v, want path containing .summoner", path)
 	}
 }
 

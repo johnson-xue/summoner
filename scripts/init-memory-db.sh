@@ -2,14 +2,43 @@
 set -e
 
 # init-memory-db.sh — Initialize Summoner memory database for a project namespace
-# Usage: init-memory-db.sh <project-name>
+# Usage: init-memory-db.sh <project-name> [--seed <extra-patterns.sql>]
+# The framework seeds ONE project-agnostic pattern; project-specific seeds
+# (your error codes, module names, generated-dir rules) live in YOUR repo and
+# are applied via --seed (INSERT OR IGNORE INTO patterns ... statements).
 
-PROJECT="${1:?Usage: init-memory-db.sh <project-name>}"
-MEMORY_DIR="$(dirname "$0")/../memory"
+PROJECT="${1:?Usage: init-memory-db.sh <project-name> [--seed <extra.sql>]}"
+SEED_FILE=""
+if [ "${2:-}" = "--seed" ]; then
+  if [ -z "${3:-}" ]; then
+    echo "✗ --seed requires a file argument" >&2
+    exit 1
+  fi
+  SEED_FILE="$3"
+fi
+# project name becomes a filename under memory/ — reject separators/quotes
+case "$PROJECT" in
+  */*|*..*|*"'"*|*'"'*)
+    echo "✗ invalid project name: $PROJECT (no path separators or quotes)" >&2
+    exit 1 ;;
+esac
+# 2026-09: memory lives at a VERSION-INDEPENDENT root — the plugin-cache
+# memory/ dir died with every version bump, orphaning each project's DB.
+MEMORY_DIR="${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}"
 DB_FILE="${MEMORY_DIR}/${PROJECT}.db"
 INDEX_FILE="${MEMORY_DIR}/_index.json"
+LEGACY_DB="$(dirname "$0")/../memory/${PROJECT}.db"
 
 mkdir -p "$MEMORY_DIR"
+
+# Migrate a legacy plugin-cache DB (copy-if-missing, non-destructive: the
+# legacy file stays as a rollback fossil; the copy is idempotent).
+if [ ! -f "$DB_FILE" ] && [ -f "$LEGACY_DB" ]; then
+    cp "$LEGACY_DB" "$DB_FILE"
+    [ -f "${LEGACY_DB}-wal" ] && cp "${LEGACY_DB}-wal" "${DB_FILE}-wal"
+    [ -f "${LEGACY_DB}-shm" ] && cp "${LEGACY_DB}-shm" "${DB_FILE}-shm"
+    echo "✓ Migrated legacy memory DB → $DB_FILE (original kept at $LEGACY_DB)"
+fi
 
 sqlite3 "$DB_FILE" <<SQL
 PRAGMA journal_mode=WAL;
@@ -51,31 +80,32 @@ CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(type);
 CREATE INDEX IF NOT EXISTS idx_journal_date ON journal(date);
 CREATE INDEX IF NOT EXISTS idx_journal_workflow ON journal(workflow);
 
+-- Framework default seed: ONE project-agnostic pattern only.
+-- Project-specific seeds (error codes, module names, generated-dir rules)
+-- belong to the PROJECT, not the framework -- pass them via:
+--   init-memory-db.sh <project> --seed <extra.sql>
+-- (extra.sql: INSERT OR IGNORE INTO patterns (...) statements.)
 INSERT OR IGNORE INTO patterns (name, type, error_codes, modules, keywords, summary, priority)
 VALUES
-  ('ai-risk-003-global-impact', 'correction', '[]', '["player","createNewRole","internal/module/game"]',
-   '["局部修改遗漏全局影响","关联表","createNewRole","调用方","回滚路径"]',
-   '修改代码前检查所有调用方和关联表，确保成功路径和失败路径同步更新。新增 init 步骤必须注册到 createNewRole。',
-   'high'),
   ('ai-risk-004-pattern-match', 'correction', '[]', '[]',
    '["模式匹配代替验证","代码相似","假设","fix without verification","assumed similar"]',
    '代码相似不等于行为相同。修复 Bug 后必须说明如何验证，禁止仅凭代码阅读就断言修复完成。',
-   'high'),
-  ('ai-err-005-ok-check', 'correction', '["SC_NotFoundInConf","SC_ErrRushRankConfErr"]', '["conf","conf.GetPB","player"]',
-   '["conf.GetPB","ok检查","nil pointer","配置访问"]',
-   '使用 conf.GetPB* 时必须检查 ok 返回值，!ok 时返回 SC_NotFoundInConf 错误。忽略 ok 检查会导致 nil pointer panic。',
-   'high'),
-  ('ai-err-003-naked-error', 'correction', '["SC_ErrInnerLogic","SC_ErrItemNotEnough","SC_ErrParam"]', '["errs","dealer","subsys"]',
-   '["裸error","fmt.Errorf","errors.New","PBErrorEnum"]',
-   '业务逻辑中不要使用 fmt.Errorf 返回裸 error。使用 errs.PBErrorEnum(msg.EMessageCode_SC_xxx, ...) 包装错误码。',
-   'high'),
-  ('ai-err-001-gen-files', 'correction', '[]', '["pkg/gen","pkg/gen/msg","pkg/gen/service","pkg/gen/conf"]',
-   '["pkg/gen","生成代码","make conf","不可手动编辑"]',
-   'pkg/gen/ 目录下的文件是自动生成的，禁止手动编辑。修改源定义后运行 make conf 或 make pb2db 重新生成。',
-   'medium');
+   'high');
 
 PRAGMA wal_checkpoint(TRUNCATE);
 SQL
+
+# Project-side seed file: explicitly requested ⇒ missing file is FATAL
+# (warn-and-exit-0 would leave an agent-driven setup silently pattern-less)
+if [ -n "$SEED_FILE" ]; then
+    if [ -f "$SEED_FILE" ]; then
+        sqlite3 "$DB_FILE" < "$SEED_FILE"
+        echo "✓ Project seed applied: $SEED_FILE"
+    else
+        echo "✗ Seed file not found: $SEED_FILE" >&2
+        exit 1
+    fi
+fi
 
 # Update index
 if [ -f "$INDEX_FILE" ]; then

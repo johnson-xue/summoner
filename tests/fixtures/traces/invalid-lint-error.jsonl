@@ -1,0 +1,10 @@
+{"type":"session_start","timestamp":"2026-09-02T12:00:00Z","workflow":"fix","session_id":"lint-fail-001","project":"test-project","model":"claude-opus-4-8"}
+{"type":"phase_start","timestamp":"2026-09-02T12:00:05Z","phase":1,"name":"diagnose","skill":"test-debug"}
+{"type":"tool_call","timestamp":"2026-09-02T12:00:10Z","tool":"Read","args":{"file_path":"util.go"},"result":"success","duration_ms":80}
+{"type":"reasoning","timestamp":"2026-09-02T12:00:15Z","step":"root_cause_analysis","content":"shadowed err swallows the failure","confidence":0.88}
+{"type":"phase_end","timestamp":"2026-09-02T12:00:25Z","phase":1,"status":"completed","artifacts":["root_cause: util.go:31"]}
+{"type":"checkpoint","timestamp":"2026-09-02T12:00:25Z","phase":1,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-09-02T12:00:30Z","phase":3,"name":"fix","skill":"freeform"}
+{"type":"tool_call","timestamp":"2026-09-02T12:00:35Z","tool":"Bash","args":{"command":"golangci-lint run ./..."},"result":"error","duration_ms":900,"stderr":"util.go:31:2: shadow: declaration of \"err\" shadows declaration at line 29 (govet)\n3 issues found"}
+{"type":"phase_end","timestamp":"2026-09-02T12:00:40Z","phase":3,"status":"completed","artifacts":["edited: util.go","lint: 3 issues"]}
+{"type":"session_end","timestamp":"2026-09-02T12:00:45Z","status":"completed","total_duration_ms":45000,"total_phases":2,"skipped_phases":0}

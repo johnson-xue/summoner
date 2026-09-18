@@ -14,7 +14,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Skill",
+        "matcher": "^(Skill|Edit|Write)$",
         "hooks": [
           {
             "type": "command",

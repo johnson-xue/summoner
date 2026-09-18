@@ -9,10 +9,7 @@
   "plugins": [
     {
       "name": "summoner",
-      "source": {
-        "source": "github",
-        "repo": "johnson-xue/summoner"
-      },
+      "source": "./",
       "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows.",
       "version": "0.1.8",
       "homepage": "https://github.com/johnson-xue/summoner",

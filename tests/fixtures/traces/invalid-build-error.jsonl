@@ -1,0 +1,11 @@
+{"type":"session_start","timestamp":"2026-09-02T11:00:00Z","workflow":"fix","session_id":"build-fail-001","project":"test-project","model":"claude-opus-4-8"}
+{"type":"phase_start","timestamp":"2026-09-02T11:00:05Z","phase":1,"name":"diagnose","skill":"test-debug"}
+{"type":"tool_call","timestamp":"2026-09-02T11:00:10Z","tool":"Read","args":{"file_path":"main.go"},"result":"success","duration_ms":95}
+{"type":"reasoning","timestamp":"2026-09-02T11:00:15Z","step":"root_cause_analysis","content":"typo in variable name introduced the break","confidence":0.9}
+{"type":"phase_end","timestamp":"2026-09-02T11:00:25Z","phase":1,"status":"completed","artifacts":["root_cause: main.go:17"]}
+{"type":"checkpoint","timestamp":"2026-09-02T11:00:25Z","phase":1,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-09-02T11:00:30Z","phase":3,"name":"fix","skill":"freeform"}
+{"type":"tool_call","timestamp":"2026-09-02T11:00:35Z","tool":"Edit","args":{"file_path":"main.go","old_string":"old","new_string":"new"},"result":"success","duration_ms":70}
+{"type":"error","timestamp":"2026-09-02T11:00:40Z","message":"compile error: undefined: RecieveMsg at main.go:17","source":"go build"}
+{"type":"phase_end","timestamp":"2026-09-02T11:00:45Z","phase":3,"status":"completed","artifacts":["edited: main.go"]}
+{"type":"session_end","timestamp":"2026-09-02T11:00:50Z","status":"completed","total_duration_ms":50000,"total_phases":2,"skipped_phases":0}

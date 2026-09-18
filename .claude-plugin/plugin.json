@@ -24,6 +24,7 @@
     "./agents/code-reviewer.md",
     "./agents/security-auditor.md",
     "./agents/test-engineer.md",
-    "./agents/debug-agent.md"
+    "./agents/debug-agent.md",
+    "./agents/review-agent.md"
   ]
 }

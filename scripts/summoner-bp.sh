@@ -76,7 +76,7 @@ if [ -f "$OUTPUT_FILE" ] && [ "$FORCE_MODE" = false ]; then
     fi
     echo ""
     echo "  BP will REPLACE all phase-to-skill mappings with your new selections."
-    echo "  Project-specific skills (like antia-*, my-*) will be lost."
+    echo "  Project-specific skills will be lost."
     echo ""
     printf "  ${BOLD}[y]${NC} Replace all  ${BOLD}[m]${NC} Merge (keep existing phases, add missing)  ${BOLD}[N]${NC} Cancel\n"
     read -p "  Choice [y/m/N]: " confirm

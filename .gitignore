@@ -10,6 +10,7 @@ hooks/bin/*
 !hooks/bin/session-start
 !hooks/bin/pretooluse-skill
 !hooks/bin/stop
+!hooks/bin/validate-manifest
 !hooks/bin/*-darwin-arm64
 !hooks/bin/*-darwin-amd64
 !hooks/bin/*-linux-amd64

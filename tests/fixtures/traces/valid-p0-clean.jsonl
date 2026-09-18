@@ -1,0 +1,20 @@
+{"type":"session_start","timestamp":"2026-09-02T10:00:00Z","workflow":"fix","session_id":"p0-clean-001","project":"test-project","model":"claude-opus-4-8"}
+{"type":"phase_start","timestamp":"2026-09-02T10:00:05Z","phase":0,"name":"memory","skill":null}
+{"type":"phase_end","timestamp":"2026-09-02T10:00:10Z","phase":0,"status":"completed","artifacts":["patterns: 0 matches"]}
+{"type":"checkpoint","timestamp":"2026-09-02T10:00:10Z","phase":0,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-09-02T10:00:12Z","phase":1,"name":"diagnose","skill":"test-debug"}
+{"type":"tool_call","timestamp":"2026-09-02T10:00:15Z","tool":"Read","args":{"file_path":"test.go"},"result":"success","duration_ms":110}
+{"type":"reasoning","timestamp":"2026-09-02T10:00:20Z","step":"root_cause_analysis","content":"nil deref at line 42 — consumer assumes non-nil","confidence":0.93}
+{"type":"phase_end","timestamp":"2026-09-02T10:00:30Z","phase":1,"status":"completed","artifacts":["root_cause: test.go:42"]}
+{"type":"checkpoint","timestamp":"2026-09-02T10:00:30Z","phase":1,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-09-02T10:00:35Z","phase":3,"name":"fix","skill":"freeform"}
+{"type":"tool_call","timestamp":"2026-09-02T10:00:40Z","tool":"Edit","args":{"file_path":"test.go","old_string":"old","new_string":"new"},"result":"success","duration_ms":75}
+{"type":"tool_call","timestamp":"2026-09-02T10:00:45Z","tool":"Bash","args":{"command":"go build ./..."},"result":"success","duration_ms":2100}
+{"type":"phase_end","timestamp":"2026-09-02T10:00:50Z","phase":3,"status":"completed","artifacts":["edited: test.go","build: clean"]}
+{"type":"checkpoint","timestamp":"2026-09-02T10:00:50Z","phase":3,"user_input":"continue"}
+{"type":"phase_start","timestamp":"2026-09-02T10:00:55Z","phase":4,"name":"verify","skill":"test-suite"}
+{"type":"tool_call","timestamp":"2026-09-02T10:01:00Z","tool":"Bash","args":{"command":"go test ./..."},"result":"success","duration_ms":3300}
+{"type":"tool_call","timestamp":"2026-09-02T10:01:10Z","tool":"Bash","args":{"command":"golangci-lint run ./..."},"result":"success","duration_ms":1500}
+{"type":"phase_end","timestamp":"2026-09-02T10:01:20Z","phase":4,"status":"completed","artifacts":["tests: all passed","lint: clean"]}
+{"type":"checkpoint","timestamp":"2026-09-02T10:01:20Z","phase":4,"user_input":"done"}
+{"type":"session_end","timestamp":"2026-09-02T10:01:30Z","status":"completed","total_duration_ms":90000,"total_phases":4,"skipped_phases":0}

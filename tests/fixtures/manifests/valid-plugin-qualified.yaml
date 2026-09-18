@@ -1,0 +1,8 @@
+version: "1"
+project:
+  name: fixture-project
+phases:
+  define:
+    skill: superpowers:brainstorming
+  debug:
+    skill: demo-debug
