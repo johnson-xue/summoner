@@ -1,5 +1,30 @@
 # Summoner Changelog
 
+## [0.3.0] - 2026-09-18
+
+### ✨ Features
+- **content: single-source campaign — meta-skill split, canonical blocks, platform pointers** (2ba0ec7)
+- **infra: CI + mechanical lint + hardened hooks — dead assets now enforced** (fed606e)
+- orchestration: SKILL.md drives walker; commands reference route_* rules; checkpoint M9 render (59a27a2)
+- manifest: add after_node + graph oneOf + routing_rules; fix manual vs after_merge divergence (16ea8db)
+- scorers: handoff-contract-check, verifier-checklist-check, review-isolation-check (P0) (04baa4a)
+- node-contract: node-snapshot.sh (⓪), review-agent (⑤), node-contract.md (ea23ad6)
+- walker: cmd/summoner-walker CLI (next/record/explain/status) (6afdf6a)
+- graph: walker explain (M9 human-facing) + status (debug) (1a5d731)
+- graph: walk-state machine + budget enforcement (046ee90)
+- graph: parse + validate summoner-task-graph YAML (4adc2ab)
+
+### 🐛 Bug Fixes
+- scorers+walker: iron-law graph-mode + Save-on-escalation + B3 scope (9529692)
+- walker: alternating window needs ≥2 distinct reappearences (a78e41f)
+- walker: implement alternating_finding_window — per-node rotate escalation (1dcdb9e)
+- walker: review_verdict nil-deref + ExitCriterion json tags + CLI error hygiene (aa3837e)
+- graph: remove unused strings import + suppression line in walk_test.go (f1a1db9)
+
+### 📚 Documentation / Tests / Chores
+- docs(workflow-ref): fix inverted review-isolation red-flag prose (755821b) + 6 条 graph/node-contract 规格与计划文档
+- test(fixtures): C2/C3/C5/C9 scorer 场景 (5a91f58) + C4 old-vs-new 对照 (8d1d56c) + 3x-escalation & max-back-edges 测试 (a399f32)
+- chore(graph): review fixes — gofmt, dead import cleanup (56aa2da)
 ## [0.1.8] - 2026-07-21
 
 ### 🐛 Bug Fixes
