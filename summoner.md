@@ -2,71 +2,51 @@
 
 > Define AI workflows like Makefile targets. Framework verbs fixed — project skills replaceable.
 
+**This file is a POINTER, not a copy.** All protocols (checkpoint format, memory chain,
+post-game review) live exactly once in the installed plugin's `references/` and are
+loaded on demand. Do not execute a paraphrased protocol from this page — executing a
+stale paraphrase is how pre-August-2026 integrations drifted.
+
 ## Quick Start (Any Platform)
 
-1. Add `summoner.yaml` to your project root declaring your skill mappings
-2. When you encounter a bug: invoke the `fix` workflow below
-3. When adding a feature: invoke the `new` workflow below
+1. Install the plugin (or copy the repo) and locate the plugin root — the directory
+   containing both `scripts/` and `memory/` (in Claude Code:
+   `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/`).
+2. Add `summoner.yaml` to your project root declaring your phase→skill mappings
+   (field spec: `<plugin-root>/references/manifest-spec.md`).
+3. Optional: `<plugin-root>/scripts/init-memory-db.sh <project-name>`
+4. Invoke a workflow (below). The routing hub is
+   `<plugin-root>/skills/summoner/SKILL.md` — read it first; it dispatches phases,
+   enforces checkpoints, and names the references to load per phase.
 
-## Workflows
+## Workflows (canonical chains — full rules in `<plugin-root>/commands/<name>.md`)
 
-### fix — Bug Repair Pipeline
-Phase 0 (Memory Chain) -> Phase 1 diagnose (MANDATORY) -> reproduce -> fix -> verify -> review
+| Workflow | Chain |
+|----------|-------|
+| `fix` | debug(M) → reproduce → fix → verify → review |
+| `new` | define → plan → implement → test → review |
+| `ship` | fan-out(1-3 personas) → merge → GO/NO-GO |
+| `debug` | diagnose only, no code changes |
+| `ops` | ops skill (delegated) |
+| `review` | code review only |
+| `release` | version-plan → changelog → release-execution (self-contained) |
 
-### new — Feature Pipeline
-Phase 0 (Memory Chain) -> define -> plan -> implement -> test -> review
+(M) = Mandatory — iron law.
 
-### ship — Pre-Launch Review
-Phase 0 (Memory Chain) -> fan-out(1-3 personas) -> merge -> go/no-go
+## The Three Protocols (all pointer, zero restatement)
 
-### debug — Diagnosis Only
-Phase 0 (Memory Chain) -> diagnose, no code changes
+- **Checkpoint Protocol** — after every phase, render the exact box from
+  `<plugin-root>/references/checkpoint-protocol.md` (5 mandatory fields, fixed
+  `Next:` grammar: enter/skip/done/recall/stop) and wait for user input.
+  Never auto-advance; content feedback is handled before re-asking.
+- **Memory Chain (Phase 0)** — follow
+  `<plugin-root>/references/memory-chain.md` §Phase 0 (feature extraction,
+  Top-5 SQL, 1500-token cap with silent degradation). DB path resolution for
+  non-Claude platforms is specified there.
+- **Post-Game Review** — at workflow end, run the 5-type questionnaire from
+  `<plugin-root>/references/post-game-review.md` and write the journal entry.
 
-### ops — Operations
-Phase 0 (Memory Chain) -> delegate to project ops skill
+## Iron Law
 
-### review — Code Review
-Phase 0 (Memory Chain) -> standalone 5-axis review
-
-## Memory Chain (Phase 0)
-
-Before starting any workflow, check the project's memory database for relevant past patterns:
-
-```bash
-# Derive project name from summoner.yaml
-PROJECT_NAME=$(grep 'name:' summoner.yaml | head -1 | sed 's/.*name: *//')
-DB_FILE="${HOME}/.claude/plugins/summoner/memory/${PROJECT_NAME}.db"
-
-# Query for matching patterns
-if [ -f "$DB_FILE" ]; then
-  sqlite3 "$DB_FILE" "SELECT name, summary FROM patterns WHERE priority != 'low' LIMIT 5;"
-fi
-```
-
-If memory DB doesn't exist, skip Phase 0 and proceed directly to Phase 1.
-
-## Phase 1 — Iron Law
-
-**Never skip diagnosis.** Root cause must be confirmed before any code changes. For `fix` and `debug` workflows, this is mandatory and cannot be skipped.
-
-## Checkpoint Protocol
-
-After each phase, output:
-```
- SUMMONER — Phase {N}/{Total}: {phase_name}
- Completed: {what was accomplished}
- Artifacts: {files or findings}
-[enter] Continue  [skip] Skip next  [done] Finish  [recall] Redo  [stop] Abort
-```
-
-Wait for user input before advancing. Never auto-continue.
-
-## Post-Game Review
-
-At workflow end, ask these questions:
-1. Was the workflow smooth? (1-5)
-2. Which phase was most useful?
-3. Which phase was least useful?
-4. Quality of output? (production-ready / needs fixes / wrong direction)
-
-Write the review to the memory database for future Phase 0 retrieval.
+For `fix` and `debug`: Phase 1 (diagnosis) is mandatory — root cause confirmed
+before any code change.

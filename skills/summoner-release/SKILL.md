@@ -1,6 +1,6 @@
 ---
 name: summoner-release
-description: Version release automation with checkpoint-based workflow — version planning, changelog generation, release execution. Keeps plugin.json and marketplace.json synchronized. Use when user invokes /summoner:release.
+description: Version release automation with checkpoint-based workflow — version planning, changelog generation, release execution. Keeps ALL THREE version manifests synchronized (root plugin.json, .claude-plugin/plugin.json, .claude-plugin/marketplace.json). Use when user invokes /summoner:release.
 when_to_use:
   - User invokes /summoner:release
   - User says "发版", "release a new version", "publish 0.x.y"
@@ -22,15 +22,7 @@ Automates the complete version release workflow with three checkpoint phases.
 
 ## Purpose
 
-This skill solves the critical problem of version drift between `plugin.json` and `marketplace.json` by providing a single, reliable release process that:
-- Ensures both files are always synchronized
-- Generates changelog automatically from conventional commits
-- Provides safety through checkpoints and rollback
-- Integrates with summoner-ctx for context persistence
-
-## Usage
-
-The AI should execute this skill when the user invokes `/summoner:release`.
+Single reliable release process that eliminates version drift between the three manifests (`plugin.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`): auto-changelog from conventional commits, checkpoint safety, rollback, summoner-ctx persistence. Executes on `/summoner:release`.
 
 ## Implementation Guide
 
@@ -61,39 +53,26 @@ fi
 
 ### Argument Parsing Template
 
-```bash
-INCREMENT_MAJOR=false
-INCREMENT_MINOR=false
-INCREMENT_PATCH=false
-VERSION_ARG=""
-DRY_RUN=false
-NO_PUSH=false
-SKIP_CHANGELOG=false
-
-# Parse from user's command
-# Example: /summoner:release --patch --dry-run
-```
+Init `INCREMENT_MAJOR/MINOR/PATCH=false VERSION_ARG="" DRY_RUN=false NO_PUSH=false SKIP_CHANGELOG=false`, then parse the user's flags (e.g. `/summoner:release --patch --dry-run`) into them.
 
 ### Phase 1: Version Planning
 
-**START Block:**
-```
-⚡ SUMMONER START — Workflow=release Phase 1/3: Version Planning
-🎯 任务: 确定新版本号并验证版本文件一致性
-🔧 Skill: none (版本管理逻辑)
-```
+**START Block:** `⚡ SUMMONER START — Workflow=release Phase 1/3: Version Planning` / `🎯 任务: 确定新版本号并验证版本文件一致性` / `🔧 Skill: none (版本管理逻辑)`
 
 **Core Logic:**
 
 ```bash
-# Read versions
+# Read versions — ALL THREE manifests (the root plugin.json was historically
+# skipped by this skill and drifted to 0.1.5 while the others moved on;
+# scripts/validate-repo.sh enforces the same invariant in CI)
 CURRENT_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
 MARKETPLACE_VERSION=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
+ROOT_VERSION=$(jq -r '.version' plugin.json)
 
 # Check consistency
-if [ "$CURRENT_VERSION" != "$MARKETPLACE_VERSION" ]; then
-    echo "⚠️  Version mismatch: plugin.json=$CURRENT_VERSION, marketplace.json=$MARKETPLACE_VERSION"
-    echo "   Using plugin.json as source of truth"
+if [ "$CURRENT_VERSION" != "$MARKETPLACE_VERSION" ] || [ "$CURRENT_VERSION" != "$ROOT_VERSION" ]; then
+    echo "⚠️  Version mismatch: .claude-plugin/plugin.json=$CURRENT_VERSION, marketplace.json=$MARKETPLACE_VERSION, root plugin.json=$ROOT_VERSION"
+    echo "   Using .claude-plugin/plugin.json as source of truth"
 fi
 
 # Parse current version
@@ -146,33 +125,15 @@ fi
 echo "✅ Version: $CURRENT_VERSION → $NEW_VERSION ($VERSION_TYPE)"
 ```
 
-**CHECKPOINT Block:**
-```
-┌──────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 1/3: Version Planning    │
-│                                              │
-│  ✅ 完成内容: 确定新版本号并验证无冲突           │
-│  📋 产物: Current: {CURRENT_VERSION},         │
-│     New: {NEW_VERSION}, Type: {VERSION_TYPE} │
-│  ⚠️ 发现: {consistency warning or None}      │
-│                                              │
-│  Next:                                       │
-│  [enter] 继续下一 Phase                       │
-│  [skip]  跳过下一 Phase                       │
-│  [done]  完成，退出框架                       │
-│  [recall] B 键回城 — 回到之前 Phase 重新来过   │
-│  [stop]  紧急停止 — 保留产物，立即退出          │
-└──────────────────────────────────────────────┘
-```
+**CHECKPOINT Block:** render the canonical box from `references/checkpoint-protocol.md` §CHECKPOINT Block (5 mandatory fields, fixed `Next:` grammar — never inline a variant). This phase's field values:
+- 完成内容: 确定新版本号并验证无冲突
+- 产物: Current: {CURRENT_VERSION}, New: {NEW_VERSION}, Type: {VERSION_TYPE}
+- 发现: {consistency warning or None}
+
 
 ### Phase 2: Changelog Generation
 
-**START Block:**
-```
-⚡ SUMMONER START — Workflow=release Phase 2/3: Changelog Generation
-🎯 任务: 从 git commits 生成 changelog 并分类
-🔧 Skill: none (changelog 生成逻辑)
-```
+**START Block:** `⚡ SUMMONER START — Workflow=release Phase 2/3: Changelog Generation` / `🎯 任务: 从 git commits 生成 changelog 并分类` / `🔧 Skill: none (changelog 生成逻辑)`
 
 **Core Logic:**
 
@@ -248,32 +209,15 @@ CHANGELOG_CONTENT="## [$NEW_VERSION] - $CURRENT_DATE"
 echo "$CHANGELOG_CONTENT"
 ```
 
-**CHECKPOINT Block:**
-```
-┌──────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 2/3: Changelog Generation│
-│                                              │
-│  ✅ 完成内容: 分析 {COMMIT_COUNT} 个 commits   │
-│  📋 产物: {category breakdown}               │
-│  ⚠️ 发现: {No commits warning or None}      │
-│                                              │
-│  Next:                                       │
-│  [enter] 继续下一 Phase                       │
-│  [skip]  跳过下一 Phase                       │
-│  [done]  完成，退出框架                       │
-│  [recall] B 键回城 — 回到之前 Phase 重新来过   │
-│  [stop]  紧急停止 — 保留产物，立即退出          │
-└──────────────────────────────────────────────┘
-```
+**CHECKPOINT Block:** render the canonical box from `references/checkpoint-protocol.md` §CHECKPOINT Block (5 mandatory fields, fixed `Next:` grammar — never inline a variant). This phase's field values:
+- 完成内容: 分析 {COMMIT_COUNT} 个 commits
+- 产物: {category breakdown}
+- 发现: {No commits warning or None}
+
 
 ### Phase 3: Release Execution
 
-**START Block:**
-```
-⚡ SUMMONER START — Workflow=release Phase 3/3: Release Execution
-🎯 任务: 更新版本文件、CHANGELOG 并执行 git 操作
-🔧 Skill: none (文件更新和 git 操作)
-```
+**START Block:** `⚡ SUMMONER START — Workflow=release Phase 3/3: Release Execution` / `🎯 任务: 更新版本文件、CHANGELOG 并执行 git 操作` / `🔧 Skill: none (文件更新和 git 操作)`
 
 **Error Handling Setup:**
 
@@ -323,14 +267,18 @@ if [ "$DRY_RUN" = "true" ]; then
     exit 0
 fi
 
-# Update files
+# Update files — ALL THREE manifests (root plugin.json included; see version-check note above)
 jq --arg v "$NEW_VERSION" '.version = $v' .claude-plugin/plugin.json > /tmp/p.json
 mv /tmp/p.json .claude-plugin/plugin.json
-echo "✅ Updated plugin.json"
+echo "✅ Updated .claude-plugin/plugin.json"
 
 jq --arg v "$NEW_VERSION" '.plugins[0].version = $v' .claude-plugin/marketplace.json > /tmp/m.json
 mv /tmp/m.json .claude-plugin/marketplace.json
-echo "✅ Updated marketplace.json"
+echo "✅ Updated .claude-plugin/marketplace.json"
+
+jq --arg v "$NEW_VERSION" '.version = $v' plugin.json > /tmp/root.json
+mv /tmp/root.json plugin.json
+echo "✅ Updated root plugin.json"
 
 # Update CHANGELOG.md
 if [ -f CHANGELOG.md ]; then
@@ -352,7 +300,7 @@ fi
 echo "✅ Updated CHANGELOG.md"
 
 # Git operations
-git add .claude-plugin/plugin.json .claude-plugin/marketplace.json CHANGELOG.md
+git add plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json CHANGELOG.md
 
 git commit -m "release: v$NEW_VERSION
 
@@ -387,55 +335,24 @@ fi
 trap - ERR
 ```
 
-**CHECKPOINT Block:**
-```
-┌──────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 3/3: Release Execution   │
-│                                              │
-│  ✅ 完成内容: 完成所有发布操作                  │
-│  📋 产物: commit {COMMIT_HASH}, tag          │
-│     v{NEW_VERSION}, {push status}            │
-│  ⚠️ 发现: None                                │
-│                                              │
-│  Next:                                       │
-│  [enter] 继续下一 Phase                       │
-│  [skip]  跳过下一 Phase                       │
-│  [done]  完成，退出框架                       │
-│  [recall] B 键回城 — 回到之前 Phase 重新来过   │
-│  [stop]  紧急停止 — 保留产物，立即退出          │
-└──────────────────────────────────────────────┘
+**CHECKPOINT Block:** render the canonical box from `references/checkpoint-protocol.md` §CHECKPOINT Block (5 mandatory fields, fixed `Next:` grammar — never inline a variant). This phase's field values:
+- 完成内容: 完成所有发布操作
+- 产物: commit {COMMIT_HASH}, tag v{NEW_VERSION}, {push status}
+- 发现: None
 
 ✅ Release v{NEW_VERSION} completed!
 
 📊 Summary:
    • Version: {CURRENT_VERSION} → {NEW_VERSION}
-   • Files: plugin.json, marketplace.json, CHANGELOG.md
+   • Files: plugin.json, .claude-plugin/plugin.json, .claude-plugin/marketplace.json, CHANGELOG.md (ALL THREE manifests must carry the new version — enforce via scripts/verify-release.sh)
    • Commit: {COMMIT_HASH}
    • Tag: v{NEW_VERSION}
    • Pushed: {yes/no}
-```
 
 ### Integration with summoner-ctx
 
-After successful release, save to context database:
-
-```bash
-if command -v summoner-ctx >/dev/null 2>&1; then
-    summoner-ctx save \
-        --project summoner \
-        --workflow "release-v$NEW_VERSION" \
-        --phase "execution" \
-        --skill "release" \
-        --input <(cat <<EOF
-Version: $NEW_VERSION
-Type: $VERSION_TYPE
-Commits: $COMMIT_COUNT
-Changelog:
-$CHANGELOG_CONTENT
-EOF
-)
-fi
-```
+After a successful release (guarded by `command -v summoner-ctx`):
+`summoner-ctx save --project summoner --workflow "release-v$NEW_VERSION" --phase execution --skill release --input <(printf 'Version: %s\nType: %s\nCommits: %s\nChangelog:\n%s' "$NEW_VERSION" "$VERSION_TYPE" "$COMMIT_COUNT" "$CHANGELOG_CONTENT")`
 
 ## Error Scenarios
 
@@ -455,8 +372,4 @@ Not implemented yet - should ask user about workflow experience.
 
 ## Testing
 
-Test scenarios:
-1. `--patch --dry-run` - preview without executing
-2. `--minor` - actual minor release
-3. `--version 2.0.0` - custom version
-4. Interrupted during Phase 3 - verify rollback works
+Scenarios: `--patch --dry-run`（预览不执行）/ `--minor`（真实发布）/ `--version 2.0.0`（自定义）/ Phase 3 中断（验证回滚）。

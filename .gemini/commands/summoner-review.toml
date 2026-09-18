@@ -1,9 +1,18 @@
-description = "Standalone code review — 5-axis review via code-reviewer persona"
+description = "Standalone code review via code-reviewer persona"
 
 prompt = """
-Invoke the summoner skill with workflow 'review'.
+Invoke the Summoner workflow 'review'.
 
-Use the code-reviewer persona for a standalone 5-axis review:
-correctness, idiom, architecture, security, impact.
-Output Critical/Important/Suggestion tiers with file:line references.
+This command is a POINTER, not a copy — do NOT rely on any paraphrased workflow
+description. Read and execute the canonical definition from the installed
+Summoner plugin (locate the plugin dir: the one containing both scripts/ and
+memory/, e.g. ~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/):
+
+  1. <plugin-root>/skills/summoner/SKILL.md  — routing hub + checkpoint contract
+  2. <plugin-root>/commands/review.md          — this workflow's specific rules
+  3. References the SKILL.md pointers name (workflow-reference, checkpoint-protocol,
+     memory-chain, ...) are loaded on demand — follow them.
+
+Phase 0 memory retrieval, checkpoint pauses (enter/skip/done/recall/stop) and the
+post-game review all follow the canonical files, never a local restatement.
 """

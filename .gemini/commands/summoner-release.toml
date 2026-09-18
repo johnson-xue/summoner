@@ -1,0 +1,18 @@
+description = "Version release workflow — version planning, changelog, release execution"
+
+prompt = """
+Invoke the Summoner workflow 'release'.
+
+This command is a POINTER, not a copy — do NOT rely on any paraphrased workflow
+description. Read and execute the canonical definition from the installed
+Summoner plugin (locate the plugin dir: the one containing both scripts/ and
+memory/, e.g. ~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/):
+
+  1. <plugin-root>/skills/summoner/SKILL.md  — routing hub + checkpoint contract
+  2. <plugin-root>/commands/release.md          — this workflow's specific rules
+  3. References the SKILL.md pointers name (workflow-reference, checkpoint-protocol,
+     memory-chain, ...) are loaded on demand — follow them.
+
+Phase 0 memory retrieval, checkpoint pauses (enter/skip/done/recall/stop) and the
+post-game review all follow the canonical files, never a local restatement.
+"""

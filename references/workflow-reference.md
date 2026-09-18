@@ -22,16 +22,23 @@ Phase 0→ops skill (delegated)
 ### /summoner:review
 Phase 0→code review (code-reviewer persona), no other phases
 
+### /summoner:release
+version-plan→changelog→release-execution (framework-internal, self-contained — no manifest routing; implementation in skills/summoner-release/SKILL.md)
+
 ## Auto-Skip Conditions
 
 Phases are offered as skippable (not auto-skipped — user confirms):
 
 | Workflow | Phase | Skip condition |
 |----------|-------|---------------|
-| fix | reproduce | Pure config fix (data-only, no logic change) |
+| fix | reproduce | Pure config fix (data-only, no logic change), or diff < 5 lines with no logic change, or user says "I know the fix" |
 | fix | verify | Diff < 5 lines, config-only |
-| fix | review | Single file, < 30 lines, no auth/data changes |
+| fix | review | Single file, < 30 lines, no auth/data/config changes |
+| new | review | Single file, < 100 lines, no new public API; or user says "不用 review" |
 | ship | fan_out | < 3 files AND < 50 lines AND no sensitive changes |
+
+<!-- canonical:auto-skip-table — commands reference this table; inlining a
+     variant elsewhere is a lint error (scripts/validate-repo.sh). -->
 
 ## Common Rationalizations
 
@@ -42,6 +49,8 @@ Phases are offered as skippable (not auto-skipped — user confirms):
 | "This is too simple for checkpoints" | Checkpoints are the Summoner contract. Recorded as Type 5. |
 | "User usually says yes, I'll auto-continue" | The ONE time they want to stop is the ONE time it matters. |
 | "Manifest says 'none' for security, just warn" | Ask: "No security phase. Proceed without audit?" |
+| "用户描述得很清楚了，直接写码就行" | 没 spec = 假设当需求。Phase 1 必须出书面设计。 |
+| "这个功能简单，plan 和 spec 合并为一步就行" | Spec ≠ Plan。Spec 定义 what，Plan 定义 how。跳过 Plan = 实现顺序靠猜。 |
 
 ## Per-Task Graph
 
@@ -60,6 +69,7 @@ A plan artifact may carry a fenced ` ```yaml summoner-task-graph ` block. When p
 
 - ✗ Advancing past checkpoint without user confirmation
 - ✗ Skipping Phase 1 in fix/debug workflows
+- ✗ Chain-mode: code edits before a phase skill has run in the session — the PreToolUse hook DENIES such Edit/Write calls (exit 2). The deny IS the iron law, not an error to work around; complete Phase 0-1 first. (Kill switch: `SUMMONER_IRON_LAW=off`; all-none manifests are pre-advanced.)
 - ✗ Not outputting exact SUMMONER CHECKPOINT format
 - ✗ Not outputting PHASE START block at phase entry (user loses "which phase / what task" context)
 - ✗ Misreading content feedback as CONTINUE (e.g. "方案漏了边界" → CONTINUE instead of handling feedback)
@@ -85,3 +95,31 @@ After workflow completion:
 - [ ] Phase 0 memory retrieval was attempted (or skipped if no db)
 - [ ] Matched patterns presented to user (if any found)
 - [ ] Token budget ≤1500 respected
+
+## Ship Merge Report Format (canonical — commands/ship.md points here)
+
+```markdown
+## Ship Decision: GO | NO-GO
+
+### Blockers (must fix before ship)
+- [Source persona: Critical finding + file:line]
+
+### Recommended fixes (should fix before ship)
+- [Source persona: Important finding + file:line]
+
+### Acknowledged risks (shipping anyway)
+- [Risk + mitigation]
+
+### Rollback plan
+- Trigger conditions: {what signals would prompt rollback}
+- Rollback procedure: {exact steps}
+- Recovery time objective: {target}
+
+### Reports (full)
+- [code-reviewer report]
+- [security-auditor report]
+- [test-engineer report]
+```
+
+<!-- canonical:ship-merge-template — commands/ship.md references this; inlining
+     a variant elsewhere is a lint error (scripts/validate-repo.sh). -->

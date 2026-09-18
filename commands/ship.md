@@ -30,30 +30,7 @@ Spawn all three personas simultaneously using the Agent tool in a single turn:
 
 ## Phase B — Merge
 
-Synthesize the three reports into one output:
-
-```markdown
-## Ship Decision: GO | NO-GO
-
-### Blockers (must fix before ship)
-- [Source persona: Critical finding + file:line]
-
-### Recommended fixes (should fix before ship)
-- [Source persona: Important finding + file:line]
-
-### Acknowledged risks (shipping anyway)
-- [Risk + mitigation]
-
-### Rollback plan
-- Trigger conditions: {what signals would prompt rollback}
-- Rollback procedure: {exact steps}
-- Recovery time objective: {target}
-
-### Reports (full)
-- [code-reviewer report]
-- [security-auditor report]
-- [test-engineer report]
-```
+Synthesize the three reports into one output: render the canonical **Ship Merge Report Format** from `references/workflow-reference.md` §Ship Merge Report Format (GO | NO-GO decision + blockers / recommended / risks / rollback / reports — never inline a variant).
 
 ## Adaptive Fan-Out
 
@@ -73,9 +50,8 @@ Fan-out scale is determined by diff size before launching personas:
 3. Personas do NOT call each other. The main agent merges in Phase B.
 4. Rollback plan is MANDATORY before any GO decision.
 5. If any persona returns a Critical finding, default verdict is NO-GO unless user explicitly accepts the risk.
-6. **Fan-out scale is dynamic** — determine diff size first, then select personas per the Adaptive Fan-Out table above.
-7. **Skip fan-out entirely** if changes touch < 3 files AND diff < 50 lines AND no auth/payments/data/config changes. Suggest `/summoner:review` instead.
-8. **Always run all 3** if the diff touches auth, payments, personal data, or configuration/env files — regardless of line count.
+6. **Fan-out scale is dynamic** — determine diff size first, then select personas per the Adaptive Fan-Out table above (its first row = skip fan-out, suggest `/summoner:review`).
+7. **Always run all 3** if the diff touches auth, payments, personal data, or configuration/env files — regardless of line count.
 
 ## Post-Game Review
 

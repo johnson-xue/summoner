@@ -1,5 +1,5 @@
 ---
-description: 修 Bug 全链路 — 诊断根因 → 复现测试 → 修复 → 验证 → 审查。Phase 1 是铁律，Phase 2-5 可按条件跳过。
+description: 修 Bug 全链路 — 诊断根因 → 复现测试 → 修复 → 验证 → 审查。「排查」类短语默认路由到这里（repair-bias：未说明只要原因即视为要修；Phase 1 检查点会先给出诊断，用户可随时 stop）。仅当用户明确只要原因不要改码时才用 /summoner:debug。Phase 1 是铁律，Phase 2-5 可按条件跳过。
 phase_checkpoints: after_each
 end_action: post_game_review
 ---
@@ -26,15 +26,11 @@ Phase 3 default skill is `phases.fix`. Escalate when diagnosis reveals the fix n
 
 Routing is declarative: the `route_by_diagnosis` rule (declared in the project's `summoner.yaml` under `routing_rules:`) maps the diagnose node's `routing_tag` (logic/rpc/subsystem/migrate/gmt) to a target node id. This command does not hardcode the skill table — it references the rule. (The rule's `input_field` + `map` live in the project manifest; the framework command stays project-agnostic.)
 
-> 这条规则同时在 `summoner.yaml` `phases.fix` 注释里声明。Phase 3 前先向用户说明诊断结论与建议路由，用户确认后再进入对应 skill。
+Phase 3 前先向用户说明诊断结论与建议路由，确认后再进入对应 skill。
 
 ## Auto-Skip Conditions (propose to user — never auto-skip)
 
-| Phase | Condition |
-|-------|----------|
-| Phase 2 (reproduce) | Pure config fix (data-only, no logic), or diff < 5 lines no logic change, or user says "I know the fix" |
-| Phase 4 (verify) | Diff < 5 lines, config-only change |
-| Phase 5 (review) | Single file, < 30 lines, no auth/data/config changes |
+Canonical table: `references/workflow-reference.md` §Auto-Skip Conditions (fix rows: reproduce / verify / review). Propose the matching condition to the user; only the user confirms a skip.
 
 ## Post-Game Review
 

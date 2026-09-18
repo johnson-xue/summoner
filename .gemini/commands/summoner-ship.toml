@@ -1,13 +1,18 @@
-description = "Pre-launch review — adaptive fan-out 1-3 personas, merge reports, go/no-go decision"
+description = "Pre-launch review — adaptive fan-out 1-3 personas, merge, GO/NO-GO decision"
 
 prompt = """
-Invoke the summoner skill with workflow 'ship'.
+Invoke the Summoner workflow 'ship'.
 
-Adaptive fan-out based on diff size:
-- <50 lines: skip fan-out, suggest /summoner:review
-- <200 lines: code-reviewer only
-- <500 lines: code-reviewer + test-engineer
-- >=500 lines or touches auth/data/config: all 3 personas
+This command is a POINTER, not a copy — do NOT rely on any paraphrased workflow
+description. Read and execute the canonical definition from the installed
+Summoner plugin (locate the plugin dir: the one containing both scripts/ and
+memory/, e.g. ~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/):
 
-Run personas in PARALLEL, merge reports, produce go/no-go decision with rollback plan.
+  1. <plugin-root>/skills/summoner/SKILL.md  — routing hub + checkpoint contract
+  2. <plugin-root>/commands/ship.md          — this workflow's specific rules
+  3. References the SKILL.md pointers name (workflow-reference, checkpoint-protocol,
+     memory-chain, ...) are loaded on demand — follow them.
+
+Phase 0 memory retrieval, checkpoint pauses (enter/skip/done/recall/stop) and the
+post-game review all follow the canonical files, never a local restatement.
 """

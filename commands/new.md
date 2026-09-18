@@ -32,21 +32,16 @@ Phase 5 ──→ 审查       (phase.review)
    - 多类型混合（如新子系统含新表）→ 取主类型，次要类型作为该 skill 内的子步
    - 判定不清 → 停下问用户，不在轨道上硬猜
    - 路由映射声明在项目 `summoner.yaml` 的 `routing_rules.route_by_function_type`（`input_field` + `map`，纯表查找，§2.6.1）。本命令不硬编码任何项目 skill 名。
-5. 如果项目没有 summoner.yaml → 触发 No Manifest 菜单（见 SKILL.md §1）。
+5. 如果项目没有 summoner.yaml → 按 `references/no-manifest-flow.md` 处理（Phase 3 菜单）。
 6. 用户可在 Phase 1 后选择 "方向不对" → 回到 brainstorming 重新定义。
 
 ## Auto-Skip Conditions
 
-Phase 5 (审查):
-- 单文件 < 100 行且无新增 public API
-- 用户说"不用 review"
+Canonical table: `references/workflow-reference.md` §Auto-Skip Conditions (new rows: review)。
 
 ## Rationalizations
 
-| AI 会想… | 现实 |
-|----------|------|
-| "用户描述得很清楚了，直接写码就行" | 没 spec = 假设当需求。Phase 1 必须出书面设计。 |
-| "这个功能简单，plan 和 spec 合并为一步就行" | Spec ≠ Plan。Spec 定义 what，Plan 定义 how。跳过 Plan = 实现顺序靠猜。 |
+Canonical table: `references/workflow-reference.md` §Common Rationalizations（含 new 专属两条：直接写码 / spec-plan 合并）。
 
 ## Post-Game Review
 

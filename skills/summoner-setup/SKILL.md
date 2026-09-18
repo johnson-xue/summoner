@@ -84,7 +84,7 @@ project:
 
 The script will automatically reinitialize. If issues persist:
 ```bash
-rm ~/.claude/plugins/summoner/memory/your-project.db
+rm "${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}/your-project.db"
 ./scripts/summoner-setup.sh
 ```
 

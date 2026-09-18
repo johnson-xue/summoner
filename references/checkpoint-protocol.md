@@ -15,12 +15,16 @@ Every phase start MUST output this lightweight 3-line block (plain text, no ASCI
 ```
 
 Field rules:
-- **Workflow**: the workflow name (`fix` / `new` / `ship` / `debug` / `ops` / `review`).
+- **Workflow**: the workflow name (`fix` / `new` / `ship` / `debug` / `ops` / `review` / `release`).
 - **Phase {N}/{Total}**: N and Total are mandatory, never omit. phase名 from manifest.
 - **任务**: ≤60 chars, one sentence, the task this phase performs (derive from manifest phase comment or user input). Not a restatement of the phase name.
-- **Skill**: the skill this phase invokes. `freeform` for free-form phases (e.g. fix Phase 3). `none (无专属 skill)` when manifest declares `skill: none`.
+- **Skill**: the skill this phase invokes. `freeform` for free-form phases (e.g. fix Phase 3). `none (无专属 skill)` when manifest declares `skill: none`; framework-internal phases may use an explanatory parenthetical instead (e.g. release's `none (版本管理逻辑)`).
 
 ## CHECKPOINT Block (phase end)
+
+<!-- canonical:checkpoint-format — the ONLY in-repo copy of the rendered box
+     template. Commands and skills reference this section; inlining a variant
+     anywhere else is a lint error (scripts/validate-repo.sh, exactly-once). -->
 
 Every phase end MUST output this exact format:
 

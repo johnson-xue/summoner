@@ -39,11 +39,13 @@ fi
 
 **Step 1: Detect State**
 ```bash
-PLUGIN_ROOT="$HOME/.claude/plugins/summoner"
+# plugin root = the cache install containing scripts/ + memory/ (NOT the
+# abandoned ~/.claude/plugins/summoner manual clone)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/summoner-marketplace/summoner/*/ 2>/dev/null | sort -V | tail -1)}"
 
 if [ ! -f "summoner.yaml" ]; then
     STATE="not_initialized"
-elif [ ! -f "$PLUGIN_ROOT/memory/$(grep 'name:' summoner.yaml | head -1 | awk '{print $2}' | tr -d '"').db" ]; then
+elif [ ! -f "${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}/$(grep 'name:' summoner.yaml | head -1 | awk '{print $2}' | tr -d '"').db" ]; then
     STATE="partial"
 else
     STATE="ready"
@@ -204,11 +206,8 @@ AI: [Executes fix workflow normally...]
 ### Scenario 2: User sees warning at session start
 
 ```
-[SessionStart hook output:]
-⚠️  No summoner.yaml found — Summoner not initialized for this project
-
-🔮 To get started, just say:
-   "setup summoner"
+[SessionStart hook output (M-C1 one-liner form):]
+Summoner not initialized (no summoner.yaml) — say "setup summoner" or run <plugin-root>/scripts/summoner-setup.sh
 
 User: setup summoner
 
