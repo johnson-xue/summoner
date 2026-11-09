@@ -101,6 +101,12 @@ func (w *Walker) Next() Directive {
 // whose ④ is under review per trace-protocol §2.2.1 (verdict.node), matching
 // the C4 fixture (RUN_REVIEW h-001 scheduled on diagnose, not on fix).
 func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
+	// gate: the previous envelope must have consumed its ⑤ verdict first —
+	// a handoff arriving while a review is pending would silently overwrite
+	// the pending slot and let an unreviewed ④ slip through (B4).
+	if w.state.PendingReview != "" {
+		return Directive{}, fmt.Errorf("handoff rejected: envelope %s (node %q) is still awaiting its review_verdict — run ⑤ before the next ④ handoff", w.state.PendingReview, w.state.PendingReviewNode)
+	}
 	// emit handoff event
 	w.trace.Append(toMap(env))
 	w.trace.Append(map[string]interface{}{

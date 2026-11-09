@@ -191,12 +191,17 @@ edges: []
 `))
 	tr := &memTrace{}
 	w := NewWalker(g, "test-budget", tr)
-	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "diagnose", ToNode: "diagnose",
-		Label: "定位根因", Artifacts: []string{"a"}, ExitCriteria: []ExitCriterion{{Name: "x", VerdictType: SOFT}},
-		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
-	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-002", FromNode: "diagnose", ToNode: "diagnose",
-		Label: "定位根因", Artifacts: []string{"a"}, ExitCriteria: []ExitCriterion{{Name: "x", VerdictType: SOFT}},
-		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
+	// one verdict per envelope: handoff → PASS verdict → handoff → PASS verdict
+	// (each handoff consumes a graph turn; max_graph_turns:2 exhausts on the 2nd)
+	mkEnv := func(id string) HandoffEnvelope {
+		return HandoffEnvelope{EnvelopeID: id, FromNode: "diagnose", ToNode: "diagnose",
+			Label: "定位根因", Artifacts: []string{"a"}, ExitCriteria: []ExitCriterion{{Name: "x", VerdictType: SOFT}},
+			FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}}
+	}
+	w.RecordHandoff(mkEnv("h-001"))
+	w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil))
+	w.RecordHandoff(mkEnv("h-002"))
+	w.RecordReviewVerdict(rv("h-002", "diagnose", "PASS", nil))
 	d := w.Next()
 	if d.Kind != Halt {
 		t.Fatalf("expected Halt after graph_turns exhausted, got %+v", d)
@@ -759,6 +764,21 @@ func TestRecordHandoff_RunReviewTargetsProducer(t *testing.T) {
 	}
 	if schedNode != "diagnose" {
 		t.Fatalf("review-scheduled node_turn node=%v, want diagnose (producer)", schedNode)
+	}
+}
+
+// TestRecordHandoff_RejectsHandoffWhileReviewPending: a ④ handoff arriving
+// while the previous envelope is still awaiting its ⑤ verdict would silently
+// overwrite the pending slot (unreviewed handoff). It must be rejected.
+func TestRecordHandoff_RejectsHandoffWhileReviewPending(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-handoff-gate", &memTrace{})
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordHandoff(hv("h-003")); err == nil {
+		t.Fatal("expected error for handoff while envelope h-001 is still awaiting review, got nil")
 	}
 }
 

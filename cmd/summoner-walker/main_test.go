@@ -117,9 +117,14 @@ back_edges:
 	}
 
 	// The core assertion: record a NEEDS-FIX review verdict. Must not SIGSEGV.
+	// Runtime gate contract: --node is the envelope's PRODUCER (diagnose here)
+	// and --evidence must be non-empty — the walker rejects the record otherwise.
+	evidencePath := filepath.Join(t.TempDir(), "evidence.json")
+	os.WriteFile(evidencePath, []byte(`["grep -n SubTask player/task/task.go"]`), 0o644)
 	verdictCmd := exec.Command(bin, "--graph", graphPath, "--session", session,
 		"record", "--step", "review_verdict",
-		"--envelope_id", "h-001", "--node", "fix", "--verdict", "NEEDS-FIX")
+		"--envelope_id", "h-001", "--node", "diagnose", "--verdict", "NEEDS-FIX",
+		"--evidence", evidencePath)
 	out, err := verdictCmd.Output()
 	if err != nil {
 		// A panic surfaces as a non-zero exit; capture stderr to distinguish a
