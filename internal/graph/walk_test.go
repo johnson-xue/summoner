@@ -155,9 +155,15 @@ func TestRecordReviewVerdict_UnknownNode_NoPanic(t *testing.T) {
 	// Record a NEEDS-FIX verdict whose Node is not declared in the graph.
 	// Pre-Fix-1(a) this nil-derefed on node.MaxInnerTurns (NodeByID → nil, false;
 	// the false was discarded). Now it must escalate to Checkpoint, not panic.
+	// The envelope's producer IS the unknown node (host sent a garbage handoff —
+	// RecordHandoff deliberately does not validate graph membership), so the
+	// verdict passes the producer-match gate and reaches the routing fallback.
+	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "nonexistent", ToNode: "diagnose",
+		Label: "x", Artifacts: []string{"a"}, ExitCriteria: []ExitCriterion{{Name: "x", VerdictType: SOFT}},
+		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
 	d, err := w.RecordReviewVerdict(ReviewVerdict{
-		EnvelopeID: "h-999", Node: "nonexistent", Reviewer: "review-agent",
-		Verdict: "NEEDS-FIX",
+		EnvelopeID: "h-001", Node: "nonexistent", Reviewer: "review-agent",
+		Verdict: "NEEDS-FIX", EvidenceToolCalls: []string{"grep -n x a.go"},
 	})
 	if err != nil {
 		t.Fatalf("RecordReviewVerdict returned error: %v", err)
@@ -217,6 +223,16 @@ back_edges:
   - {from: fix, to: fix, reason: review_needs_fix}
 `
 
+// hf builds a same-node (fix→fix) handoff for the alternating-window tests.
+// One verdict per envelope: each retry cycle re-runs ②③④ and hands off a NEW
+// envelope, so the test interleaves hf() before every verdict.
+func hf(envID string) HandoffEnvelope {
+	return HandoffEnvelope{EnvelopeID: envID, FromNode: "fix", ToNode: "fix",
+		Label: "补 nil 判空", Artifacts: []string{"a.go"},
+		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
+		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}}
+}
+
 // TestRecordReviewVerdict_AlternatingWindow_Escalation feeds A,B,A,B on the
 // same node (max_inner_turns:5 so it doesn't fire first). The 4th finding
 // completes the rotate → Checkpoint BEFORE a node_review_retry is emitted for
@@ -229,38 +245,27 @@ func TestRecordReviewVerdict_AlternatingWindow_Escalation(t *testing.T) {
 	}
 	tr := &memTrace{}
 	w := NewWalker(g, "test-alt-esc", tr)
-	// bootstrap so CurrentNode/Attempt are set + a handoff to schedule ⑤
-	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
-		Label: "补 nil 判空", Artifacts: []string{"a.go"},
-		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
-		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
+	ids := []string{"h-001", "h-002", "h-003", "h-004"}
 	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
 	fB := []Finding{{File: "b.go", Line: 2, Issue: "race on write"}}
-	// A → NodeRetry (window: [A], not full)
-	r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fA))
-	if r.Kind != NodeRetry {
-		t.Fatalf("1st finding A: expected NodeRetry, got %v", r.Kind)
-	}
-	// B → NodeRetry (window: [A,B], not full)
-	r, _ = w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fB))
-	if r.Kind != NodeRetry {
-		t.Fatalf("2nd finding B: expected NodeRetry, got %v", r.Kind)
-	}
-	// A → NodeRetry (window: [A,B,A], not full)
-	r, _ = w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fA))
-	if r.Kind != NodeRetry {
-		t.Fatalf("3rd finding A: expected NodeRetry, got %v", r.Kind)
-	}
-	// B → window full [A,B,A,B], A and B both reappear non-contiguously → escalate
-	r, _ = w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fB))
-	if r.Kind != Checkpoint {
-		t.Fatalf("4th finding B: expected Checkpoint (rotate escalation), got %v", r.Kind)
+	for i, f := range [][]Finding{fA, fB, fA, fB} {
+		if _, err := w.RecordHandoff(hf(ids[i])); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := w.RecordReviewVerdict(rv(ids[i], "fix", "NEEDS-FIX", f))
+		want := NodeRetry
+		if i == 3 {
+			want = Checkpoint // window full [A,B,A,B] → rotate escalation
+		}
+		if r.Kind != want {
+			t.Fatalf("verdict %d (%v): expected %v, got %v", i+1, ids[i], want, r.Kind)
+		}
 	}
 	// the escalation early-returns BEFORE emitting node_review_retry for the 4th:
 	// exactly 3 retry events (A,B,A), not 4.
 	retryCount := 0
 	for _, e := range tr.events {
-		if e["type"] == "node_review_retry" && e["envelope_id"] == "h-001" {
+		if e["type"] == "node_review_retry" {
 			retryCount++
 		}
 	}
@@ -286,13 +291,13 @@ func TestRecordReviewVerdict_AlternatingWindow_SingleFindingNoEscalate(t *testin
 	}
 	tr := &memTrace{}
 	w := NewWalker(g, "test-alt-single", tr)
-	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
-		Label: "补 nil 判空", Artifacts: []string{"a.go"},
-		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
-		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
 	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
-	for i := 0; i < 3; i++ {
-		r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", fA))
+	ids := []string{"h-001", "h-002", "h-003"}
+	for i := range ids {
+		if _, err := w.RecordHandoff(hf(ids[i])); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := w.RecordReviewVerdict(rv(ids[i], "fix", "NEEDS-FIX", fA))
 		if r.Kind != NodeRetry {
 			t.Fatalf("finding A iteration %d: expected NodeRetry (no window escalate for single finding), got %v", i, r.Kind)
 		}
@@ -319,17 +324,17 @@ func TestRecordReviewVerdict_AlternatingWindow_SingleReappearanceNoEscalate(t *t
 	}
 	tr := &memTrace{}
 	w := NewWalker(g, "test-alt-single-reappear", tr)
-	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
-		Label: "补 nil 判空", Artifacts: []string{"a.go"},
-		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
-		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
 	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
 	fB := []Finding{{File: "b.go", Line: 2, Issue: "race on write"}}
 	fC := []Finding{{File: "c.go", Line: 3, Issue: "unchecked error"}}
+	ids := []string{"h-001", "h-002", "h-003", "h-004"}
 	// A,B,A,C: only A reappears non-contiguously; B and C appear once each.
 	// Spec: ≥2 distinct findings EACH reappear → only 1 qualifies → no escalate.
 	for i, f := range [][]Finding{fA, fB, fA, fC} {
-		r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", f))
+		if _, err := w.RecordHandoff(hf(ids[i])); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := w.RecordReviewVerdict(rv(ids[i], "fix", "NEEDS-FIX", f))
 		if r.Kind != NodeRetry {
 			t.Fatalf("finding %d (%v): expected NodeRetry (window must not escalate when only 1 finding reappears), got %v", i, f, r.Kind)
 		}
@@ -368,14 +373,14 @@ back_edges:
 	}
 	tr := &memTrace{}
 	w := NewWalker(g, "test-alt-disabled", tr)
-	w.RecordHandoff(HandoffEnvelope{EnvelopeID: "h-001", FromNode: "fix", ToNode: "fix",
-		Label: "补 nil 判空", Artifacts: []string{"a.go"},
-		ExitCriteria: []ExitCriterion{{Name: "diff_applied", VerdictType: DECIDABLE}},
-		FactualClaim: "c", Stripped: []string{"producer_reasoning_trace"}})
 	fA := []Finding{{File: "a.go", Line: 1, Issue: "missed nil check"}}
 	fB := []Finding{{File: "b.go", Line: 2, Issue: "race on write"}}
+	ids := []string{"h-001", "h-002", "h-003", "h-004"}
 	for i, f := range [][]Finding{fA, fB, fA, fB} {
-		r, _ := w.RecordReviewVerdict(rv("h-001", "fix", "NEEDS-FIX", f))
+		if _, err := w.RecordHandoff(hf(ids[i])); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := w.RecordReviewVerdict(rv(ids[i], "fix", "NEEDS-FIX", f))
 		if r.Kind != NodeRetry {
 			t.Fatalf("finding %d: expected NodeRetry (window disabled when 0), got %v", i, r.Kind)
 		}
@@ -463,36 +468,42 @@ func TestRecordReviewVerdict_3xEscalation_Checkpoint(t *testing.T) {
 	if r.Kind != Checkpoint {
 		t.Fatalf("diagnose PASS: expected Checkpoint, got %v", r.Kind)
 	}
-	// h-002 fix→verify → RUN_REVIEW (⑤ runs on verify)
+	// h-002 fix→verify → RUN_REVIEW (⑤ reviews fix's ④)
 	if _, err := w.RecordHandoff(h002()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := w.RecordReviewVerdict(rv("h-002", "fix", "PASS", nil)); err != nil {
+		t.Fatal(err)
+	}
 
-	// Same finding across all 3 NEEDS-FIX verdicts on verify (cross-node —
-	// verify's back-edge target is fix, ≠ verify). The findingKey dedup key
-	// is fs[0].File + ":" + fs[0].Line, so keep File+Line identical.
+	// Same finding across all 3 cross-node NEEDS-FIX verdicts on verify (verify's
+	// back-edge target is fix, ≠ verify). One verdict per envelope: verify
+	// re-runs and hands off a NEW envelope each round (h-003, h-004, h-005).
+	// findingKey hashes the whole sorted finding set, so identical sets share
+	// the key across envelopes.
 	same := []Finding{{File: "player/task/task.go", Line: 187, Issue: "unchecked deref"}}
-	// 1st NEEDS-FIX → FindingsSeen[key]=1 <3 → BackEdgeKind + handoff_reject #1
-	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", same))
-	if r.Kind != BackEdgeKind {
-		t.Fatalf("1st NEEDS-FIX: expected BackEdgeKind, got %v", r.Kind)
-	}
-	// 2nd NEEDS-FIX → FindingsSeen[key]=2 <3 → BackEdgeKind + handoff_reject #2
-	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", same))
-	if r.Kind != BackEdgeKind {
-		t.Fatalf("2nd NEEDS-FIX: expected BackEdgeKind, got %v", r.Kind)
-	}
-	// 3rd NEEDS-FIX → FindingsSeen[key]=3 ≥3 → Checkpoint (early-return-before-append)
-	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", same))
-	if r.Kind != Checkpoint {
-		t.Fatalf("3rd NEEDS-FIX: expected Checkpoint (3× escalation), got %v", r.Kind)
+	ids := []string{"h-003", "h-004", "h-005"}
+	for i, id := range ids {
+		if _, err := w.RecordHandoff(hv(id)); err != nil {
+			t.Fatal(err)
+		}
+		r, err := w.RecordReviewVerdict(rv(id, "verify", "NEEDS-FIX", same))
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if i < 2 && r.Kind != BackEdgeKind {
+			t.Fatalf("NEEDS-FIX #%d (%s): expected BackEdgeKind, got %v", i+1, id, r.Kind)
+		}
+		if i == 2 && r.Kind != Checkpoint {
+			t.Fatalf("3rd NEEDS-FIX (%s): expected Checkpoint (3× escalation), got %v", id, r.Kind)
+		}
 	}
 
 	// Exactly 2 handoff_reject events — the 3rd verdict escalates WITHOUT
 	// emitting a 3rd handoff_reject (the >=3 early-return precedes the append).
 	rejects := 0
 	for _, e := range tr.events {
-		if e["type"] == "handoff_reject" && e["envelope_id"] == "h-002" {
+		if e["type"] == "handoff_reject" {
 			rejects++
 		}
 	}
@@ -500,14 +511,13 @@ func TestRecordReviewVerdict_3xEscalation_Checkpoint(t *testing.T) {
 		t.Fatalf("expected exactly 2 handoff_reject events, got %d — the 3rd verdict must escalate (Checkpoint) without emitting a 3rd reject", rejects)
 	}
 	// the finding counter did reach 3 (escalation key in state)
-	if seen := w.state.FindingsSeen["player/task/task.go:187"]; seen != 3 {
+	if seen := w.state.FindingsSeen[findingKey(same)]; seen != 3 {
 		t.Fatalf("expected FindingsSeen key count 3, got %d", seen)
 	}
-	// BackEdges incremented on ALL 3 cross-node verdicts (walk.go ~175 runs
-	// BEFORE the >=3 early-return at ~178), so the counter reaches 3 even though
-	// the 3rd verdict escalates without emitting a handoff_reject (the append at
-	// ~187 is skipped by the early-return). The 2-rejects invariant is on the
-	// emitted handoff_reject events (asserted above), NOT the counter.
+	// BackEdges incremented on ALL 3 cross-node verdicts (the counter bump runs
+	// BEFORE the >=3 early-return), so the counter reaches 3 even though the
+	// 3rd verdict escalates without emitting a handoff_reject. The 2-rejects
+	// invariant is on the emitted handoff_reject events, NOT the counter.
 	if w.state.BackEdges != 3 {
 		t.Fatalf("expected BackEdges=3 (increments before the >=3 early-return), got %d", w.state.BackEdges)
 	}
@@ -568,20 +578,24 @@ back_edges:
 	w.Next() // bootstrap → RUN_NODE diagnose
 	w.RecordHandoff(h001())
 	w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)) // → Checkpoint, advance to fix
-	w.RecordHandoff(h002())                                     // fix→verify → RUN_REVIEW on verify
+	w.RecordHandoff(h002())                                     // fix→verify → RUN_REVIEW on fix
+	w.RecordReviewVerdict(rv("h-002", "fix", "PASS", nil))      // → Checkpoint, advance to verify
 
 	// DISTINCT findings each verdict → different findingKey each time →
 	// FindingsSeen[key] stays 1, the 3× rule never fires (it needs the SAME
-	// key 3×). Only the global BackEdges counter accumulates.
+	// key 3×). Only the global BackEdges counter accumulates. One verdict per
+	// envelope: h-003 then h-004, both produced by verify.
 	f1 := []Finding{{File: "player/task/task.go", Line: 187, Issue: "deref unchecked"}}
 	f2 := []Finding{{File: "player/task/task.go", Line: 53, Issue: "missing nil check"}}
 	// 1st → BackEdges=1 < max(2) → BackEdgeKind + handoff_reject
-	r, _ := w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", f1))
+	w.RecordHandoff(hv("h-003"))
+	r, _ := w.RecordReviewVerdict(rv("h-003", "verify", "NEEDS-FIX", f1))
 	if r.Kind != BackEdgeKind {
 		t.Fatalf("1st NEEDS-FIX: expected BackEdgeKind (BackEdges=1 <2), got %v", r.Kind)
 	}
 	// 2nd → BackEdges=2 ≥ max(2) → Checkpoint (budget exhausted)
-	r, _ = w.RecordReviewVerdict(rv("h-002", "verify", "NEEDS-FIX", f2))
+	w.RecordHandoff(hv("h-004"))
+	r, _ = w.RecordReviewVerdict(rv("h-004", "verify", "NEEDS-FIX", f2))
 	if r.Kind != Checkpoint {
 		t.Fatalf("2nd NEEDS-FIX: expected Checkpoint (BackEdges=2 ≥ max_back_edges_total:2), got %v", r.Kind)
 	}
@@ -595,5 +609,229 @@ back_edges:
 	// (distinct findings) and the halt was purely the budget exhaustion path
 	if w.state.FindingsSeen[findingKey(f1)] != 1 || w.state.FindingsSeen[findingKey(f2)] != 1 {
 		t.Fatalf("expected per-key FindingsSeen=1 for the two fed findings (3× rule inert for distinct findings), got %+v", w.state.FindingsSeen)
+	}
+}
+
+// hv builds a handoff envelope whose PRODUCER is verify (fixture-faithful
+// direction: verify hands off toward a downstream consumer like "review").
+// Cross-node NEEDS-FIX verdicts on verify route via the verify→fix back-edge.
+func hv(envID string) HandoffEnvelope {
+	return HandoffEnvelope{
+		EnvelopeID: envID, FromNode: "verify", ToNode: "review", Label: "跑测试套件",
+		Artifacts:    []string{"player/task/task.go"},
+		ExitCriteria: []ExitCriterion{{Name: "tests_pass", VerdictType: DECIDABLE}},
+		FactualClaim: "all tests pass",
+		AttemptHistory: []AttemptEntry{
+			{Node: "diagnose", Attempts: 1, Verifier: "root_cause_pin"},
+			{Node: "fix", Attempts: 2, Verifier: "build_clean"},
+			{Node: "verify", Attempts: 1, Verifier: "tests_pass"},
+		},
+		BudgetRemaining: BudgetRemaining{9, 30000},
+		Stripped:        []string{"producer_reasoning_trace", "producer_verdict_self_report"},
+	}
+}
+
+// --- P0 review-loop hardening (TDD): runtime verdict gating ---
+
+// TestRecordReviewVerdict_RejectsVerdictWithoutPendingReview: a verdict with
+// no preceding handoff (state.PendingReview=="") must be rejected with an
+// error, not silently routed. Production change that would break this:
+// removing the PendingReview gate in RecordReviewVerdict.
+func TestRecordReviewVerdict_RejectsVerdictWithoutPendingReview(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(escalation3xGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	w := NewWalker(g, "test-gate-nopending", &memTrace{})
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)); err == nil {
+		t.Fatal("expected error for verdict with no pending review envelope, got nil")
+	}
+}
+
+// TestRecordReviewVerdict_RejectsMismatchedEnvelope: a verdict whose
+// envelope_id does not match the pending envelope must be rejected.
+func TestRecordReviewVerdict_RejectsMismatchedEnvelope(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-gate-mismatch", &memTrace{})
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-999", "diagnose", "PASS", nil)); err == nil {
+		t.Fatal("expected error for verdict envelope_id != pending envelope, got nil")
+	}
+}
+
+// TestRecordReviewVerdict_RejectsUnknownVerdictString: verdict must be
+// exactly PASS or NEEDS-FIX; anything else is a protocol violation.
+func TestRecordReviewVerdict_RejectsUnknownVerdictString(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-gate-verdictstr", &memTrace{})
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "MAYBE", nil)); err == nil {
+		t.Fatal("expected error for verdict string outside {PASS, NEEDS-FIX}, got nil")
+	}
+}
+
+// TestRecordReviewVerdict_RejectsEmptyEvidence: invariant #6 as a runtime
+// gate — a verdict with empty evidence_tool_calls is a rubber stamp and must
+// be rejected at record time, not only post-hoc by review-isolation-check.
+func TestRecordReviewVerdict_RejectsEmptyEvidence(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-gate-evidence", &memTrace{})
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	v := rv("h-001", "diagnose", "PASS", nil)
+	v.EvidenceToolCalls = nil
+	if _, err := w.RecordReviewVerdict(v); err == nil {
+		t.Fatal("expected error for verdict with empty evidence_tool_calls, got nil")
+	}
+}
+
+// TestRecordReviewVerdict_RejectsNodeNotMatchingProducer: trace-protocol
+// §2.2.1 — review_verdict.node is the node whose ④ was reviewed (the
+// envelope producer). A verdict naming any other node is a routing hazard
+// and must be rejected.
+func TestRecordReviewVerdict_RejectsNodeNotMatchingProducer(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-gate-node", &memTrace{})
+	// h-001's producer is diagnose; a verdict claiming node "fix" is wrong.
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "fix", "PASS", nil)); err == nil {
+		t.Fatal("expected error for verdict node != envelope producer node, got nil")
+	}
+}
+
+// TestRecordReviewVerdict_SecondVerdictSameEnvelopeRejected: one verdict per
+// envelope. After a verdict is recorded (any kind), the pending slot is
+// consumed; a second verdict for the same envelope_id must error.
+func TestRecordReviewVerdict_SecondVerdictSameEnvelopeRejected(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-gate-once", &memTrace{})
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)); err != nil {
+		t.Fatalf("first (valid) verdict errored: %v", err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "NEEDS-FIX",
+		[]Finding{{File: "a.go", Line: 1, Issue: "late"}})); err == nil {
+		t.Fatal("expected error for second verdict on an already-consumed envelope, got nil")
+	}
+}
+
+// TestRecordHandoff_RunReviewTargetsProducer: the RUN_REVIEW directive (and
+// its review-scheduled node_turn echo) must name the PRODUCER node (the node
+// whose ④ is under review), not the consumer — trace-protocol §2.2.1 and the
+// C4 fixture (RUN_REVIEW envelope_id=h-001 scheduled on diagnose).
+func TestRecordHandoff_RunReviewTargetsProducer(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(c4GraphYAML))
+	tr := &memTrace{}
+	w := NewWalker(g, "test-runreview-node", tr)
+	d, err := w.RecordHandoff(h001())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != RunReview || d.Node != "diagnose" {
+		t.Fatalf("expected RUN_REVIEW node=diagnose (producer), got %+v", d)
+	}
+	var schedNode interface{}
+	var found bool
+	for _, e := range tr.events {
+		if e["type"] == "node_turn" && e["step"] == "review-scheduled" {
+			schedNode = e["node"]
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no review-scheduled node_turn emitted for h-001")
+	}
+	if schedNode != "diagnose" {
+		t.Fatalf("review-scheduled node_turn node=%v, want diagnose (producer)", schedNode)
+	}
+}
+
+// --- P0 review-loop hardening (TDD): findingKey ---
+
+// TestFindingKey_CoversAllFindings_OrderInsensitive: the 3×/window dedup key
+// must hash the WHOLE finding set (sorted), so (1) reordering findings does
+// not mint a new key, and (2) two genuinely different sets get different
+// keys. The old fs[0]-only key let a shuffled first element dodge the 3×
+// rule and let different issues at one file:line collide.
+func TestFindingKey_CoversAllFindings_OrderInsensitive(t *testing.T) {
+	a := []Finding{{File: "a.go", Line: 1, Issue: "nil"}, {File: "b.go", Line: 2, Issue: "race"}}
+	b := []Finding{{File: "b.go", Line: 2, Issue: "race"}, {File: "a.go", Line: 1, Issue: "nil"}}
+	if findingKey(a) != findingKey(b) {
+		t.Fatalf("same finding set in different order must share a key: %q vs %q", findingKey(a), findingKey(b))
+	}
+	c := []Finding{{File: "a.go", Line: 1, Issue: "nil"}}
+	if findingKey(a) == findingKey(c) {
+		t.Fatal("subset finding set must not collide with the full set's key")
+	}
+	// same file:line, DIFFERENT issue at fs[0] — old key collided these.
+	d1 := []Finding{{File: "a.go", Line: 1, Issue: "nil deref"}, {File: "z.go", Line: 9, Issue: "other"}}
+	d2 := []Finding{{File: "a.go", Line: 1, Issue: "unbounded loop"}, {File: "z.go", Line: 9, Issue: "other"}}
+	if findingKey(d1) == findingKey(d2) {
+		t.Fatal("different issues at the same fs[0] file:line must not share a key")
+	}
+}
+
+// TestFindingKey_EmptyReturnsEmpty: no findings → "" (callers treat "" as
+// "do not count toward 3× / do not append to the window").
+func TestFindingKey_EmptyReturnsEmpty(t *testing.T) {
+	if findingKey(nil) != "" || findingKey([]Finding{}) != "" {
+		t.Fatal("empty finding set must key to \"\"")
+	}
+}
+
+// TestRecordReviewVerdict_EmptyFindingsDoNotCountToward3x: cross-node
+// NEEDS-FIX verdicts with NO findings are degenerate — they must route as
+// back-edges (bounded by MaxBackEdgesTotal) but never accumulate a FindingsSeen
+// entry, so an empty-finding stream cannot mint a phantom "" 3× escalation.
+func TestRecordReviewVerdict_EmptyFindingsDoNotCountToward3x(t *testing.T) {
+	withTempStateDir(t)
+	g, err := ParseGraph([]byte(escalation3xGraphYAML))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tr := &memTrace{}
+	w := NewWalker(g, "test-empty-3x", tr)
+	w.Next()
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)); err != nil {
+		t.Fatal(err)
+	}
+	// three cross-node empty-finding verdicts, each on its OWN envelope
+	// (one verdict per envelope): h-002, h-003, h-004 produced by verify.
+	for _, id := range []string{"h-002", "h-003", "h-004"} {
+		if _, err := w.RecordHandoff(hv(id)); err != nil {
+			t.Fatal(err)
+		}
+		r, err := w.RecordReviewVerdict(rv(id, "verify", "NEEDS-FIX", nil))
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if r.Kind != BackEdgeKind {
+			t.Fatalf("%s: expected BackEdgeKind (empty findings must not escalate), got %v", id, r.Kind)
+		}
+	}
+	if n := len(w.state.FindingsSeen); n != 0 {
+		t.Fatalf("empty-finding verdicts must leave FindingsSeen empty, got %+v", w.state.FindingsSeen)
+	}
+	if w.state.BackEdges != 3 {
+		t.Fatalf("expected BackEdges=3, got %d", w.state.BackEdges)
 	}
 }

@@ -43,6 +43,7 @@ type WalkState struct {
 	FindingsSeen  map[string]int      `json:"findings_seen"`            // finding-text → count (3× escalation)
 	Windows       map[string][]string `json:"windows"`                  // per-node last N finding texts (alternating)
 	PendingReview string              `json:"pending_review,omitempty"` // envelope_id awaiting review_verdict
+	PendingReviewNode string          `json:"pending_review_node,omitempty"` // producer node of the pending envelope (§2.2.1 verdict.node)
 	RouteMap      []routeEntry        `json:"route_map"`                // for explain render
 }
 

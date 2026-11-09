@@ -3,7 +3,8 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
+	"hash/fnv"
+	"sort"
 )
 
 // TraceWriter appends a JSONL event. The CLI wires this to the trace file.
@@ -96,32 +97,57 @@ func (w *Walker) Next() Directive {
 
 // RecordHandoff records a ④ handoff, emits the handoff trace event + a node_turn,
 // and returns RUN_REVIEW for that envelope (B4: walker schedules ⑤).
+// The RUN_REVIEW directive names the PRODUCER node (env.FromNode) — the node
+// whose ④ is under review per trace-protocol §2.2.1 (verdict.node), matching
+// the C4 fixture (RUN_REVIEW h-001 scheduled on diagnose, not on fix).
 func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
 	// emit handoff event
 	w.trace.Append(toMap(env))
 	w.trace.Append(map[string]interface{}{
-		"type": "node_turn", "node": env.ToNode, "label": env.Label,
+		"type": "node_turn", "node": env.FromNode, "label": env.Label,
 		"step":             "review-scheduled",
 		"walker_directive": "RUN_REVIEW envelope_id=" + env.EnvelopeID,
 	})
 	w.state.PendingReview = env.EnvelopeID
+	w.state.PendingReviewNode = env.FromNode
 	// decrement budget (§2.2: decrements across all nodes; bootstrap h-000 already pre-decremented)
 	if env.EnvelopeID != "h-000" {
 		w.state.GraphTurns++
 	}
 	w.state.Save()
-	return Directive{Kind: RunReview, EnvelopeID: env.EnvelopeID, Node: env.ToNode, Label: env.Label}, nil
+	return Directive{Kind: RunReview, EnvelopeID: env.EnvelopeID, Node: env.FromNode, Label: env.Label}, nil
 }
 
 // RecordReviewVerdict records a ⑤ verdict and routes the next directive.
+// Runtime gate (P0): one verdict per pending envelope, verdict ∈ {PASS,
+// NEEDS-FIX}, non-empty evidence (invariant #6), and verdict.node == the
+// envelope's producer node. Rejected verdicts return an error and mutate
+// nothing — no trace pollution, no routing.
 func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
+	if w.state.PendingReview == "" {
+		return Directive{}, fmt.Errorf("review_verdict rejected: no pending review envelope (record the ④ handoff first)")
+	}
+	if v.EnvelopeID != w.state.PendingReview {
+		return Directive{}, fmt.Errorf("review_verdict rejected: envelope_id %q does not match pending envelope %q", v.EnvelopeID, w.state.PendingReview)
+	}
+	if v.Verdict != "PASS" && v.Verdict != "NEEDS-FIX" {
+		return Directive{}, fmt.Errorf("review_verdict rejected: verdict %q not in {PASS, NEEDS-FIX}", v.Verdict)
+	}
+	if len(v.EvidenceToolCalls) == 0 {
+		return Directive{}, fmt.Errorf("review_verdict rejected: empty evidence_tool_calls (rubber-stamp, invariant #6)")
+	}
+	if w.state.PendingReviewNode != "" && v.Node != w.state.PendingReviewNode {
+		return Directive{}, fmt.Errorf("review_verdict rejected: node %q is not the envelope's producer node %q (trace-protocol §2.2.1)", v.Node, w.state.PendingReviewNode)
+	}
+	// the pending envelope's single verdict is consumed
+	w.state.PendingReview = ""
+	w.state.PendingReviewNode = ""
 	w.trace.Append(toMap(v))
 	if v.Verdict == "PASS" {
 		// advance to next forward node
 		next := w.g.forwardFrom(v.Node)
 		w.state.CurrentNode = next
 		w.state.Attempt = 1
-		w.state.PendingReview = ""
 		w.state.Save()
 		if next == "" {
 			return Directive{Kind: Checkpoint, Node: v.Node}, nil // terminal
@@ -148,7 +174,8 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 		// findings → rotate escalation. N≤0 disables. Check fires AFTER
 		// max_inner_turns (precedence §2.7 #2) and BEFORE node_review_retry
 		// (mirrors the 3× rule's early-return-before-append at line ~160).
-		if w.g.Budget.AlternatingFindingWin > 0 {
+		// Empty-finding verdicts are degenerate and never feed the window.
+		if w.g.Budget.AlternatingFindingWin > 0 && findingText != "" {
 			w.state.Windows[v.Node] = append(w.state.Windows[v.Node], findingText)
 			win := w.state.Windows[v.Node]
 			n := w.g.Budget.AlternatingFindingWin
@@ -173,11 +200,14 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 	}
 	// cross-node back-edge (handoff_reject) — increments global counter + 3× escalation
 	w.state.BackEdges++
-	w.state.FindingsSeen[findingText]++
-	// 3× same-finding escalation (§2.7 #2)
-	if w.state.FindingsSeen[findingText] >= 3 {
-		w.state.Save()
-		return Directive{Kind: Checkpoint, Node: v.Node}, nil
+	// 3× same-finding escalation (§2.7 #2) — empty-finding verdicts are
+	// degenerate (no locatable defect) and never count toward it.
+	if findingText != "" {
+		w.state.FindingsSeen[findingText]++
+		if w.state.FindingsSeen[findingText] >= 3 {
+			w.state.Save()
+			return Directive{Kind: Checkpoint, Node: v.Node}, nil
+		}
 	}
 	if w.state.BackEdges >= w.g.Budget.MaxBackEdgesTotal {
 		w.state.Save()
@@ -228,11 +258,26 @@ func (w *Walker) labelOf(id string) string {
 	return id
 }
 
+// findingKey mints the stable dedup key for a verdict's finding SET (3× rule
+// + alternating window). It hashes every finding (file:line:issue), sorted, so
+// (1) reordering findings cannot dodge the 3× rule, (2) genuinely different
+// issues at one file:line do not collide, and (3) subsets/extra findings mint
+// different keys. Empty set → "" (callers skip counting entirely).
 func findingKey(fs []Finding) string {
 	if len(fs) == 0 {
 		return ""
 	}
-	return fs[0].File + ":" + strconv.Itoa(fs[0].Line)
+	parts := make([]string, 0, len(fs))
+	for _, f := range fs {
+		parts = append(parts, fmt.Sprintf("%s:%d:%s", f.File, f.Line, f.Issue))
+	}
+	sort.Strings(parts)
+	h := fnv.New64a()
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0x1f})
+	}
+	return fmt.Sprintf("%016x", h.Sum64())
 }
 func findingStrings(fs []Finding) []string {
 	out := make([]string, len(fs))
