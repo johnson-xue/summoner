@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -779,6 +780,191 @@ func TestRecordHandoff_RejectsHandoffWhileReviewPending(t *testing.T) {
 	}
 	if _, err := w.RecordHandoff(hv("h-003")); err == nil {
 		t.Fatal("expected error for handoff while envelope h-001 is still awaiting review, got nil")
+	}
+}
+
+// --- P0 wave 2: adversarial-review fixes (gate symmetry + escape hatch) ---
+
+// h000 is the walker-synthesized bootstrap envelope (B5): phase0 → first node.
+func h000() HandoffEnvelope {
+	return HandoffEnvelope{
+		EnvelopeID: "h-000", FromNode: "phase0", ToNode: "diagnose", Label: "记忆检索",
+		Artifacts: []string{"user-input.txt"}, FactualClaim: "bootstrap",
+		BudgetRemaining: BudgetRemaining{18, 42000},
+		Stripped:        []string{"producer_reasoning_trace", "producer_verdict_self_report"},
+	}
+}
+
+// TestRecordHandoff_RejectsEmptyEnvelopeID: an empty envelope_id would set
+// PendingReview="" — silently disabling BOTH gates (the verdict for it can
+// never match, and the next handoff sails through unreviewed).
+func TestRecordHandoff_RejectsEmptyEnvelopeID(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-h-empty-id", &memTrace{})
+	env := h001()
+	env.EnvelopeID = ""
+	if _, err := w.RecordHandoff(env); err == nil {
+		t.Fatal("expected error for handoff with empty envelope_id, got nil")
+	}
+}
+
+// TestRecordHandoff_RejectsEmptyFromNode: an empty producer node would leave
+// PendingReviewNode="" and skip the producer-match verdict gate entirely.
+func TestRecordHandoff_RejectsEmptyFromNode(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-h-empty-from", &memTrace{})
+	env := h001()
+	env.FromNode = ""
+	if _, err := w.RecordHandoff(env); err == nil {
+		t.Fatal("expected error for handoff with empty from_node, got nil")
+	}
+}
+
+// TestRecordHandoff_BootstrapH000_NoReviewNoDeadlock: h-000 is the bootstrap
+// envelope — it legitimately has NO ⑤ verdict (trace-protocol reserves it;
+// the C4 fixture has no review_verdict for h-000). Recording it must NOT
+// schedule a review or hold the pending slot (which would deadlock every
+// later handoff); it routes straight to the first node. Re-submitting h-000
+// is rejected (envelope ids are single-use — this also closes the free
+// budget-evading h-000 spam loop).
+func TestRecordHandoff_BootstrapH000_NoReviewNoDeadlock(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	tr := &memTrace{}
+	w := NewWalker(g, "test-h-bootstrap", tr)
+	d, err := w.RecordHandoff(h000())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != RunNode || d.Node != "diagnose" {
+		t.Fatalf("expected h-000 to route RUN_NODE diagnose (no ⑤ for bootstrap), got %+v", d)
+	}
+	// no deadlock: the next handoff is accepted
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatalf("h-001 after h-000 must be accepted, got %v", err)
+	}
+	// no review-scheduled node_turn for h-000 (h-001's own scheduling is legit)
+	for _, e := range tr.events {
+		if e["type"] == "node_turn" && e["step"] == "review-scheduled" &&
+			fmt.Sprint(e["walker_directive"]) == "RUN_REVIEW envelope_id=h-000" {
+			t.Fatalf("bootstrap h-000 must not schedule a review, got %v", e)
+		}
+	}
+	// single-use: re-submitting h-000 is rejected
+	if _, err := w.RecordHandoff(h000()); err == nil {
+		t.Fatal("expected error for re-used envelope id h-000, got nil")
+	}
+}
+
+// TestRecordHandoff_RejectsReusedEnvelopeID: envelope ids are single-use —
+// a consumed id re-handed-off would mint a second handoff+verdict pair in
+// the trace for the same envelope_id.
+func TestRecordHandoff_RejectsReusedEnvelopeID(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	w := NewWalker(g, "test-h-reuse", &memTrace{})
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.RecordHandoff(h001()); err == nil {
+		t.Fatal("expected error for re-using consumed envelope id h-001, got nil")
+	}
+}
+
+// TestAbandonPendingReview_CheckpointsAndClears: an interrupted/abandoned ⑤
+// must have an escape hatch — abandon emits a review_abandoned trace event,
+// clears the pending slot, and routes CHECKPOINT (human decides; continuing
+// re-runs the producer node and mints a FRESH envelope).
+func TestAbandonPendingReview_CheckpointsAndClears(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	tr := &memTrace{}
+	w := NewWalker(g, "test-abandon", tr)
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	d, err := w.AbandonPendingReview("session interrupted mid-review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != Checkpoint || d.Node != "diagnose" {
+		t.Fatalf("expected Checkpoint on producer node, got %+v", d)
+	}
+	// trace carries the abandon event
+	var abandoned bool
+	for _, e := range tr.events {
+		if e["type"] == "review_abandoned" && e["envelope_id"] == "h-001" {
+			abandoned = true
+		}
+	}
+	if !abandoned {
+		t.Fatal("expected review_abandoned event for h-001")
+	}
+	// abandoning with nothing pending is an error (checked BEFORE the next handoff)
+	if _, err := w.AbandonPendingReview("nothing"); err == nil {
+		t.Fatal("expected error for abandon with no pending review, got nil")
+	}
+	// pending cleared: a new handoff (fresh id) is accepted
+	if _, err := w.RecordHandoff(hv("h-003")); err != nil {
+		t.Fatalf("handoff after abandon must be accepted, got %v", err)
+	}
+	// a verdict for the abandoned envelope no longer matches anything
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)); err == nil {
+		t.Fatal("expected error for verdict on abandoned envelope, got nil")
+	}
+}
+
+// TestRecordReviewVerdict_RejectionLeavesStateAndTraceUntouched: the gate's
+// zero-side-effect promise — a rejected verdict appends NO trace event,
+// leaves the pending envelope in place, and the next VALID verdict records.
+func TestRecordReviewVerdict_RejectionLeavesStateAndTraceUntouched(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(escalation3xGraphYAML))
+	tr := &memTrace{}
+	w := NewWalker(g, "test-gate-pure", tr)
+	if _, err := w.RecordHandoff(h001()); err != nil {
+		t.Fatal(err)
+	}
+	eventsBefore := len(tr.events)
+	if _, err := w.RecordReviewVerdict(rv("h-999", "diagnose", "PASS", nil)); err == nil {
+		t.Fatal("expected rejection for mismatched envelope")
+	}
+	if len(tr.events) != eventsBefore {
+		t.Fatalf("rejection appended %d trace events (must be zero)", len(tr.events)-eventsBefore)
+	}
+	if _, err := w.RecordReviewVerdict(rv("h-001", "diagnose", "PASS", nil)); err != nil {
+		t.Fatalf("valid verdict after a rejection must still record, got %v", err)
+	}
+}
+
+// TestRecordReviewVerdict_EmptyFindingsNotInAlternatingWindow: same-node
+// empty-finding NEEDS-FIX verdicts are degenerate and must not feed the
+// rotation window (the cross-node counterpart is covered by
+// EmptyFindingsDoNotCountToward3x).
+func TestRecordReviewVerdict_EmptyFindingsNotInAlternatingWindow(t *testing.T) {
+	withTempStateDir(t)
+	g, _ := ParseGraph([]byte(alternatingGraphYAML))
+	w := NewWalker(g, "test-empty-window", &memTrace{})
+	ids := []string{"h-001", "h-002", "h-003", "h-004"}
+	for _, id := range ids {
+		if _, err := w.RecordHandoff(hf(id)); err != nil {
+			t.Fatal(err)
+		}
+		r, err := w.RecordReviewVerdict(rv(id, "fix", "NEEDS-FIX", nil))
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if r.Kind != NodeRetry {
+			t.Fatalf("%s: expected NodeRetry (empty findings never escalate), got %v", id, r.Kind)
+		}
+	}
+	if win := w.state.Windows["fix"]; len(win) != 0 {
+		t.Fatalf("empty-finding verdicts must not feed the window, got %v", win)
 	}
 }
 

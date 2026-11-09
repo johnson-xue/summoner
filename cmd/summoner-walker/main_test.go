@@ -53,9 +53,10 @@ edges: []
 // TestCLI_Record_ReviewVerdict_NeedsFix_DoesNotPanic proves Fix 1: a
 // `record --step review_verdict --verdict NEEDS-FIX` against a real node must
 // not SIGSEGV. Pre-Fix-1(a) the CLI passed Node:"" and RecordReviewVerdict
-// nil-derefed NodeByID's nil return. Now --node supplies the id and the walker
-// guards the unknown case. We exercise a known node (fix) so the NEEDS-FIX path
-// routes through the same-node retry logic rather than the unknown-node guard;
+// nil-derefed NodeByID's nil return. Now --node supplies the id (the envelope's
+// PRODUCER node, per the runtime gate) and the walker guards the unknown case.
+// We exercise the producer node (diagnose) so the NEEDS-FIX path routes
+// through the same-node retry logic rather than the unknown-node guard;
 // the goal is to prove the binary does not crash on a NEEDS-FIX verdict.
 func TestCLI_Record_ReviewVerdict_NeedsFix_DoesNotPanic(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "summoner-walker")

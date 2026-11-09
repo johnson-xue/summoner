@@ -101,11 +101,40 @@ func (w *Walker) Next() Directive {
 // whose ④ is under review per trace-protocol §2.2.1 (verdict.node), matching
 // the C4 fixture (RUN_REVIEW h-001 scheduled on diagnose, not on fix).
 func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
+	// input validation: the two fields the runtime gates key on. An empty
+	// envelope_id would silently disable both gates (its verdict can never
+	// match; the next handoff sails through unreviewed); an empty from_node
+	// would skip the producer-match verdict gate entirely.
+	if env.EnvelopeID == "" {
+		return Directive{}, fmt.Errorf("handoff rejected: empty envelope_id (trace-protocol §2.2)")
+	}
+	if env.FromNode == "" {
+		return Directive{}, fmt.Errorf("handoff rejected: empty from_node — the producer node is required (trace-protocol §2.2)")
+	}
+	// single-use envelope ids: a consumed id re-handed-off would mint a second
+	// handoff+verdict pair for the same envelope_id (and re-submitting h-000
+	// would evade the GraphTurns budget).
+	if w.state.ConsumedEnvelopes[env.EnvelopeID] {
+		return Directive{}, fmt.Errorf("handoff rejected: envelope_id %s already consumed — mint a fresh envelope id", env.EnvelopeID)
+	}
 	// gate: the previous envelope must have consumed its ⑤ verdict first —
 	// a handoff arriving while a review is pending would silently overwrite
 	// the pending slot and let an unreviewed ④ slip through (B4).
 	if w.state.PendingReview != "" {
 		return Directive{}, fmt.Errorf("handoff rejected: envelope %s (node %q) is still awaiting its review_verdict — run ⑤ before the next ④ handoff", w.state.PendingReview, w.state.PendingReviewNode)
+	}
+	if w.state.ConsumedEnvelopes == nil {
+		w.state.ConsumedEnvelopes = map[string]bool{}
+	}
+	w.state.ConsumedEnvelopes[env.EnvelopeID] = true
+	// bootstrap envelope (B5): h-000 legitimately has NO ⑤ (the C4 fixture has
+	// no review_verdict for it) — do NOT schedule a review or hold the pending
+	// slot (that would deadlock every later handoff). Route to the first node.
+	if env.EnvelopeID == "h-000" {
+		w.trace.Append(toMap(env))
+		w.state.Save()
+		first := w.g.firstNode()
+		return Directive{Kind: RunNode, Node: first, Label: w.labelOf(first), Attempt: w.state.Attempt}, nil
 	}
 	// emit handoff event
 	w.trace.Append(toMap(env))
@@ -117,11 +146,29 @@ func (w *Walker) RecordHandoff(env HandoffEnvelope) (Directive, error) {
 	w.state.PendingReview = env.EnvelopeID
 	w.state.PendingReviewNode = env.FromNode
 	// decrement budget (§2.2: decrements across all nodes; bootstrap h-000 already pre-decremented)
-	if env.EnvelopeID != "h-000" {
-		w.state.GraphTurns++
-	}
+	w.state.GraphTurns++
 	w.state.Save()
 	return Directive{Kind: RunReview, EnvelopeID: env.EnvelopeID, Node: env.FromNode, Label: env.Label}, nil
+}
+
+// AbandonPendingReview drops a pending ⑤ that will never arrive (session
+// interrupted mid-review, or the review was abandoned): emits a
+// review_abandoned trace event, frees the pending slot, and routes
+// CHECKPOINT — the human decides; continuing re-runs the producer node and
+// mints a FRESH envelope (the abandoned one stays consumed).
+func (w *Walker) AbandonPendingReview(reason string) (Directive, error) {
+	if w.state.PendingReview == "" {
+		return Directive{}, fmt.Errorf("abandon-review rejected: no pending review")
+	}
+	node := w.state.PendingReviewNode
+	w.trace.Append(map[string]interface{}{
+		"type": "review_abandoned", "envelope_id": w.state.PendingReview,
+		"node": node, "reason": reason, "executor": "walker",
+	})
+	w.state.PendingReview = ""
+	w.state.PendingReviewNode = ""
+	w.state.Save()
+	return Directive{Kind: Checkpoint, Node: node, Label: w.labelOf(node)}, nil
 }
 
 // RecordReviewVerdict records a ⑤ verdict and routes the next directive.
@@ -142,8 +189,8 @@ func (w *Walker) RecordReviewVerdict(v ReviewVerdict) (Directive, error) {
 	if len(v.EvidenceToolCalls) == 0 {
 		return Directive{}, fmt.Errorf("review_verdict rejected: empty evidence_tool_calls (rubber-stamp, invariant #6)")
 	}
-	if w.state.PendingReviewNode != "" && v.Node != w.state.PendingReviewNode {
-		return Directive{}, fmt.Errorf("review_verdict rejected: node %q is not the envelope's producer node %q (trace-protocol §2.2.1)", v.Node, w.state.PendingReviewNode)
+	if v.Node != w.state.PendingReviewNode {
+		return Directive{}, fmt.Errorf("review_verdict rejected: node %q is not the envelope's producer node %q (trace-protocol §2.2.1; legacy state file? re-run ⑤ with the producer node or abandon-review)", v.Node, w.state.PendingReviewNode)
 	}
 	// the pending envelope's single verdict is consumed
 	w.state.PendingReview = ""
@@ -269,6 +316,14 @@ func (w *Walker) labelOf(id string) string {
 // (1) reordering findings cannot dodge the 3× rule, (2) genuinely different
 // issues at one file:line do not collide, and (3) subsets/extra findings mint
 // different keys. Empty set → "" (callers skip counting entirely).
+//
+// Accepted trade-offs: the key includes the Issue text, so a reworded finding
+// mints a new key — a reviewer drifting its wording evades the 3× rule and
+// the window, falling back to the max_inner_turns / MaxBackEdgesTotal
+// backstops; that is chosen over the old file:line-only key, which collided
+// genuinely different issues at one location. There is no migration for
+// state files holding old "file:line" keys: on upgrade the counters reset
+// once (stale keys linger harmlessly until the session ends).
 func findingKey(fs []Finding) string {
 	if len(fs) == 0 {
 		return ""

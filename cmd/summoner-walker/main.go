@@ -25,6 +25,7 @@ func main() {
 
 	root.AddCommand(nextCmd())
 	root.AddCommand(recordCmd())
+	root.AddCommand(abandonReviewCmd())
 	root.AddCommand(explainCmd())
 	root.AddCommand(statusCmd())
 	if err := root.Execute(); err != nil {
@@ -179,6 +180,29 @@ func recordCmd() *cobra.Command {
 	c.Flags().StringVar(&findingsPath, "findings", "", "path to findings json (review_verdict)")
 	c.Flags().StringVar(&nodeID, "node", "", "node id being reviewed (review_verdict)")
 	c.Flags().StringVar(&evidencePath, "evidence", "", "path to evidence_tool_calls json array (review_verdict)")
+	return c
+}
+
+func abandonReviewCmd() *cobra.Command {
+	var reason string
+	c := &cobra.Command{
+		Use:   "abandon-review",
+		Short: "drop a pending ⑤ that will never arrive (interrupted/abandoned review) → CHECKPOINT",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w, err := newWalker()
+			if err != nil {
+				return err
+			}
+			d, err := w.AbandonPendingReview(reason)
+			if err != nil {
+				return err
+			}
+			out, _ := json.Marshal(d)
+			fmt.Println(string(out))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&reason, "reason", "review abandoned", "why the pending review is dropped (recorded in the trace)")
 	return c
 }
 

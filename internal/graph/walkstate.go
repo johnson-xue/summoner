@@ -34,17 +34,18 @@ type Directive struct {
 
 // WalkState is the mutable machine state (§10.2). Lives in a file, not the LLM head.
 type WalkState struct {
-	SessionID     string              `json:"session_id"`
-	CurrentNode   string              `json:"current_node"`
-	Attempt       int                 `json:"attempt"`
-	GraphTurns    int                 `json:"graph_turns"`
-	TokensUsed    int                 `json:"tokens_used"`
-	BackEdges     int                 `json:"back_edges"`               // cross-node only
-	FindingsSeen  map[string]int      `json:"findings_seen"`            // finding-text → count (3× escalation)
-	Windows       map[string][]string `json:"windows"`                  // per-node last N finding texts (alternating)
-	PendingReview string              `json:"pending_review,omitempty"` // envelope_id awaiting review_verdict
-	PendingReviewNode string          `json:"pending_review_node,omitempty"` // producer node of the pending envelope (§2.2.1 verdict.node)
-	RouteMap      []routeEntry        `json:"route_map"`                // for explain render
+	SessionID         string              `json:"session_id"`
+	CurrentNode       string              `json:"current_node"`
+	Attempt           int                 `json:"attempt"`
+	GraphTurns        int                 `json:"graph_turns"`
+	TokensUsed        int                 `json:"tokens_used"`
+	BackEdges         int                 `json:"back_edges"`                    // cross-node only
+	FindingsSeen      map[string]int      `json:"findings_seen"`                 // finding-text → count (3× escalation)
+	Windows           map[string][]string `json:"windows"`                       // per-node last N finding texts (alternating)
+	PendingReview     string              `json:"pending_review,omitempty"`      // envelope_id awaiting review_verdict
+	PendingReviewNode string              `json:"pending_review_node,omitempty"` // producer node of the pending envelope (§2.2.1 verdict.node)
+	ConsumedEnvelopes map[string]bool     `json:"consumed_envelopes,omitempty"`  // single-use envelope ids (incl. h-000) — one verdict per envelope
+	RouteMap          []routeEntry        `json:"route_map"`                     // for explain render
 }
 
 type routeEntry struct {
