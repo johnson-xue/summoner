@@ -626,6 +626,7 @@ func (r *RunState) decidePhase(cp *CheckpointState, accepted bool) {
 			r.removeStale(c)
 		}
 		r.freezeAcceptance(p, cp)
+		r.clearDroppedCriteria(p.AcceptedCriteria)
 	} else {
 		p.Outcome = "skipped"
 	}
@@ -662,6 +663,28 @@ func (r *RunState) freezeAcceptance(p *PhaseState, cp *CheckpointState) {
 		r.Acceptance.Requirements = append(r.Acceptance.Requirements, entry)
 	}
 	r.Acceptance.Version = r.RequirementsVersion
+}
+
+// clearDroppedCriteria removes drop-ledger entries whose criterion id was
+// just re-accepted — a re-freeze supersedes an earlier drop of the same id
+// (fix-round F3 ruling; same philosophy as M10's stale-clearing: the latest
+// user decision about an id governs, so a re-accepted criterion returns to
+// the envelope's expected set instead of staying silently dropped).
+func (r *RunState) clearDroppedCriteria(criteria []string) {
+	if len(r.CriteriaDrops) == 0 || len(criteria) == 0 {
+		return
+	}
+	reaccepted := make(map[string]bool, len(criteria))
+	for _, c := range criteria {
+		reaccepted[c] = true
+	}
+	kept := r.CriteriaDrops[:0]
+	for _, d := range r.CriteriaDrops {
+		if !reaccepted[d.ID] {
+			kept = append(kept, d)
+		}
+	}
+	r.CriteriaDrops = kept
 }
 
 // planRecall resolves the recall target — the most recent accepted prior
@@ -1063,7 +1086,17 @@ func (r *RunState) ResumeAfterChange() error {
 
 // --- review lifecycle (spec §3) ----------------------------------------------------
 
-func envelopeDigest(env Envelope) string {
+// envelopeContentDigest is the CONTENT digest of a review envelope: sha256
+// over the canonical bytes of everything EXCEPT review_id — the spec §3
+// reuse triple's envelope half (artifact_set + requirements/exit_criteria +
+// verification_scope, plus the per-run-constant schema_version/run_id).
+// review_id is the review INSTANCE key and is excluded on purpose: a later ⑤
+// request that mints a FRESH review id over identical content still matches
+// the stored digest, which is what makes ReusableReview fire (同版本验收复用).
+// The same-envelope re-send check loses nothing: it resolves the record by
+// review_id FIRST (findReview), the digest then pins the content.
+func envelopeContentDigest(env Envelope) string {
+	env.ReviewID = ""
 	b, err := json.Marshal(env)
 	if err != nil {
 		return ""
@@ -1115,14 +1148,16 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 
 	if rv := r.findReview(env.ReviewID); rv != nil {
 		// Re-send of a registered review: only mid-flight, only in
-		// REVIEW_PENDING, only the exact same envelope.
+		// REVIEW_PENDING, only the content-identical envelope (the record is
+		// resolved by review_id first; the stored content digest then pins
+		// everything else).
 		if err := r.requireStatus(StatusReviewPending, "RequestReview"); err != nil {
 			return "", err
 		}
 		if rv.Status != ReviewPrepared && rv.Status != ReviewRunning {
 			return "", fmt.Errorf("RequestReview: review %s already concluded (%s) — use a new review id", env.ReviewID, rv.Status)
 		}
-		if rv.EnvelopeDigest != envelopeDigest(env) {
+		if rv.EnvelopeDigest != envelopeContentDigest(env) {
 			return "", fmt.Errorf("RequestReview: review %s already registered with a different envelope", env.ReviewID)
 		}
 		return rv.ReviewID, nil // same envelope: idempotent re-send
@@ -1145,7 +1180,7 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 		rec := ReviewRecord{
 			ReviewID:       env.ReviewID,
 			Status:         ReviewPrepared,
-			EnvelopeDigest: envelopeDigest(env),
+			EnvelopeDigest: envelopeContentDigest(env),
 			RequestedAt:    nowUTC(),
 		}
 		if s.ReviewObligation != nil {

@@ -192,6 +192,97 @@ func TestDroppedCriterionExcluded(t *testing.T) {
 	}
 }
 
+// TestReacceptanceClearsDrop pins the fix-round F3 ruling: a re-freeze
+// supersedes an earlier drop of the same criterion id — decidePhase(accepted)
+// removes ledger entries whose id is among the re-accepted criteria (same
+// philosophy as M10's stale-clearing), so the criterion returns to the frozen
+// set ValidateEnvelope expects.
+func TestReacceptanceClearsDrop(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c-1") // frozen: p1 → [c-1]
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+
+	// A recorded user drop of c-1 (recording path arrives with T10).
+	r.CriteriaDrops = []CriteriaDrop{{ID: "c-1", At: "2026-11-10T00:00:00Z", CheckpointID: "cp-9"}}
+	if err := r.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// While dropped, the envelope set omits c-1 (frozen − drops).
+	frozen := FrozenView{Version: r.RequirementsVersion, Requirements: r.Acceptance.Requirements}
+	if err := ValidateEnvelope(envelopeWithCriteria(), frozen, r.CriteriaDrops, nil); err != nil {
+		t.Fatalf("dropped criterion must leave the expected set: %v", err)
+	}
+
+	// The same criterion is re-accepted via a later phase acceptance → the
+	// drop leaves the ledger.
+	openAndSubmit(t, r, "p1", "c-1") // re-opened p1 with c-1 back in its criteria
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if len(r.CriteriaDrops) != 0 {
+		t.Fatalf("re-acceptance must clear the drop ledger entry: %+v", r.CriteriaDrops)
+	}
+
+	// The criterion is back in the expected set: an envelope WITH c-1
+	// validates, one WITHOUT it is a producer trim.
+	refrozen := FrozenView{Version: r.RequirementsVersion, Requirements: r.Acceptance.Requirements}
+	if err := ValidateEnvelope(envelopeWithCriteria("c-1"), refrozen, r.CriteriaDrops, nil); err != nil {
+		t.Fatalf("re-frozen criterion must be expected again: %v", err)
+	}
+	if err := ValidateEnvelope(envelopeWithCriteria(), refrozen, r.CriteriaDrops, nil); err == nil {
+		t.Fatal("envelope omitting the re-frozen criterion must be rejected")
+	}
+}
+
+// TestArtifactSetDigestDeterministicWithDuplicatePaths pins fix-round F4: the
+// artifact-set digest sorts by the full (path, digest, kind) key — duplicate
+// paths hash in a stable order, and input order never changes the digest.
+func TestArtifactSetDigestDeterministicWithDuplicatePaths(t *testing.T) {
+	base := testEnvelope()
+	base.ArtifactSet = []ArtifactRef{
+		{Path: "pkg/x.go", Digest: "aaa", Kind: "code"},
+		{Path: "pkg/x.go", Digest: "bbb", Kind: "code"},
+		{Path: "pkg/y.go", Digest: "ccc", Kind: "code"},
+	}
+	first := ArtifactSetDigest(base)
+	for i := 0; i < 8; i++ {
+		// Shuffle deterministically (rotate) and re-digest: same set, same digest.
+		rotated := append([]ArtifactRef{base.ArtifactSet[len(base.ArtifactSet)-1]}, base.ArtifactSet[:len(base.ArtifactSet)-1]...)
+		shuffled := base
+		shuffled.ArtifactSet = rotated
+		if got := ArtifactSetDigest(shuffled); got != first {
+			t.Fatalf("ArtifactSetDigest is order-sensitive: %s vs %s", got, first)
+		}
+		base.ArtifactSet = rotated
+	}
+}
+
+// TestValidateEnvelopeRejectsVacuousReview pins the fix-round F5 ruling: an
+// empty frozen acceptance view with an empty drop ledger is the vacuous case —
+// nothing has been accepted yet, no review is due — while an all-dropped empty
+// exit-criteria set stays legitimate.
+func TestValidateEnvelopeRejectsVacuousReview(t *testing.T) {
+	empty := envelopeWithCriteria() // zero exit criteria
+	if err := ValidateEnvelope(empty, FrozenView{}, nil, nil); err == nil {
+		t.Fatal("empty frozen view + empty drop ledger must reject (no review is due)")
+	}
+	// A frozen view whose requirements carry no criteria is equally vacuous.
+	barren := FrozenView{Version: 1, Requirements: []FrozenRequirement{{ID: "p1"}}}
+	if err := ValidateEnvelope(empty, barren, nil, nil); err == nil {
+		t.Fatal("frozen view with zero criteria + no drops must reject")
+	}
+	// All-dropped is legitimate: the view had criteria, the user dropped them
+	// all — the empty envelope set is exactly frozen − drops.
+	dropped := FrozenView{Version: 1, Requirements: []FrozenRequirement{
+		{ID: "p1", CriteriaIDs: []string{"c-1"}},
+	}}
+	drops := []CriteriaDrop{{ID: "c-1", At: "2026-11-10T00:00:00Z", CheckpointID: "cp-2"}}
+	if err := ValidateEnvelope(empty, dropped, drops, nil); err != nil {
+		t.Fatalf("all-dropped empty exit criteria must stay legitimate: %v", err)
+	}
+}
+
 // TestValidateEnvelopeCriterionShape: duplicate ids and malformed methods are
 // rejected — set equality needs unique, well-formed criterion ids.
 func TestValidateEnvelopeCriterionShape(t *testing.T) {
@@ -327,10 +418,24 @@ func TestValidateEnvelopeCheckDigestFrozen(t *testing.T) {
 		t.Fatalf("error must demand a version upgrade, got: %v", err)
 	}
 
-	// Bare check id: no frozen digest, current registry accepted.
+	// Fix-round F2: with a registry present the freeze is MANDATORY — a bare
+	// check id (no frozen digest) is rejected, not silently accepted.
 	bare := mechanical("check-export")
-	if err := ValidateEnvelope(bare, frozen, nil, []CheckDef{drifted}); err != nil {
-		t.Fatalf("bare check id against the current registry must validate: %v", err)
+	if err := ValidateEnvelope(bare, frozen, nil, []CheckDef{def}); err == nil {
+		t.Fatal("bare check id (no frozen digest) must be rejected when a registry is present")
+	}
+
+	// A missing scope entry for a referenced mechanical check is rejected.
+	missing := mechanical("check-export")
+	missing.VerificationScope.CheckIDs = []string{"check-other@" + def.Digest}
+	if err := ValidateEnvelope(missing, frozen, nil, []CheckDef{def}); err == nil {
+		t.Fatal("mechanical criterion without a scope entry for its check must be rejected")
+	}
+
+	// A malformed entry with an empty digest after @ is rejected at parse.
+	malformed := mechanical("check-export@")
+	if err := ValidateEnvelope(malformed, frozen, nil, []CheckDef{def}); err == nil {
+		t.Fatal("check_ids entry with an empty digest after @ must be rejected")
 	}
 
 	// Unregistered check: reject.
@@ -340,6 +445,12 @@ func TestValidateEnvelopeCheckDigestFrozen(t *testing.T) {
 	ghost.VerificationScope.CheckIDs = []string{"check-ghost"}
 	if err := ValidateEnvelope(ghost, frozen, nil, []CheckDef{def}); err == nil {
 		t.Fatal("unregistered check must be rejected")
+	}
+
+	// A nil registry keeps the lenient path — the registry arrives with T9,
+	// and until then there is nothing to freeze against.
+	if err := ValidateEnvelope(ghost, frozen, nil, nil); err != nil {
+		t.Fatalf("nil registry must skip the registry checks: %v", err)
 	}
 }
 
@@ -489,12 +600,22 @@ func TestSameDigestReuse(t *testing.T) {
 		t.Fatalf("reusable record = %+v", rv)
 	}
 
-	// A different envelope (here: different review_id → different digest) is
-	// not covered by the reuse.
+	// Reuse fires under a NEW review_id with identical content — the stored
+	// digest is a CONTENT digest (review_id excluded): a fresh ⑤ request for
+	// the same artifacts + frozen criteria + verification environment reuses
+	// the concluded review instead of re-reviewing (spec §3 同版本验收复用).
+	fresh := env
+	fresh.ReviewID = "rev-2"
+	rvFresh, okFresh := ReusableReview(r, fresh)
+	if !okFresh || rvFresh == nil || rvFresh.ReviewID != "rev-1" {
+		t.Fatalf("new review id with identical content must reuse rev-1, got (%+v, %v)", rvFresh, okFresh)
+	}
+
+	// A genuine content difference (artifact digest changed) is not covered.
 	other := env
-	other.ReviewID = "rev-2"
+	other.ArtifactSet[0].Digest = "changed"
 	if rv, ok := ReusableReview(r, other); ok || rv != nil {
-		t.Fatal("different envelope digest must not reuse")
+		t.Fatal("different content must not reuse")
 	}
 
 	// A BLOCKED conclusion is never reusable, even with matching digests.
@@ -525,5 +646,42 @@ func TestStaleArtifactVoidsVerdict(t *testing.T) {
 	// verdict callers must not cite.
 	if r.Reviews[0].Status != ReviewReviewed || r.Reviews[0].Verdict != VerdictPass {
 		t.Fatalf("predicate mutated the record: %+v", r.Reviews[0])
+	}
+}
+
+// TestReuseFiresUnderNewReviewID pins the fix-round F1 semantics end to end:
+// the digest RequestReview stores is a CONTENT digest (everything except
+// review_id — the spec §3 triple: artifacts + frozen criteria + verification
+// environment), so a later ⑤ request that mints a fresh review_id over
+// identical content reuses the concluded review — no re-review, no recursion.
+func TestReuseFiresUnderNewReviewID(t *testing.T) {
+	first := testEnvelope()
+	r := concludedReviewRun(t, ReviewResult{
+		ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass,
+		ArtifactDigest: ArtifactSetDigest(first), EvidenceToolCallIDs: []string{"toolu_01"},
+	})
+
+	// The same content under a new review id: reusable, and the reusable
+	// record is the PRIOR review's.
+	second := testEnvelope()
+	second.ReviewID = "rev-2"
+	rv, ok := ReusableReview(r, second)
+	if !ok || rv == nil || rv.ReviewID != "rev-1" || rv.Verdict != VerdictPass {
+		t.Fatalf("content-identical envelope under rev-2: got (%+v, %v), want reuse of rev-1", rv, ok)
+	}
+
+	// Any content-side change breaks the match: criteria, scope, artifact set.
+	mutants := map[string]func(*Envelope){
+		"artifact_set": func(e *Envelope) { e.ArtifactSet[0].Digest = "different" },
+		"criteria":     func(e *Envelope) { e.ExitCriteria[0].Goal = "different goal" },
+		"scope":        func(e *Envelope) { e.VerificationScope.Readable = []string{"elsewhere/"} },
+	}
+	for name, mutate := range mutants {
+		m := testEnvelope()
+		m.ReviewID = "rev-2"
+		mutate(&m)
+		if rv, ok := ReusableReview(r, m); ok || rv != nil {
+			t.Fatalf("%s change must not reuse", name)
+		}
 	}
 }

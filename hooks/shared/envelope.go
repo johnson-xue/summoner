@@ -121,8 +121,10 @@ func DigestChanged(a, b CheckDef) bool {
 }
 
 // parseScopeCheckRef splits one verification_scope.check_ids entry: a bare
-// "check_id" (no frozen digest — the current registry definition is accepted)
-// or "check_id@digest" (the definition digest frozen at envelope creation).
+// "check_id" (no frozen digest — rejected for REFERENCED mechanical checks
+// when a registry is present) or "check_id@digest" (the definition digest
+// frozen at envelope creation). An empty digest after "@" is malformed and
+// errors — a corrupted freeze must not silently downgrade to no-freeze.
 func parseScopeCheckRef(entry string) (id, digest string, err error) {
 	if entry == "" {
 		return "", "", errors.New("empty verification_scope.check_ids entry")
@@ -130,6 +132,9 @@ func parseScopeCheckRef(entry string) (id, digest string, err error) {
 	parts := strings.SplitN(entry, "@", 2)
 	if parts[0] == "" {
 		return "", "", fmt.Errorf("malformed check_ids entry %q (no check id before @)", entry)
+	}
+	if len(parts) == 2 && parts[1] == "" {
+		return "", "", fmt.Errorf("malformed check_ids entry %q (empty digest after @)", entry)
 	}
 	if len(parts) == 1 {
 		return parts[0], "", nil // bare check id — no frozen digest
@@ -149,13 +154,17 @@ func parseScopeCheckRef(entry string) (id, digest string, err error) {
 //   - criterion ids are unique and methods are mechanical|judgment; a
 //     mechanical criterion must reference a registered check_id;
 //   - every referenced check must exist in the registry (when one is given),
-//     and any definition digest frozen in verification_scope.check_ids as
-//     "check_id@digest" must still match the registry's recomputed digest —
-//     a mismatch rejects the envelope: it must version-upgrade (信封创建时
-//     冻结所用 check 定义摘要；执行时复核摘要，变更即信封版本升级).
+//     and — with a registry present — the freeze is MANDATORY: every
+//     mechanical criterion must carry a matching `check_id@digest` entry in
+//     verification_scope.check_ids (a bare id, a missing entry or a malformed
+//     `id@` rejects; a digest mismatch rejects with version-upgrade — 信封创
+//     建时冻结所用 check 定义摘要；执行时复核摘要，变更即信封版本升级);
+//   - an EMPTY frozen view with an EMPTY drop ledger is the vacuous case —
+//     nothing has been accepted yet, no review is due (an all-dropped empty
+//     exit-criteria set stays legitimate).
 //
 // A nil/empty registry skips the registry checks (no registry to check
-// against); the set-equality checks always run.
+// against — it arrives with T9); the set-equality checks always run.
 func ValidateEnvelope(env Envelope, frozen FrozenView, dropped []CriteriaDrop, registry []CheckDef) error {
 	resolved := ResolveFrozenView(frozen)
 	expected := make(map[string]bool)
@@ -164,9 +173,17 @@ func ValidateEnvelope(env Envelope, frozen FrozenView, dropped []CriteriaDrop, r
 			expected[id] = true
 		}
 	}
+	// Fix-round F5: the vacuous case. With nothing accepted and nothing
+	// dropped, set equality would hold for a zero-criterion envelope — a
+	// review with nothing to check. All-dropped emptiness is legitimate and
+	// falls through (the drop ledger is non-empty there).
+	if len(expected) == 0 && len(dropped) == 0 {
+		return errors.New("ValidateEnvelope: the frozen acceptance view is empty and nothing was dropped — nothing has been accepted yet, no review is due (spec §3)")
+	}
 	// The drop ledger is a per-decision historical record (逐 id、逐次决定): a
 	// drop whose criterion later left the frozen view (re-acceptance with new
 	// criteria) is inert — the spec arithmetic is simply frozen − drops.
+	// (Re-acceptance of the SAME id clears its drop — see decidePhase.)
 	for _, d := range dropped {
 		delete(expected, d.ID)
 	}
@@ -233,7 +250,18 @@ func ValidateEnvelope(env Envelope, frozen FrozenView, dropped []CriteriaDrop, r
 		if !ok {
 			return fmt.Errorf("ValidateEnvelope: criterion %q references unregistered check %q", c.ID, c.CheckID)
 		}
-		if want := frozenRefs[c.CheckID]; want != "" && want != CheckDefDigest(def) {
+		// Fix-round F2: with a registry present the freeze is NOT optional —
+		// the envelope producer is exactly the party the frozen-view
+		// machinery distrusts, so a bare or missing scope entry cannot be
+		// allowed to skip it.
+		want, ok := frozenRefs[c.CheckID]
+		if !ok {
+			return fmt.Errorf("ValidateEnvelope: criterion %q freezes no digest for check %q — verification_scope.check_ids must carry check_id@digest for every mechanical check (spec §3)", c.ID, c.CheckID)
+		}
+		if want == "" {
+			return fmt.Errorf("ValidateEnvelope: bare check id %q carries no frozen digest — with a registry present the check-definition freeze is mandatory (spec §3)", c.CheckID)
+		}
+		if want != CheckDefDigest(def) {
 			return fmt.Errorf("ValidateEnvelope: check %q definition changed since the envelope froze digest %s (now %s) — the envelope must version-upgrade", c.CheckID, want, CheckDefDigest(def))
 		}
 	}
@@ -315,13 +343,23 @@ func ValidateEvidence(res ReviewResult) error {
 // --- reuse / void ---------------------------------------------------------------------
 
 // ArtifactSetDigest is the canonical digest of an envelope's artifact set:
-// sha256 over the artifact refs sorted by path, each contributing
-// path/digest/kind. Producers, reviewers and the reducer share this one
-// definition, so the digest a reviewer reports (artifact_digest) and the
-// digest a later envelope freezes are comparable.
+// sha256 over the artifact refs sorted by the full (path, digest, kind) key,
+// each contributing path/digest/kind. The full key keeps the digest
+// deterministic for duplicate paths (path alone is not a stable sort key);
+// producers, reviewers and the reducer share this one definition, so the
+// digest a reviewer reports (artifact_digest) and the digest a later
+// envelope freezes are comparable.
 func ArtifactSetDigest(env Envelope) string {
 	refs := append([]ArtifactRef(nil), env.ArtifactSet...)
-	sort.Slice(refs, func(i, j int) bool { return refs[i].Path < refs[j].Path })
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Path != refs[j].Path {
+			return refs[i].Path < refs[j].Path
+		}
+		if refs[i].Digest != refs[j].Digest {
+			return refs[i].Digest < refs[j].Digest
+		}
+		return refs[i].Kind < refs[j].Kind
+	})
 	h := sha256.New()
 	for _, a := range refs {
 		h.Write([]byte(a.Path))
@@ -335,19 +373,20 @@ func ArtifactSetDigest(env Envelope) string {
 }
 
 // ReusableReview reports whether a concluded review can be reused for this
-// envelope (spec §3 同版本验收复用): a REVIEWED record whose envelope digest AND
-// artifact digest both match — the same frozen criteria and verification
-// environment reviewing the same artifact versions. Reuse means no re-review,
-// no review-of-review, no recursion. A same-envelope record whose artifact
-// digest drifted (artifacts changed around the review) is NOT reusable and
-// its prior verdict is VOID — callers must not cite it; a fresh review is
-// required (产物 digest 变更 → verdict 作废重审). Pure predicate: it never
-// mutates the run.
+// envelope (spec §3 同版本验收复用): a REVIEWED record whose stored CONTENT
+// digest (envelope content minus review_id — the spec triple: artifacts +
+// frozen criteria + verification environment) AND artifact digest both match.
+// Reuse means no re-review, no review-of-review, no recursion — including
+// for a later ⑤ request that mints a fresh review_id over identical content.
+// A content-identical record whose artifact digest drifted (artifacts
+// changed around the review) is NOT reusable and its prior verdict is VOID —
+// callers must not cite it; a fresh review is required (产物 digest 变更 →
+// verdict 作废重审). Pure predicate: it never mutates the run.
 func ReusableReview(run *RunState, env Envelope) (*ReviewRecord, bool) {
 	if run == nil {
 		return nil, false
 	}
-	wantEnv := envelopeDigest(env)
+	wantEnv := envelopeContentDigest(env)
 	wantArt := ArtifactSetDigest(env)
 	for i := range run.Reviews {
 		rv := &run.Reviews[i]
