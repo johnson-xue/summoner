@@ -259,25 +259,33 @@ func TestDropPartialAnswerSemantics(t *testing.T) {
 // WHOLE callback: decision_rejected, nothing recorded.
 func TestDropQuestionMalformedRejected(t *testing.T) {
 	cases := []struct {
-		name string
-		q    map[string]interface{}
+		name       string
+		q          map[string]interface{}
+		wantReason string
 	}{
 		{
-			name: "no keep option",
+			name:       "no keep option",
+			wantReason: "drop",
 			q: map[string]interface{}{
 				"question": "drop: crit-a — remove it?",
 				"options":  []interface{}{dropOption("drop", "crit-a")},
 			},
 		},
 		{
-			name: "keep names a different id",
+			name:       "keep names a different id",
+			wantReason: "drop",
 			q: map[string]interface{}{
 				"question": "drop: crit-a — remove it?",
 				"options":  []interface{}{dropOption("keep", "crit-b"), dropOption("drop", "crit-a")},
 			},
 		},
 		{
-			name: "drop question carries the nonce",
+			// Fix-round m2: a nonce-carrying drop question ALSO makes two
+			// nonce questions — the multi-nonce fail-closed fires first
+			// (nothing recorded either way; the earlier, stronger ambiguity
+			// rejection wins).
+			name:       "drop question carries the nonce",
+			wantReason: "exactly ONE",
 			q: func() map[string]interface{} {
 				q, _ := dropQuestionFixture("crit-a")
 				q["question"] = "drop: crit-a (nonce %s) — remove it?" // placeholder; fixed per-case below
@@ -285,7 +293,8 @@ func TestDropQuestionMalformedRejected(t *testing.T) {
 			}(),
 		},
 		{
-			name: "id outside criteria ∪ frozen view",
+			name:       "id outside criteria ∪ frozen view",
+			wantReason: "drop",
 			q: func() map[string]interface{} {
 				q, _ := dropQuestionFixture("crit-ghost")
 				return q
@@ -323,7 +332,7 @@ func TestDropQuestionMalformedRejected(t *testing.T) {
 				t.Fatalf("a malformed drop question must record no drop, ledger = %+v", disk.CriteriaDrops)
 			}
 			evs := readHookTrace(t, "run-1")
-			wantRejected(t, evs, cp.ID, "drop")
+			wantRejected(t, evs, cp.ID, c.wantReason)
 			if n := len(eventsOfType(evs, shared.EventCriterionDropped)); n != 0 {
 				t.Fatalf("criterion.dropped events = %d, want 0", n)
 			}
@@ -387,4 +396,175 @@ func TestDropOnlyCallbackRecordsDropsOnly(t *testing.T) {
 		t.Fatalf("ledger = %+v, want the answered drop", disk.CriteriaDrops)
 	}
 	wantRejected(t, readHookTrace(t, "run-1"), cp.ID, "nonce")
+}
+
+// --- fix round 1 ---------------------------------------------------------------------
+
+// TestDropReplayAfterReacceptanceRecordsNothing (fix-round I1): a re-delivered
+// PostToolUse callback must not re-drop a criterion the user just re-accepted.
+// tu-replay-1 answered {CONTINUE + drop: crit-a} at cp-2 → a later context
+// CONTINUE re-accepts crit-a (clearing the ledger entry) → cp-4 displayed →
+// the SAME callback re-delivered: its tool_use_id was consumed by cp-2's
+// decision, so it can never record again — no second criterion.dropped and the
+// envelope set is NOT weakened. A FRESH tool_use_id (a fresh human answer)
+// may drop again.
+func TestDropReplayAfterReacceptanceRecordsNothing(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp2 := droppableCheckpointWithCriteria(t, r, []string{"crit-a"}, []string{"crit-b"})
+
+	dq, dtext := dropQuestionFixture("crit-a")
+	q, qtext := cpQuestion(cp2.Nonce, false, decisionLabels...)
+	replayPayload := postUsePayload(t, "AskUserQuestion", "tu-replay-1",
+		map[string]interface{}{"questions": []interface{}{q, dq}},
+		map[string]interface{}{
+			"questions": []interface{}{
+				map[string]interface{}{"question": qtext},
+				map[string]interface{}{"question": dtext},
+			},
+			"answers": map[string]interface{}{
+				qtext: "Continue: accept and proceed",
+				dtext: "drop: crit-a",
+			},
+		})
+	code, stderr := callHook(t, replayPayload)
+	if code != 0 {
+		t.Fatalf("original callback exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	disk := reloadRun(t, "run-1")
+	if len(disk.CriteriaDrops) != 1 || disk.CriteriaDrops[0].ToolUseID != "tu-replay-1" {
+		t.Fatalf("ledger after the original callback = %+v, want one crit-a entry on tu-replay-1", disk.CriteriaDrops)
+	}
+	// The hook decided cp-2 on its own loaded copy — reload before driving on.
+	r = disk
+
+	// A later context visit re-accepts crit-a → the ledger clears; cp-4
+	// (diagnosis, crit-c) is the checkpoint the replay lands at.
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	cp3, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context", Summary: "context redone", CriteriaIDs: []string{"crit-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MarkDisplayed(cp3.ID, shared.CheckpointContentDigest(cp3, r.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RecordDecision(cp3.ID, shared.DecisionContinue, "tu-re-acc-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	cp4, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "diagnosis again", CriteriaIDs: []string{"crit-c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MarkDisplayed(cp4.ID, shared.CheckpointContentDigest(cp4, r.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	disk = reloadRun(t, "run-1")
+	if len(disk.CriteriaDrops) != 0 {
+		t.Fatalf("re-acceptance must clear the drop, ledger = %+v", disk.CriteriaDrops)
+	}
+
+	// The re-delivered callback: same payload, same tool_use_id, at cp-4.
+	code, stderr = callHook(t, replayPayload)
+	if code != 0 {
+		t.Fatalf("replayed callback exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	disk = reloadRun(t, "run-1")
+	if len(disk.CriteriaDrops) != 0 {
+		t.Fatalf("the replay must record no drop — an already-consumed tool_use_id can never record again, ledger = %+v", disk.CriteriaDrops)
+	}
+	evs := readHookTrace(t, "run-1")
+	if n := len(eventsOfType(evs, shared.EventCriterionDropped)); n != 1 {
+		t.Fatalf("criterion.dropped events = %d, want still 1 (no second drop from the replay; trace: %v)", n, traceTypesOf(evs))
+	}
+	// The replayed callback already concluded cp-2's decision, so the whole
+	// call is a silent idempotent no-op — no decision_rejected either (the
+	// coordinator's I1 ruling: reject/no-op an already-concluded decision
+	// callback BEFORE any ride-along effect).
+	if n := len(eventsOfType(evs, shared.EventCheckpointDecisionRejected)); n != 0 {
+		t.Fatalf("decision_rejected events = %d, want 0 — the replay is a silent no-op (trace: %v)", n, traceTypesOf(evs))
+	}
+	// The envelope arithmetic is NOT weakened: the frozen view still carries
+	// crit-a (re-frozen) and crit-b — no drop is in force.
+	env := shared.Envelope{
+		SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-replay",
+		ArtifactSet: []shared.ArtifactRef{{Path: "x.md", Digest: "d"}},
+		ExitCriteria: []shared.Criterion{
+			{ID: "crit-a", Method: shared.MethodJudgment},
+			{ID: "crit-b", Method: shared.MethodJudgment},
+		},
+	}
+	if err := shared.ValidateEnvelope(env, disk.AcceptanceView(), disk.CriteriaDrops, nil); err != nil {
+		t.Fatalf("the replay must not weaken envelope criteria: %v", err)
+	}
+
+	// A FRESH tool_use_id with a fresh human answer may drop crit-a again.
+	q4, qtext4 := cpQuestion(cp4.Nonce, false, decisionLabels...)
+	code, stderr = callHook(t, postUsePayload(t, "AskUserQuestion", "tu-fresh-1",
+		map[string]interface{}{"questions": []interface{}{q4, dq}},
+		map[string]interface{}{
+			"answers": map[string]interface{}{
+				qtext4: "Continue: accept and proceed",
+				dtext:  "drop: crit-a",
+			},
+		}))
+	if code != 0 {
+		t.Fatalf("fresh drop callback exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	disk = reloadRun(t, "run-1")
+	if len(disk.CriteriaDrops) != 1 || disk.CriteriaDrops[0].ToolUseID != "tu-fresh-1" {
+		t.Fatalf("ledger after the fresh drop = %+v, want one crit-a entry on tu-fresh-1", disk.CriteriaDrops)
+	}
+}
+
+// TestMultiNonceCallbackRecordsNothingIncludingDrops (fix-round m2): a call
+// carrying two nonce questions is ambiguous and rejects the WHOLE callback
+// with NOTHING recorded — including drops. The answers map cannot be bound to
+// questions, so no part of it may reach the ledger (T16 discipline; the drop
+// channel is the decision channel's ride-along, never a side door).
+func TestMultiNonceCallbackRecordsNothingIncludingDrops(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp := droppableCheckpointWithCriteria(t, r, []string{"crit-a"}, []string{"crit-b"})
+
+	q1, t1 := cpQuestion(cp.Nonce, false, decisionLabels...)
+	q2, t2 := cpQuestion(cp.Nonce, false, decisionLabels[:3]...)
+	dq, dtext := dropQuestionFixture("crit-a")
+	payload := postUsePayload(t, "AskUserQuestion", "tu-mn-1",
+		map[string]interface{}{"questions": []interface{}{q1, q2, dq}},
+		map[string]interface{}{
+			"questions": []interface{}{
+				map[string]interface{}{"question": t1},
+				map[string]interface{}{"question": t2},
+				map[string]interface{}{"question": dtext},
+			},
+			"answers": map[string]interface{}{
+				t1:    "Continue: accept and proceed",
+				dtext: "drop: crit-a",
+			},
+		})
+	code, stderr := callHook(t, payload)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 — a rejection is not a hook error (stderr: %q)", code, stderr)
+	}
+
+	disk := reloadRun(t, "run-1")
+	if len(disk.CriteriaDrops) != 0 {
+		t.Fatalf("multi-nonce callback must record NO drop (nothing recorded), ledger = %+v", disk.CriteriaDrops)
+	}
+	if got := disk.Checkpoints[1]; got.Decided {
+		t.Fatal("multi-nonce callback must record no decision")
+	}
+	evs := readHookTrace(t, "run-1")
+	wantRejected(t, evs, cp.ID, "exactly ONE")
+	if n := len(eventsOfType(evs, shared.EventCriterionDropped)); n != 0 {
+		t.Fatalf("criterion.dropped events = %d, want 0 (trace: %v)", n, traceTypesOf(evs))
+	}
+	if n := len(eventsOfType(evs, shared.EventCheckpointDecided)); n != 0 {
+		t.Fatalf("checkpoint.decided events = %d, want 0", n)
+	}
 }

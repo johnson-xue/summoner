@@ -1403,9 +1403,12 @@ func TestEndToEndForgedEvidenceStaysDecidable(t *testing.T) {
 	}
 }
 
-// TestEndToEndEnvelopeBeforeFreezeRejected: on a standalone review run, an
-// envelope submitted before the context checkpoint's CONTINUE froze anything
-// is rejected by the vacuous-view guard — over the REAL binaries.
+// TestEndToEndEnvelopeBeforeFreezeRejected (fix-round m4): on a standalone
+// review run, a [v] at the context checkpoint BEFORE any acceptance froze
+// anything is REFUSED over the REAL binaries — with an empty frozen view the
+// run would otherwise park in an unrecoverable REVIEW_PENDING (obligation
+// consumed-adjacent, no open checkpoint, every channel refused). The refusal
+// is a decision_rejected; the checkpoint stays open and decidable.
 func TestEndToEndEnvelopeBeforeFreezeRejected(t *testing.T) {
 	useContractEnv(t)
 	if code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:review the recent change"), nil); code != 0 {
@@ -1422,8 +1425,8 @@ func TestEndToEndEnvelopeBeforeFreezeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// [v] BEFORE any acceptance: the frozen view stays empty. The review
-	// option lives on the LAST page of the PHASE menu.
+	// [v] BEFORE any acceptance: the frozen view is empty, so the [v] itself
+	// is refused (the review option lives on the LAST page of the PHASE menu).
 	renderAndDecide(t, runID, "tu-ask-1", run.CurrentCheckpoint(), -1, func(labels []string) string {
 		return firstLabelWithKeyword(labels, "review")
 	})
@@ -1431,23 +1434,206 @@ func TestEndToEndEnvelopeBeforeFreezeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != shared.StatusReviewPending {
-		t.Fatalf("status = %s, want REVIEW_PENDING after [v]", run.Status)
+	if run.Status != shared.StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER — the refused [v] must leave the checkpoint open", run.Status)
+	}
+	if cp := run.CurrentCheckpoint(); cp == nil || cp.Decided {
+		t.Fatalf("the context checkpoint must stay open and undecided, got %+v", cp)
+	}
+	if run.ReviewObligation != nil {
+		t.Fatal("the refused [v] must record no obligation")
+	}
+	rejected := eventsOfType(allTraceEvents(t), shared.EventCheckpointDecisionRejected)
+	if len(rejected) != 1 || !strings.Contains(rejected[0].Payload["reason"].(string), "frozen acceptance view is empty") {
+		t.Fatalf("checkpoint.decision_rejected events = %+v, want exactly one naming the empty frozen view", rejected)
 	}
 
+	// review-submit denies on the WAIT_USER discipline — the refused [v]
+	// left the checkpoint open, so it still comes first.
 	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
 		"skill": "summoner:review-submit",
 		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-correctness"),
 	}), nil)
-	if code != 2 || !strings.Contains(stderr, "frozen acceptance view is empty") {
-		t.Fatalf("review-submit before freeze: (code, stderr) = (%d, %q), want exit 2 + vacuous-view reason", code, stderr)
+	if code != 2 || !strings.Contains(stderr, "WAIT_USER") {
+		t.Fatalf("review-submit after the refused [v]: (code, stderr) = (%d, %q), want exit 2 + WAIT_USER denial", code, stderr)
 	}
 	run, err = shared.LoadRun(runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(run.Reviews) != 0 || run.ReviewObligation == nil {
-		t.Fatalf("the vacuous rejection must register nothing and consume nothing (reviews %+v, obligation %+v)", run.Reviews, run.ReviewObligation)
+	if len(run.Reviews) != 0 || run.ReviewObligation != nil {
+		t.Fatalf("nothing may register before the freeze (reviews %+v, obligation %+v)", run.Reviews, run.ReviewObligation)
+	}
+
+	// CONTINUE at the still-open checkpoint freezes the scope; the [v] is now
+	// a legal act at the next checkpoint.
+	renderAndDecide(t, runID, "tu-ask-2", run.CurrentCheckpoint(), 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	})
+	submitPhaseViaGate(t, "tu-ps-2", "review", nil)
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecide(t, runID, "tu-ask-3", run.CurrentCheckpoint(), -1, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "review")
+	})
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusReviewPending || run.ReviewObligation == nil {
+		t.Fatalf("after the post-freeze [v]: status %s obligation %+v, want REVIEW_PENDING under an obligation", run.Status, run.ReviewObligation)
+	}
+}
+
+// TestEndToEndTerminalDefaultReviewNoOptIn (spec §1 终局⑤默认强制 — fix
+// round): over the REAL binaries, the terminal independent review needs NO
+// [v]: the review-phase checkpoint's plain continue: leads into the
+// registered default review and the reviewer dispatch. An explicit skip:
+// closes the default.
+func TestEndToEndTerminalDefaultReviewNoOptIn(t *testing.T) {
+	useContractEnv(t)
+	if code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:review the recent change"), nil); code != 0 {
+		t.Fatalf("run start exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	files := runStateFiles(t)
+	if len(files) != 1 {
+		t.Fatalf("run state files = %d, want 1", len(files))
+	}
+	runID := strings.TrimSuffix(filepath.Base(files[0]), ".json")
+
+	submitPhaseViaGate(t, "tu-ps-1", "context", []string{"crit-correctness"})
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecide(t, runID, "tu-ask-1", run.CurrentCheckpoint(), 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	})
+
+	// The review phase's checkpoint takes a PLAIN continue: — page 1, never
+	// the [v] page.
+	submitPhaseViaGate(t, "tu-ps-2", "review", nil)
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecide(t, runID, "tu-ask-2", run.CurrentCheckpoint(), 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	})
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusActive || run.ReviewObligation != nil {
+		t.Fatalf("after the default accept: %s / obligation %+v — no [v] was answered anywhere", run.Status, run.ReviewObligation)
+	}
+
+	// The channel is open from ACTIVE: envelope registers, reviewer dispatches.
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
+		"skill": "summoner:review-submit",
+		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-correctness"),
+	}), nil); code != 0 {
+		t.Fatalf("terminal default review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Agent", "tu-ag-1", map[string]interface{}{
+		"subagent_type": "summoner:reviewer",
+		"prompt":        "Run review rev-1 against the registered envelope; return the structured ReviewResult.",
+		"description":   "independent review",
+	}), nil); code != 0 {
+		t.Fatalf("reviewer Agent exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Reviews) != 1 || run.Reviews[0].Status != shared.ReviewRunning || run.ReviewObligation != nil {
+		t.Fatalf("after the default registration + dispatch: reviews %+v obligation %+v, want one RUNNING / nil", run.Reviews, run.ReviewObligation)
+	}
+	if err := shared.VerifyChain(runID); err != nil {
+		t.Errorf("VerifyChain: %v", err)
+	}
+}
+
+// TestEndToEndNamespacedReviewerRoundTrip (fix-round C1): the production
+// dispatch form end-to-end over the REAL binaries — the reviewer is a PLUGIN
+// agent invoked as `summoner:reviewer`; the gate admits the namespaced type
+// (canonical short form into effects), and the namespaced SubagentStop
+// backfills the verdict.
+func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
+	useContractEnv(t)
+	runID := contractRunAtReviewPending(t, []string{"crit-ctx"}, []string{"crit-diag"})
+
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
+		"skill": "summoner:review-submit",
+		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-ctx"),
+	}), nil); code != 0 {
+		t.Fatalf("review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// The production dispatch: subagent_type "summoner:reviewer".
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Agent", "tu-ag-1", map[string]interface{}{
+		"subagent_type": "summoner:reviewer",
+		"prompt":        "Run review rev-1 against the registered envelope; return the structured ReviewResult.",
+		"description":   "independent review",
+	}), nil); code != 0 {
+		t.Fatalf("summoner:reviewer Agent exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Reviews[0].Status != shared.ReviewRunning {
+		t.Fatalf("review = %s, want RUNNING after the namespaced reviewer delegation", run.Reviews[0].Status)
+	}
+	started := eventsOfType(allTraceEvents(t), shared.EventDelegationStarted)
+	if len(started) != 1 || started[0].Payload["subagent_type"] != "reviewer" {
+		t.Fatalf("delegation.started = %+v, want the CANONICAL short form in effects", started)
+	}
+
+	// The namespaced SubagentStop is processed (not silently dropped): the
+	// verdict backfills through the reducer.
+	result := shared.ReviewResult{
+		ReviewID:            "rev-1",
+		ArtifactDigest:      "d-1",
+		RunStatus:           shared.ReviewRunCompleted,
+		Verdict:             shared.VerdictPass,
+		CriterionVerdicts:   []shared.CriterionVerdict{{CriterionID: "crit-ctx", Status: "pass"}},
+		EvidenceToolCallIDs: []string{"toolu-rev-1"},
+	}
+	resJSON, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runBinary(t, "subagentstop", mustJSON(t, map[string]interface{}{
+		"hook_event_name":       "SubagentStop",
+		"session_id":            contractSession,
+		"stop_hook_active":      false,
+		"agent_id":              "ag-rev-1",
+		"agent_type":            "summoner:reviewer",
+		"agent_transcript_path": contractReviewerTranscript(t, string(resJSON)),
+	}), nil); code != 0 {
+		t.Fatalf("namespaced subagentstop exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rv := run.Reviews[0]
+	if rv.Status != shared.ReviewReviewed || rv.Verdict != shared.VerdictPass {
+		t.Fatalf("review = %+v, want REVIEWED PASS backfilled through the namespaced stop", rv)
+	}
+	cp := run.CurrentCheckpoint()
+	if cp == nil || cp.Kind != shared.CheckpointReviewResult || run.Status != shared.StatusWaitUser {
+		t.Fatalf("after the verdict: status %s checkpoint %+v, want WAIT_USER at a REVIEW_RESULT checkpoint", run.Status, cp)
+	}
+	if verdicts := eventsOfType(allTraceEvents(t), shared.EventReviewVerdict); len(verdicts) != 1 || verdicts[0].Payload["review_id"] != "rev-1" {
+		t.Errorf("review.verdict events = %+v, want exactly one for rev-1", verdicts)
+	}
+	if err := shared.VerifyChain(runID); err != nil {
+		t.Errorf("VerifyChain: %v", err)
 	}
 }
 

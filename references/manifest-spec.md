@@ -134,15 +134,23 @@ must equal the frozen set minus recorded, explicit user drops. Changing criteria
 after acceptance requires the same versioned change/acceptance mechanism.
 
 **Runtime consumption (T17)**: the hooks read `phases.review.verification_spec.criteria`
-ids and `check_registry` directly (`hooks/shared/manifest.go`). Two effects:
-(1) on the standalone `/summoner:review` and `/summoner:ship` routes, the
-pre-review phase's submission (context / prepare) is machine-checked — its
-`criteria_ids` must come from the effective verification_spec (the framework
-default full-rubric axes PLUS these declared additions); anything else is a
-traced `phase_submitted.rejected`. (2) `check_registry` is the registry
-`summoner:review-submit` validates mechanical envelope criteria against. A
-missing manifest is the no-manifest flow (defaults only); an **unparseable**
-manifest fails closed on both paths.
+ids and `check_registry` directly (`hooks/shared/manifest.go`). Three effects:
+(1) on the standalone `/summoner:review` and `/summoner:ship` routes, EVERY
+phase submission is machine-checked (fix round: not just the pre-review
+context/prepare entry) — its `criteria_ids` must come from the effective
+verification_spec (the framework default full-rubric axes PLUS these declared
+additions); anything else is a traced `phase_submitted.rejected`. Dev routes
+(fix/new/debug) stay unconstrained. (2) `check_registry` is the registry
+`summoner:review-submit` validates mechanical envelope criteria against.
+(3) the loader enforces the validator's invariants for everything it consumes
+(fix round): retired keys, aliases, nulls, duplicate keys, exact CheckDef
+entry shape, unique check ids, trust enum, recomputed digests, and the
+mechanical/judgment citation split — a validator-invalid manifest fails
+closed as authority. Tolerated divergences: `goal`/`scope`/`expected` are not
+required on criteria, `rubric` and the `check_ids` listing are not required,
+and `env_allow` names are not pattern-checked. A missing manifest is the
+no-manifest flow (defaults only); an **unparseable** manifest fails closed on
+every path.
 
 ## Check registry and digest freeze
 

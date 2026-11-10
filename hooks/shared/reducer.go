@@ -698,8 +698,11 @@ func (r *RunState) clearDroppedCriteria(criteria []string) {
 // platform tool_use_id of the answering call — the same binding decisions
 // get. Re-dropping an id ALREADY dropped at this checkpoint is an idempotent
 // no-op ((false, nil), nothing re-recorded — a replayed callback re-observes
-// the same answer); a LATER checkpoint may drop the same id again. This
-// method never clears: a subsequent accepting decision re-accepts the
+// the same answer), and so is any callback whose tool_use_id already recorded
+// this id's drop or concluded ANY decision (an answered call never records
+// again — the T4 DecisionToolUseID precedent); a later checkpoint may drop
+// the same id again only through a FRESH tool_use_id (a fresh human answer).
+// This method never clears: a subsequent accepting decision re-accepts the
 // criterion and clears the entry through decidePhase → clearDroppedCriteria.
 func (r *RunState) RecordCriteriaDrop(checkpointID, criterionID, toolUseID string) (recorded bool, err error) {
 	if criterionID == "" {
@@ -740,11 +743,34 @@ func (r *RunState) RecordCriteriaDrop(checkpointID, criterionID, toolUseID strin
 				return nil // per id per checkpoint: idempotent re-observation
 			}
 		}
+		// Replay guards (fix-round I1, the DecisionToolUseID precedent): a
+		// tool_use_id that already answered once can never record again — not
+		// through a per-(id, tool_use_id) receipt (DURABLE: it survives the
+		// re-acceptance that clears the live ledger, so a re-delivered
+		// callback carrying an OLD human answer cannot re-drop a criterion
+		// the user just re-accepted), and not through a decision it recorded.
+		// The guard is deliberately per (id, tool_use_id): one call may still
+		// record drops for SEVERAL ids.
+		for _, rc := range s.DropReceipts {
+			if rc.ID == criterionID && rc.ToolUseID == toolUseID {
+				return nil // this call's answer for this id is already on record
+			}
+		}
+		for i := range s.Checkpoints {
+			if s.Checkpoints[i].DecisionToolUseID == toolUseID {
+				return nil // the call concluded a decision; it cannot record more
+			}
+		}
 		s.CriteriaDrops = append(s.CriteriaDrops, CriteriaDrop{
 			ID:           criterionID,
 			At:           nowUTC(),
 			CheckpointID: checkpointID,
 			ToolUseID:    toolUseID,
+		})
+		s.DropReceipts = append(s.DropReceipts, CriteriaDropReceipt{
+			ID:        criterionID,
+			ToolUseID: toolUseID,
+			At:        nowUTC(),
 		})
 		recorded = true
 		return nil
@@ -895,6 +921,15 @@ func (r *RunState) RecordDecision(checkpointID string, d Decision, toolUseID str
 		}
 		if err := legalDecisionForKind(cp.Kind, d); err != nil {
 			return fmt.Errorf("RecordDecision: %s", err)
+		}
+		// m4 (fix round): a [v] with NOTHING frozen would park the run in an
+		// unrecoverable REVIEW_PENDING — obligation recorded, no open
+		// checkpoint, phase-submit/change/review-submit all refused, and the
+		// vacuous envelope can never cite anything. Refuse the [v] itself; the
+		// checkpoint stays open for continue:/skip: and the [v] becomes legal
+		// as soon as an acceptance freezes the view.
+		if d == DecisionReviewOnDemand && len(s.AcceptanceView().Requirements) == 0 {
+			return fmt.Errorf("RecordDecision: REVIEW_ON_DEMAND refused — the frozen acceptance view is empty (nothing accepted yet, so no review can be scoped and the envelope channel has nothing to cite); continue: or skip: this checkpoint first — [v] is legal once an acceptance freezes the view")
 		}
 		// Pre-validate every effect before mutating anything.
 		recallIdx := -1

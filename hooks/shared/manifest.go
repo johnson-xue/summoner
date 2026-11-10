@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -86,6 +87,22 @@ type runtimeManifestDoc struct {
 // to framework defaults). Fields beyond the runtime's projection are
 // tolerated — the manifest serves skills and CLIs too; only a broken DOCUMENT
 // is the runtime's business.
+//
+// Fix-round I2: the runtime consumes the manifest as review-scope and
+// check-registry AUTHORITY, so it enforces the validator's invariants for
+// everything it consumes — a manifest the project's own tooling declares
+// INVALID must never load as authority. Rejected here: retired keys at any
+// mapping depth, YAML aliases/merges, nulls and non-JSON tags, duplicate
+// mapping keys, registry entries that are not exact CheckDef shapes
+// (unknown fields), non-unique or malformed check ids, empty commands,
+// trust outside {framework, project}, digest labels that are not the
+// recomputed CheckDefDigest, and verification criteria whose method is
+// invalid or whose citations violate the mechanical/judgment split.
+// Intentionally TOLERATED divergences from validate-manifest (nothing the
+// runtime consumes depends on them): goal/scope/expected are not required on
+// criteria, verification_spec.rubric is not required, the check_ids listing
+// is not required (mechanical citations are checked against the registry
+// itself), and env_allow names are not pattern-checked.
 func LoadRuntimeManifest() (*RuntimeManifest, error) {
 	b, err := os.ReadFile(filepath.Join(ProjectDir(), "summoner.yaml"))
 	if err != nil {
@@ -114,6 +131,9 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 			return nil, fmt.Errorf("parse summoner.yaml: top-level keys must be strings (line %d)", key.Line)
 		}
 	}
+	if err := validateManifestNode(root, "manifest"); err != nil {
+		return nil, err
+	}
 	var mdoc runtimeManifestDoc
 	if err := root.Decode(&mdoc); err != nil {
 		return nil, fmt.Errorf("parse summoner.yaml: %w", err)
@@ -122,15 +142,9 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 		return nil, fmt.Errorf("parse summoner.yaml: version must be \"2\" (got %q) — migrate via references/manifest-spec.md", mdoc.Version)
 	}
 	m := &RuntimeManifest{}
-	if spec := mdoc.Phases["review"].VerificationSpec; spec != nil {
-		for _, c := range spec.Criteria {
-			if c.ID != "" {
-				m.ReviewCriteriaIDs = append(m.ReviewCriteriaIDs, c.ID)
-			}
-		}
-	}
-	for _, y := range mdoc.CheckRegistry {
-		m.CheckRegistry = append(m.CheckRegistry, CheckDef{
+	registry := make(map[string]bool, len(mdoc.CheckRegistry))
+	for i, y := range mdoc.CheckRegistry {
+		def := CheckDef{
 			CheckID:  y.CheckID,
 			Command:  y.Command,
 			Args:     y.Args,
@@ -138,9 +152,168 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 			EnvAllow: y.EnvAllow,
 			Digest:   y.Digest,
 			Trust:    y.Trust,
-		})
+		}
+		if err := validateCheckDef(root, i, def, registry); err != nil {
+			return nil, err
+		}
+		registry[def.CheckID] = true
+		m.CheckRegistry = append(m.CheckRegistry, def)
+	}
+	if spec := mdoc.Phases["review"].VerificationSpec; spec != nil {
+		seen := make(map[string]bool, len(spec.Criteria))
+		for i, c := range spec.Criteria {
+			if err := validateManifestCriterion(i, c, registry, seen); err != nil {
+				return nil, err
+			}
+			if c.ID != "" {
+				m.ReviewCriteriaIDs = append(m.ReviewCriteriaIDs, c.ID)
+			}
+		}
 	}
 	return m, nil
+}
+
+// --- validator-mirrored invariants (fix-round I2) -----------------------------------
+
+var (
+	manifestIDPattern     = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+	manifestDigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+)
+
+// manifestRetiredKeys mirrors validate-manifest's retired key map: v1 topology
+// keys with actionable v2 replacements. Rejected at ANY mapping depth — a
+// retired key nested anywhere still declares topology the single reducer owns.
+var manifestRetiredKeys = map[string]string{
+	"workflows":     "phases capability map; framework commands own phase order",
+	"chain":         "phases capability map; framework commands own phase order",
+	"fan_out":       "phases.review.verification_spec and one independent reviewer",
+	"graph":         "phases capability map; plans describe tasks, not executable topology",
+	"checkpoints":   "the mandatory checkpoint after every phase (no manifest enum)",
+	"routing_rules": "phases skill bindings and their default/alternate providers",
+	"triggers":      "phases capability bindings; no manifest-driven transitions",
+	"mode":          "phases capability map in the single reducer",
+}
+
+// validateManifestNode accepts a JSON-compatible YAML subtree only, mirroring
+// validate-manifest's yamlValue contract: no aliases/merges, no nulls or
+// custom tags, string mapping keys, no duplicate keys, no retired keys — at
+// every depth. These constructs must not hide retired keys or erase a
+// configured capability underneath the runtime's projection.
+func validateManifestNode(n *yaml.Node, path string) error {
+	switch n.Kind {
+	case yaml.MappingNode:
+		seen := make(map[string]bool, len(n.Content)/2)
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key, val := n.Content[i], n.Content[i+1]
+			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+				return fmt.Errorf("parse summoner.yaml: invalid key at %s line=%d — use string keys, not YAML merges", path, key.Line)
+			}
+			child := path + "." + key.Value
+			if replacement, retired := manifestRetiredKeys[key.Value]; retired {
+				return fmt.Errorf("parse summoner.yaml: retired key %s line=%d — migrate to %s (references/manifest-spec.md)", child, key.Line, replacement)
+			}
+			if seen[key.Value] {
+				return fmt.Errorf("parse summoner.yaml: duplicate key %s line=%d", child, key.Line)
+			}
+			seen[key.Value] = true
+			if err := validateManifestNode(val, child); err != nil {
+				return err
+			}
+		}
+		return nil
+	case yaml.SequenceNode:
+		for i, child := range n.Content {
+			if err := validateManifestNode(child, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case yaml.ScalarNode:
+		switch n.Tag {
+		case "!!str", "!!int", "!!float", "!!bool":
+			return nil
+		}
+		return fmt.Errorf("parse summoner.yaml: invalid node at %s line=%d — nulls, aliases and non-JSON tags are not supported", path, n.Line)
+	case yaml.AliasNode:
+		return fmt.Errorf("parse summoner.yaml: YAML alias at %s line=%d — nulls, aliases and non-JSON tags are not supported", path, n.Line)
+	}
+	return fmt.Errorf("parse summoner.yaml: unsupported node at %s line=%d", path, n.Line)
+}
+
+// validateCheckDef enforces the validator's per-entry invariants on one
+// registry entry the runtime consumes as mechanical-review authority:
+// well-formed unique check_id, non-empty command, trust enum, digest label
+// equal to the RECOMPUTED CheckDefDigest, and the exact CheckDef yaml shape
+// (no unknown fields inside the entry).
+func validateCheckDef(root *yaml.Node, idx int, def CheckDef, seen map[string]bool) error {
+	const where = "check_registry"
+	if !manifestIDPattern.MatchString(def.CheckID) {
+		return fmt.Errorf("parse summoner.yaml: %s[%d] requires a valid check_id (lowercase letters, digits, _, -)", where, idx)
+	}
+	if seen[def.CheckID] {
+		return fmt.Errorf("parse summoner.yaml: duplicate check_id %q in %s", def.CheckID, where)
+	}
+	if def.Command == "" {
+		return fmt.Errorf("parse summoner.yaml: %s.%s requires command", where, def.CheckID)
+	}
+	if def.Trust != "framework" && def.Trust != "project" {
+		return fmt.Errorf("parse summoner.yaml: invalid trust on %s.%s — requires trust: framework|project (a declaration, not authorization)", where, def.CheckID)
+	}
+	if !manifestDigestPattern.MatchString(def.Digest) || def.Digest != CheckDefDigest(def) {
+		return fmt.Errorf("parse summoner.yaml: invalid digest on %s.%s — must equal shared.CheckDefDigest: %s; refresh the definition and freeze check_id@digest in the envelope", where, def.CheckID, CheckDefDigest(def))
+	}
+	// Exact shape: an unknown field inside an entry the runtime freezes
+	// against would silently change what the digest commits to.
+	if entry := manifestSequenceEntry(root, where, idx); entry != nil {
+		known := map[string]bool{"check_id": true, "command": true, "args": true, "cwd": true, "env_allow": true, "digest": true, "trust": true}
+		for i := 0; i+1 < len(entry.Content); i += 2 {
+			key := entry.Content[i]
+			if key.Kind == yaml.ScalarNode && !known[key.Value] {
+				return fmt.Errorf("parse summoner.yaml: unknown field %q in %s[%d] — registry entries are exactly the CheckDef shape {check_id, command, args, cwd, env_allow, digest, trust}", key.Value, where, idx)
+			}
+		}
+	}
+	return nil
+}
+
+// manifestSequenceEntry returns the idx-th entry node of a top-level sequence
+// key, or nil when the shape does not match (the typed decode reports those).
+func manifestSequenceEntry(root *yaml.Node, key string, idx int) *yaml.Node {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != key || root.Content[i+1].Kind != yaml.SequenceNode {
+			continue
+		}
+		seq := root.Content[i+1]
+		if idx < len(seq.Content) {
+			return seq.Content[idx]
+		}
+	}
+	return nil
+}
+
+// validateManifestCriterion enforces the validator's criterion invariants for
+// the ids the runtime freezes as standalone-review scope: unique well-formed
+// ids, method ∈ {mechanical, judgment}, mechanical citations pointing at a
+// check registered in THIS manifest, judgment criteria citing no check_id.
+func validateManifestCriterion(idx int, c yamlCriterion, registry map[string]bool, seen map[string]bool) error {
+	where := fmt.Sprintf("phases.review.verification_spec.criteria[%d]", idx)
+	if !manifestIDPattern.MatchString(c.ID) || seen[c.ID] {
+		return fmt.Errorf("parse summoner.yaml: invalid_criterion at %s — criteria ids must be valid and unique (%q)", where, c.ID)
+	}
+	seen[c.ID] = true
+	switch CriterionMethod(c.Method) {
+	case MethodMechanical:
+		if !registry[c.CheckID] {
+			return fmt.Errorf("parse summoner.yaml: invalid_criterion at %s — mechanical criterion %q must cite a check_id registered in this manifest's check_registry (got %q)", where, c.ID, c.CheckID)
+		}
+	case MethodJudgment:
+		if c.CheckID != "" {
+			return fmt.Errorf("parse summoner.yaml: invalid_criterion at %s — judgment criterion %q cites a rubric, not check_id", where, c.ID)
+		}
+	default:
+		return fmt.Errorf("parse summoner.yaml: invalid_criterion at %s — criterion %q method must be mechanical|judgment (got %q)", where, c.ID, c.Method)
+	}
+	return nil
 }
 
 // defaultReviewCriteriaIDs is the framework's full-rubric verification set for

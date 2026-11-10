@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
@@ -236,23 +237,47 @@ func TestReviewSubmitValidatesAgainstFrozenViewMinusDrops(t *testing.T) {
 	}
 }
 
-// TestReviewSubmitEnvelopeBeforeFreezeRejected: a [v] at a checkpoint whose
-// phase was never accepted leaves the frozen view empty — review-submit's
-// ValidateEnvelope rejects the envelope on the vacuous-view guard (envelope.go
-// F5): nothing has been accepted yet, no review is due.
+// TestReviewSubmitEnvelopeBeforeFreezeRejected (fix-round m4): a [v] at a
+// checkpoint whose phase was never accepted is REFUSED by the reducer — with
+// nothing frozen, the run would otherwise park in an unrecoverable
+// REVIEW_PENDING (obligation consumed-adjacent, no open checkpoint, every
+// channel refused; the vacuous envelope can never cite anything). The refusal
+// keeps the checkpoint open; review-submit then denies on status (the run
+// never left WAIT_USER). After an acceptance freezes the view, the same [v]
+// is legal.
 func TestReviewSubmitEnvelopeBeforeFreezeRejected(t *testing.T) {
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
 	// [v] at the FIRST checkpoint — before any acceptance froze anything.
 	cp := submitDisplayedPhase(t, r, "context", []string{"crit-early"})
-	if err := r.RecordDecision(cp.ID, shared.DecisionReviewOnDemand, ""); err != nil {
-		t.Fatal(err)
+	err := r.RecordDecision(cp.ID, shared.DecisionReviewOnDemand, "")
+	if err == nil || !strings.Contains(err.Error(), "frozen acceptance view is empty") {
+		t.Fatalf("[v] before any freeze must be refused naming the empty view, got: %v", err)
+	}
+	// The refused [v] leaves the checkpoint open and the run decidable.
+	if got := reloadRun(t, "run-1"); got.Status != shared.StatusWaitUser || got.ReviewObligation != nil {
+		t.Fatalf("after the refused [v]: status %s obligation %+v, want WAIT_USER / nil", got.Status, got.ReviewObligation)
+	}
+	// review-submit denies on the WAIT_USER discipline — the run never left
+	// WAIT_USER, so the checkpoint still comes first.
+	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-early")))
+	wantExit2(t, code, stderr, "WAIT_USER")
+	if reloadRun(t, "run-1").ReviewObligation != nil {
+		t.Fatal("nothing may record an obligation before the freeze")
 	}
 
-	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-early")))
-	wantExit2(t, code, stderr, "frozen acceptance view is empty")
-	if reloadRun(t, "run-1").ReviewObligation == nil {
-		t.Fatal("the vacuous rejection must consume nothing")
+	// CONTINUE freezes the view; the same [v] at the next checkpoint is legal
+	// and the channel opens for the envelope.
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
+		t.Fatalf("CONTINUE after the refused [v]: %v", err)
+	}
+	cp2 := submitDisplayedPhase(t, r, "diagnosis", []string{"crit-late"})
+	if err := r.RecordDecision(cp2.ID, shared.DecisionReviewOnDemand, ""); err != nil {
+		t.Fatalf("[v] after a freeze must be legal: %v", err)
+	}
+	code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-early")))
+	if code != 0 {
+		t.Fatalf("review-submit after the legal [v] exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 }
 
@@ -400,4 +425,172 @@ func TestStandaloneFreezePrecedesEnvelope(t *testing.T) {
 	if len(reloadRun(t, "run-1").Reviews) != 1 {
 		t.Fatal("the standalone review must be registered")
 	}
+}
+
+// --- fix round 1 ---------------------------------------------------------------------
+
+// TestAgentNamespacedAdmission (fix-round C1): production plugin agents invoke
+// as <plugin>:<name> — Summoner's framework types are `summoner:reviewer` and
+// `summoner:worker`. The gate admits BOTH spellings, normalizing by stripping
+// exactly the framework's own `summoner:` prefix (never a wildcard), denies
+// every other namespace, and traces delegation.started with the CANONICAL
+// short form.
+func TestAgentNamespacedAdmission(t *testing.T) {
+	t.Run("summoner:reviewer admitted; canonical short form in effects", func(t *testing.T) {
+		useGateEnv(t)
+		r := startFixRun(t, shared.BudgetLimits{})
+		parkUnderReviewObligation(t, r, []string{"crit-a"}, nil)
+		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1", "crit-a")); err != nil {
+			t.Fatal(err)
+		}
+
+		code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("summoner:reviewer", "run review rev-1 against the frozen envelope")))
+		if code != 0 {
+			t.Fatalf("summoner:reviewer delegation exit = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		if rv := reloadRun(t, "run-1").Reviews[0]; rv.Status != shared.ReviewRunning {
+			t.Fatalf("review = %s, want RUNNING — the namespaced reviewer must dispatch", rv.Status)
+		}
+		started := gateEventsOfType(t, "run-1", shared.EventDelegationStarted)
+		if len(started) != 1 || started[0].Payload["subagent_type"] != "reviewer" {
+			t.Fatalf("delegation.started = %+v, want one carrying the canonical short form", started)
+		}
+	})
+
+	t.Run("summoner:worker admitted in ACTIVE", func(t *testing.T) {
+		useGateEnv(t)
+		startFixRun(t, shared.BudgetLimits{})
+		code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("summoner:worker", "run the test suite")))
+		if code != 0 {
+			t.Fatalf("summoner:worker delegation exit = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		started := gateEventsOfType(t, "run-1", shared.EventDelegationStarted)
+		if len(started) != 1 || started[0].Payload["subagent_type"] != "worker" {
+			t.Fatalf("delegation.started = %+v, want canonical worker", started)
+		}
+	})
+
+	t.Run("every other namespace denied", func(t *testing.T) {
+		useGateEnv(t)
+		r := startFixRun(t, shared.BudgetLimits{})
+		parkUnderReviewObligation(t, r, []string{"crit-a"}, nil)
+		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1", "crit-a")); err != nil {
+			t.Fatal(err)
+		}
+		for _, typ := range []string{"summoner:fork", "other:reviewer", "summoner:code-reviewer", "reviewer:summoner", ":reviewer", "summoner:"} {
+			code, stderr := callGate(t, toolPayload(t, "Agent", agentInput(typ, "run review rev-1")))
+			wantExit2(t, code, stderr, "not allowed")
+			if rv := reloadRun(t, "run-1").Reviews[0]; rv.Status != shared.ReviewPrepared {
+				t.Fatalf("denied %q left review = %s, want PREPARED (nothing dispatched)", typ, rv.Status)
+			}
+		}
+	})
+}
+
+// TestStandaloneRouteScopeCheckAllPhases (fix-round m3): the machine scope
+// check binds EVERY phase submission on the standalone review/ship routes —
+// not just the entry phase. Otherwise a ship route could launder scope-foreign
+// criteria through the review phase's acceptance and force them into every
+// later envelope.
+func TestStandaloneRouteScopeCheckAllPhases(t *testing.T) {
+	useGateEnv(t)
+	startRunWF(t, "ship", shared.BudgetLimits{})
+
+	// prepare passes the check (default axes) and its checkpoint decides
+	// CONTINUE, settling the phase.
+	code, _ := submitPhaseWithCriteria(t, "prepare", []string{"crit-correctness"})
+	if code != 0 {
+		t.Fatal("prepare submission must pass the scope check")
+	}
+	r := reloadRun(t, "run-1")
+	cp := r.CurrentCheckpoint()
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
+		t.Fatalf("CONTINUE at prepare: %v", err)
+	}
+
+	// The REVIEW phase's submission is scope-checked too: a scope-foreign
+	// criterion is a traced rejection even though this is not the entry phase.
+	code, stderr := submitPhaseWithCriteria(t, "review", []string{"crit-nope"})
+	wantExit2(t, code, stderr, "verification_spec")
+	rej := gateEventsOfType(t, "run-1", shared.EventPhaseSubmittedRejected)
+	if len(rej) == 0 || rej[len(rej)-1].Payload["phase_id"] != "review" {
+		t.Fatalf("phase_submitted.rejected = %+v, want the review-phase rejection traced", rej)
+	}
+	// A rubric-verifiable criterion passes the same checkpoint.
+	code, stderr = submitPhaseWithCriteria(t, "review", []string{"crit-prove-it"})
+	if code != 0 {
+		t.Fatalf("review-phase submission with rubric criteria exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+}
+
+// TestTerminalDefaultReviewWithoutOptIn (spec §1 终局⑤默认强制 — the terminal
+// independent review is the DEFAULT, explicitly skippable): a plain CONTINUE
+// at the fixed review phase's checkpoint — no [v] anywhere — opens the
+// envelope channel from ACTIVE through the reducer's existing default path.
+// An explicit SKIP closes the default (UNREVIEWED); every other ACTIVE
+// position stays refused.
+func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
+	t.Run("review-phase CONTINUE opens the channel from ACTIVE", func(t *testing.T) {
+		useGateEnv(t)
+		r := startRunWF(t, "review", shared.BudgetLimits{})
+		acceptPhaseWithCriteria(t, r, "context", []string{"crit-correctness"})
+		acceptPhaseWithCriteria(t, r, "review", nil)
+		if r.Status != shared.StatusActive || r.ReviewObligation != nil {
+			t.Fatalf("after the default accepts: %s / %+v — the default path records no obligation", r.Status, r.ReviewObligation)
+		}
+
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+		if code != 0 {
+			t.Fatalf("terminal default review-submit exit = %d, want 0 — no [v] opt-in required (stderr: %q)", code, stderr)
+		}
+		disk := reloadRun(t, "run-1")
+		if disk.Status != shared.StatusReviewPending || disk.ReviewObligation != nil ||
+			len(disk.Reviews) != 1 || disk.Reviews[0].Status != shared.ReviewPrepared {
+			t.Fatalf("after the terminal registration: %s / obligation %+v / reviews %+v", disk.Status, disk.ReviewObligation, disk.Reviews)
+		}
+
+		// The reviewer dispatch follows as usual.
+		code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("summoner:reviewer", "run review rev-1 against the frozen envelope")))
+		if code != 0 {
+			t.Fatalf("reviewer delegation exit = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		if rv := reloadRun(t, "run-1").Reviews[0]; rv.Status != shared.ReviewRunning {
+			t.Fatalf("review = %s, want RUNNING after the default-path dispatch", rv.Status)
+		}
+	})
+
+	t.Run("explicit SKIP closes the default (UNREVIEWED)", func(t *testing.T) {
+		useGateEnv(t)
+		r := startRunWF(t, "review", shared.BudgetLimits{})
+		acceptPhaseWithCriteria(t, r, "context", []string{"crit-correctness"})
+		cp := submitDisplayedPhase(t, r, "review", nil)
+		if err := r.RecordDecision(cp.ID, shared.DecisionSkip, ""); err != nil {
+			t.Fatalf("SKIP at the review-phase checkpoint: %v", err)
+		}
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+		wantExit2(t, code, stderr, "explicitly skipped")
+		if reloadRun(t, "run-1").Status != shared.StatusActive || len(reloadRun(t, "run-1").Reviews) != 0 {
+			t.Fatal("the skipped default must register nothing")
+		}
+	})
+
+	t.Run("arbitrary ACTIVE positions stay refused", func(t *testing.T) {
+		useGateEnv(t)
+		r := startRunWF(t, "review", shared.BudgetLimits{})
+		acceptPhaseWithCriteria(t, r, "context", []string{"crit-correctness"})
+		// The review phase has not run yet: ACTIVE before the review phase.
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+		wantExit2(t, code, stderr, "terminal default position")
+
+		// A dev route mid-workflow (diagnosis accepted, terminal review phase
+		// far away) is equally refused.
+		useGateEnv(t)
+		r2 := startFixRun(t, shared.BudgetLimits{})
+		acceptPhaseWithCriteria(t, r2, "diagnosis", []string{"crit-root-cause"})
+		code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-root-cause")))
+		wantExit2(t, code, stderr, "terminal default position")
+	})
 }

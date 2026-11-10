@@ -239,6 +239,19 @@ type CriteriaDrop struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 }
 
+// CriteriaDropReceipt is the DURABLE per-(criterion id, tool_use_id) receipt
+// of one recorded drop observation (fix-round I1). CriteriaDrops is live
+// ledger state — an accepting decision CLEARS its ids — so the replay guard
+// cannot live there: a re-delivered callback must stay a no-op even after
+// re-acceptance emptied the ledger. Receipts are append-only and never
+// cleared; they consume no authority (they only prove a call already
+// answered for one id).
+type CriteriaDropReceipt struct {
+	ID        string `json:"id"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	At        string `json:"at,omitempty"`
+}
+
 // CheckpointState is one human checkpoint (spec §4). A decision is accepted
 // only after the checkpoint was displayed with a matching content digest.
 // Superseded marks the checkpoint a WAIT_USER-entered requirement change
@@ -362,16 +375,17 @@ type RunState struct {
 	// last-entry-wins. Producers cannot trim it; envelopes validate against
 	// it (ValidateEnvelope). CriteriaDrops are the recorded user-explicit
 	// criterion drops the envelope set subtracts (逐 id、逐次决定).
-	Acceptance      FrozenView        `json:"acceptance"`
-	CriteriaDrops   []CriteriaDrop    `json:"criteria_drops,omitempty"`
-	Checkpoints     []CheckpointState `json:"checkpoints,omitempty"`
-	Reviews         []ReviewRecord    `json:"reviews,omitempty"`
-	Recalls         []RecallRecord    `json:"recalls,omitempty"`
-	OutcomeUnknowns []OutcomeUnknown  `json:"outcome_unknowns,omitempty"`
-	Limits          BudgetLimits      `json:"budget_limits"`
-	Counters        BudgetCounters    `json:"budget_counters"`
-	StartedAt       string            `json:"started_at,omitempty"`
-	UpdatedAt       string            `json:"updated_at,omitempty"`
+	Acceptance      FrozenView            `json:"acceptance"`
+	CriteriaDrops   []CriteriaDrop        `json:"criteria_drops,omitempty"`
+	DropReceipts    []CriteriaDropReceipt `json:"drop_receipts,omitempty"`
+	Checkpoints     []CheckpointState     `json:"checkpoints,omitempty"`
+	Reviews         []ReviewRecord        `json:"reviews,omitempty"`
+	Recalls         []RecallRecord        `json:"recalls,omitempty"`
+	OutcomeUnknowns []OutcomeUnknown      `json:"outcome_unknowns,omitempty"`
+	Limits          BudgetLimits          `json:"budget_limits"`
+	Counters        BudgetCounters        `json:"budget_counters"`
+	StartedAt       string                `json:"started_at,omitempty"`
+	UpdatedAt       string                `json:"updated_at,omitempty"`
 }
 
 // PhaseSubmission is the summoner:phase-submit payload: the phase's result —

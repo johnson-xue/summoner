@@ -172,16 +172,30 @@ PostToolUse records them:
   channel's purpose). Anything else is rejected.
 - **Recording order**: answered `drop:` entries record BEFORE the decision —
   a `continue:` that re-accepts the criterion CLEARS its drop again
-  (acceptance governs; the drop ledger is per id per checkpoint, idempotent
-  under replay). `keep` and unanswered questions record nothing.
+  (acceptance governs; the drop ledger is per id per checkpoint). `keep` and
+  unanswered questions record nothing. Replay is a no-op per
+  (criterion id, tool_use_id): a durable receipt survives the clearing, and a
+  call whose tool_use_id already concluded a decision can never record again
+  — a re-delivered callback never re-drops a criterion the user just
+  re-accepted. One call may still record drops for SEVERAL ids.
 - **Trace**: one `criterion.dropped` per newly recorded drop (checkpoint id +
   criterion id + the platform tool_use_id of the answering call).
 - **Failure**: a malformed drop question (missing keep, mismatched ids,
   nonce-carrying, foreign id) or a drop answer that is not one of the two
   labels fails the WHOLE callback — `decision_rejected`, nothing recorded.
+  A MULTI-NONCE call (two or more questions carrying the current nonce)
+  rejects the whole callback with NOTHING recorded, drops included.
 - **Partial answers**: a drop answered while the decision question is not
   answered records the drop observation and rejects the decision (the
   checkpoint stays open).
+- **`[v]` before any freeze**: a `review:` answer with NOTHING yet frozen is
+  refused (`frozen acceptance view is empty`) — it would park the run in an
+  unrecoverable REVIEW_PENDING. The checkpoint stays open for `continue:` /
+  `skip:`; the `[v]` becomes legal once an acceptance freezes the view.
+  (The terminal DEFAULT review needs no `[v]` at all: a plain `continue:` at
+  the review phase's checkpoint opens the envelope channel from ACTIVE —
+  spec §1 终局⑤默认强制; an explicit `skip:` of that phase closes it as
+  UNREVIEWED.)
 
 ## CHANGE_CONFIRM checkpoint (requirement-change close)
 

@@ -1260,10 +1260,15 @@ func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
 // TestB2ReviewOnDemandObligation pins the B2 persisted review obligation:
 // [v] REVIEW_ON_DEMAND records an obligation and parks the run at
 // REVIEW_PENDING (not ACTIVE); the obligation blocks work until the matching
-// RequestReview consumes it, and it survives a crash.
+// RequestReview consumes it, and it survives a crash. Since fix-round m4 the
+// [v] requires a non-empty frozen view (an empty view would wedge the run),
+// so the fixture accepts one phase first.
 func TestB2ReviewOnDemandObligation(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
-	cp := openAndSubmit(t, r, "p1", "c1")
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue) // freeze {c1}
+	cp := openAndSubmit(t, r, "p2", "c2")
 	displayCurrent(t, r)
 	if err := r.RecordDecision(cp.ID, DecisionReviewOnDemand, ""); err != nil {
 		t.Fatalf("RecordDecision(REVIEW_ON_DEMAND): %v", err)
@@ -1271,12 +1276,12 @@ func TestB2ReviewOnDemandObligation(t *testing.T) {
 	if r.Status != StatusReviewPending {
 		t.Fatalf("status = %s, want REVIEW_PENDING (obligation recorded, not ACTIVE)", r.Status)
 	}
-	if r.ReviewObligation == nil || r.ReviewObligation.SourceCheckpointID != cp.ID || r.ReviewObligation.PhaseID != "p1" {
-		t.Fatalf("ReviewObligation = %+v, want source %s / phase p1", r.ReviewObligation, cp.ID)
+	if r.ReviewObligation == nil || r.ReviewObligation.SourceCheckpointID != cp.ID || r.ReviewObligation.PhaseID != "p2" {
+		t.Fatalf("ReviewObligation = %+v, want source %s / phase p2", r.ReviewObligation, cp.ID)
 	}
 
 	// The obligation blocks work: no phase may open while it is outstanding.
-	if err := r.OpenPhase("p2"); err == nil {
+	if err := r.OpenPhase("p3"); err == nil {
 		t.Fatal("OpenPhase with an outstanding review obligation: want error, got nil")
 	}
 
@@ -1293,7 +1298,10 @@ func TestB2ReviewOnDemandObligation(t *testing.T) {
 
 	// Crash while the obligation is outstanding: reload, re-issue.
 	r2 := startTestRun(t, BudgetLimits{})
-	cp2 := openAndSubmit(t, r2, "p1", "c1")
+	openAndSubmit(t, r2, "p1", "c1")
+	displayCurrent(t, r2)
+	decideCurrent(t, r2, DecisionContinue) // freeze {c1}
+	cp2 := openAndSubmit(t, r2, "p2", "c2")
 	displayCurrent(t, r2)
 	decideCurrent(t, r2, DecisionReviewOnDemand)
 	reloaded, err := LoadRun("run-1")
@@ -2428,4 +2436,130 @@ func TestRecordReviewProtocolErrorSaveFailureAtomic(t *testing.T) {
 	if rv := disk.findReview("rev-perr"); rv == nil || rv.Status != ReviewRunning {
 		t.Fatalf("disk after failed Save: review = %+v", rv)
 	}
+}
+
+// --- fix-round 1: I1 drop replay guard + m4 [v]-before-freeze refusal ---------
+
+// TestCriteriaDropReplayAfterReacceptance (fix-round I1): a re-delivered
+// PostToolUse callback must not re-drop a criterion the user just re-accepted.
+// The reviewer's exact repro: the drop rides the decision call (tu=A) → a
+// later CONTINUE re-accepts the id and clears the ledger entry → the SAME
+// callback (tu=A) lands at a later checkpoint — the OLD human answer must not
+// remove the criterion from every future envelope.
+func TestCriteriaDropReplayAfterReacceptance(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	// context {crit-a} accepted (frozen); cp-2 (diagnosis) displayed.
+	cp := openDecidableCheckpoint(t, r, []string{"crit-a"}, []string{"crit-b"})
+
+	// The ride-along order: drop crit-a, then CONTINUE decides the same call.
+	if recorded, err := r.RecordCriteriaDrop(cp.ID, "crit-a", "tu-drop-1"); err != nil || !recorded {
+		t.Fatalf("RecordCriteriaDrop(crit-a) = (%v, %v), want (true, nil)", recorded, err)
+	}
+	if err := r.RecordDecision(cp.ID, DecisionContinue, "tu-drop-1"); err != nil {
+		t.Fatalf("RecordDecision(CONTINUE) on the same call: %v", err)
+	}
+
+	// A later context visit re-accepts crit-a → clearDroppedCriteria empties
+	// the ledger; a fresh diagnosis checkpoint opens (the replay's target).
+	cp2 := openDecidableCheckpoint(t, r, []string{"crit-a"}, []string{"crit-c"})
+	if ids := dropLedgerIDs(r); len(ids) != 0 {
+		t.Fatalf("re-acceptance must clear the drop, ledger = %v", ids)
+	}
+
+	// The re-delivered callback: same tool_use_id, at the LATER checkpoint.
+	// The ledger no longer carries it (it was cleared) — the decision binding
+	// of tu-drop-1 at cp-2 is what must make this a no-op.
+	recorded, err := r.RecordCriteriaDrop(cp2.ID, "crit-a", "tu-drop-1")
+	if err != nil || recorded {
+		t.Fatalf("replayed callback = (%v, %v), want (false, nil) — an already-consumed tool_use_id can never record anything again", recorded, err)
+	}
+	if ids := dropLedgerIDs(r); len(ids) != 0 {
+		t.Fatalf("the replay must record nothing, ledger = %v", ids)
+	}
+
+	// The envelope arithmetic is NOT weakened: the frozen view still carries
+	// crit-a (re-frozen by the re-acceptance) AND crit-b (accepted with the
+	// ride-along decision) — no drop is in force.
+	env := Envelope{
+		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-replay",
+		ArtifactSet: []ArtifactRef{{Path: "x.md", Digest: "d"}},
+		ExitCriteria: []Criterion{
+			{ID: "crit-a", Method: MethodJudgment},
+			{ID: "crit-b", Method: MethodJudgment},
+		},
+	}
+	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {
+		t.Fatalf("the replay must not weaken envelope criteria: %v", err)
+	}
+
+	// A FRESH tool_use_id with a fresh human answer may drop again (a legal
+	// per-decision act — the guard is against replays, not new answers).
+	if recorded, err := r.RecordCriteriaDrop(cp2.ID, "crit-a", "tu-drop-fresh"); err != nil || !recorded {
+		t.Fatalf("fresh tool_use_id drop = (%v, %v), want (true, nil)", recorded, err)
+	}
+}
+
+// TestCriteriaDropTwoIdsOneCallback: one call may record drops for SEVERAL
+// ids — the replay guard is per (id, tool_use_id), never per call.
+func TestCriteriaDropTwoIdsOneCallback(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	cp := openDecidableCheckpoint(t, r, []string{"crit-a", "crit-b"}, []string{"crit-c"})
+	for _, id := range []string{"crit-a", "crit-b"} {
+		if recorded, err := r.RecordCriteriaDrop(cp.ID, id, "tu-multi-1"); err != nil || !recorded {
+			t.Fatalf("drop %s on call tu-multi-1 = (%v, %v), want (true, nil)", id, recorded, err)
+		}
+	}
+	if ids := dropLedgerIDs(r); !reflect.DeepEqual(ids, []string{"crit-a", "crit-b"}) {
+		t.Fatalf("drop ledger = %v, want both ids from the one call", ids)
+	}
+}
+
+// TestReviewOnDemandRefusedBeforeFreeze (fix-round m4): a [v] with NOTHING
+// frozen parks the run in an unrecoverable REVIEW_PENDING — obligation
+// consumed-adjacent state, no open checkpoint, phase-submit/change/
+// review-submit all refused (the vacuous envelope can never cite anything).
+// The reducer refuses the [v] itself; the checkpoint stays open for
+// continue:/skip:.
+func TestReviewOnDemandRefusedBeforeFreeze(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	cp := openAndSubmit(t, r, "context", "crit-a")
+	displayCurrent(t, r)
+
+	err := r.RecordDecision(cp.ID, DecisionReviewOnDemand, "")
+	if err == nil {
+		t.Fatal("[v] before any freeze must be refused (otherwise the run wedges in REVIEW_PENDING)")
+	}
+	if !strings.Contains(err.Error(), "frozen acceptance view is empty") {
+		t.Fatalf("refusal must name the empty frozen view, got: %v", err)
+	}
+	if r.Status != StatusWaitUser || r.ReviewObligation != nil {
+		t.Fatalf("the refusal must leave the checkpoint decidable: status %s obligation %+v", r.Status, r.ReviewObligation)
+	}
+	if got := r.CurrentCheckpoint(); got == nil || got.ID != cp.ID || got.Decided {
+		t.Fatalf("the checkpoint must stay open and undecided, got %+v", got)
+	}
+	if disk := reloadRunState(t, r.RunID); disk.Status != StatusWaitUser || disk.ReviewObligation != nil {
+		t.Fatalf("disk must match: %s / %+v", disk.Status, disk.ReviewObligation)
+	}
+
+	// Once an acceptance froze the view, the SAME [v] is legal.
+	decideCurrent(t, r, DecisionContinue)
+	cp2 := openAndSubmit(t, r, "diagnosis", "crit-b")
+	displayCurrent(t, r)
+	if err := r.RecordDecision(cp2.ID, DecisionReviewOnDemand, ""); err != nil {
+		t.Fatalf("[v] after a freeze must be legal: %v", err)
+	}
+	if r.Status != StatusReviewPending || r.ReviewObligation == nil {
+		t.Fatalf("after the legal [v]: %s / %+v", r.Status, r.ReviewObligation)
+	}
+}
+
+// reloadRunState loads the run back from disk (hermetic suite state dir).
+func reloadRunState(t *testing.T, runID string) *RunState {
+	t.Helper()
+	disk, err := LoadRun(runID)
+	if err != nil {
+		t.Fatalf("LoadRun(%s): %v", runID, err)
+	}
+	return disk
 }

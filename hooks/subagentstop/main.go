@@ -47,7 +47,9 @@ const subagentStopSource = "subagentstop"
 const eventSubagentStop = "SubagentStop"
 
 // delegatedAgentTypes is the delegation allow-list (mirrors the gate's ruling:
-// reviewer|worker only). Everything else — internal platform agents included —
+// reviewer|worker only, after NormalizeAgentType strips the framework's own
+// plugin prefix — production stops arrive as summoner:reviewer /
+// summoner:worker). Everything else — internal platform agents included —
 // is not a Summoner delegation and produces nothing.
 var delegatedAgentTypes = map[string]bool{"reviewer": true, "worker": true}
 
@@ -136,8 +138,13 @@ func runSubagentStop(stdin io.Reader, errW io.Writer) int {
 	}
 
 	// Delegation filter (verified platform fact): internal agents fire this
-	// event too — only reviewer/worker are Summoner delegations.
-	if !delegatedAgentTypes[in.AgentType] {
+	// event too — only reviewer/worker are Summoner delegations. Fix-round C1:
+	// plugin agents report namespaced types (`summoner:reviewer` /
+	// `summoner:worker` in production), so the SAME normalization the gate
+	// applies runs here — a namespaced Summoner stop is processed, not
+	// silently dropped; everything else is still ignored.
+	agentType := shared.NormalizeAgentType(in.AgentType)
+	if !delegatedAgentTypes[agentType] {
 		return 0
 	}
 
@@ -164,7 +171,7 @@ func runSubagentStop(stdin io.Reader, errW io.Writer) int {
 	run := live[0]
 
 	if in.TranscriptPath == "" {
-		fmt.Fprintf(errW, "summoner subagentstop: %s stop carried no agent_transcript_path — nothing to register\n", in.AgentType)
+		fmt.Fprintf(errW, "summoner subagentstop: %s stop carried no agent_transcript_path — nothing to register\n", agentType)
 		return 0
 	}
 
@@ -185,7 +192,7 @@ func runSubagentStop(stdin io.Reader, errW io.Writer) int {
 		return 0
 	}
 
-	if in.AgentType == "reviewer" {
+	if agentType == "reviewer" {
 		backfillReview(run, in, errW)
 	}
 	return 0
@@ -220,6 +227,12 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 			return
 		}
 	}
+	// Fix-round m1: fire review.failed only when THIS call routed the failure.
+	// RecordReviewResult refuses a late duplicate of an already-concluded
+	// review by returning an error, and a review concluded FAILED by an
+	// EARLIER call still reads Status==FAILED after the refusal — keying on
+	// the status alone would trace a second failure that never happened.
+	wasFailed := reviewStatus(run, res.ReviewID) == shared.ReviewFailed
 	if err := run.RecordReviewResult(res); err != nil {
 		fmt.Fprintf(errW, "summoner subagentstop: review backfill for %s refused (state untouched or routed per reducer) — late or invalid results never affect a new generation: %v\n",
 			res.ReviewID, err)
@@ -228,11 +241,8 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 		// persisted — record the same review.failed the reconciliation path
 		// does. Refusals that touched nothing (unknown id, late duplicate)
 		// leave no FAILED record and no event.
-		for i := range run.Reviews {
-			if run.Reviews[i].ReviewID == res.ReviewID && run.Reviews[i].Status == shared.ReviewFailed {
-				appendReviewFailed(run, in, res.ReviewID, err.Error(), errW)
-				break
-			}
+		if !wasFailed && reviewStatus(run, res.ReviewID) == shared.ReviewFailed {
+			appendReviewFailed(run, in, res.ReviewID, err.Error(), errW)
 		}
 		return
 	}
@@ -280,6 +290,16 @@ func appendReviewFailed(run *shared.RunState, in *subagentStopInput, reviewID, r
 	}); err != nil {
 		fmt.Fprintf(errW, "summoner subagentstop: review.failed trace append failed (FAILED routing persisted): %v\n", err)
 	}
+}
+
+// reviewStatus reads one review record's status ("" when absent).
+func reviewStatus(run *shared.RunState, reviewID string) shared.ReviewState {
+	for i := range run.Reviews {
+		if run.Reviews[i].ReviewID == reviewID {
+			return run.Reviews[i].Status
+		}
+	}
+	return ""
 }
 
 // inFlightReview returns the run's unconcluded review (RUNNING, or PREPARED —

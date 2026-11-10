@@ -44,6 +44,19 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		return 0
 	}
 
+	// 0. Fix-round I1: a callback whose tool_use_id already concluded a
+	// decision is a re-delivery — no-op it BEFORE any ride-along effect
+	// (drops included): the whole call is spent, so no part of it may record
+	// again. Silent, like RecordDecision's idempotent replay: nothing is
+	// recorded, nothing is traced.
+	if in.ToolUseID != "" {
+		for i := range run.Checkpoints {
+			if run.Checkpoints[i].DecisionToolUseID == in.ToolUseID {
+				return 0
+			}
+		}
+	}
+
 	// 1. Find the decision question: the tool_input question whose text
 	// carries the CURRENT checkpoint's nonce (the gate enforced this before
 	// the question was asked; re-verify). T17: its rejection is DEFERRED to
@@ -52,6 +65,16 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	q, notFound := findDecisionQuestion(run, cp, in.ToolInput)
 	if q != nil {
 		notFound = ""
+	}
+
+	// 1.5 Fix-round m2: a MULTI-NONCE call fails closed HERE, before any
+	// ride-along effect — two questions carrying the current nonce make the
+	// answers map ambiguous (which question binds the decision?), so the
+	// whole callback is rejected with NOTHING recorded, drops included (T16
+	// discipline; the drop channel is the decision channel's ride-along,
+	// never a side door).
+	if n := len(nonceQuestions(cp, in.ToolInput)); n > 1 {
+		return reject(fmt.Sprintf("call carries %d questions with the current checkpoint %s nonce %s — exactly ONE decision question per call (fail-closed, nothing recorded)", n, cp.ID, cp.Nonce))
 	}
 
 	// 2. The answer object must be the platform-injected shape.
@@ -179,15 +202,10 @@ type decisionQuestion struct {
 	options []interface{}
 }
 
-// findDecisionQuestion locates the question whose text contains the current
-// checkpoint's nonce. T16 multi-nonce rule: exactly ONE nonce-carrying
-// question per call — two or more would make the answers map ambiguous
-// (which question binds the decision?), so the whole callback fails closed
-// with a rejection and nothing is recorded. When no question carries the
-// nonce, the reject reason distinguishes a wrong-checkpoint binding (some
-// question carries ANOTHER checkpoint's nonce) from a payload carrying no
-// nonce at all.
-func findDecisionQuestion(run *shared.RunState, cp *shared.CheckpointState, toolInput map[string]interface{}) (*decisionQuestion, string) {
+// nonceQuestions returns every tool_input question whose text carries the
+// current checkpoint's nonce (the T16 predicate — shared by the multi-nonce
+// fail-closed check and findDecisionQuestion).
+func nonceQuestions(cp *shared.CheckpointState, toolInput map[string]interface{}) []map[string]interface{} {
 	qs, _ := toolInput[fieldQuestions].([]interface{})
 	var bound []map[string]interface{}
 	for _, raw := range qs {
@@ -197,6 +215,20 @@ func findDecisionQuestion(run *shared.RunState, cp *shared.CheckpointState, tool
 			bound = append(bound, m)
 		}
 	}
+	return bound
+}
+
+// findDecisionQuestion locates the question whose text contains the current
+// checkpoint's nonce. T16 multi-nonce rule: exactly ONE nonce-carrying
+// question per call — two or more would make the answers map ambiguous
+// (which question binds the decision?), so the whole callback fails closed
+// with a rejection and nothing is recorded (recordDecisionAttempt enforces
+// this BEFORE any ride-along effect; the branch here is the same contract
+// for any other caller). When no question carries the nonce, the reject
+// reason distinguishes a wrong-checkpoint binding (some question carries
+// ANOTHER checkpoint's nonce) from a payload carrying no nonce at all.
+func findDecisionQuestion(run *shared.RunState, cp *shared.CheckpointState, toolInput map[string]interface{}) (*decisionQuestion, string) {
+	bound := nonceQuestions(cp, toolInput)
 	if len(bound) > 1 {
 		return nil, fmt.Sprintf("call carries %d questions with the current checkpoint %s nonce %s — exactly ONE decision question per call (fail-closed, nothing recorded)", len(bound), cp.ID, cp.Nonce)
 	}
@@ -205,6 +237,7 @@ func findDecisionQuestion(run *shared.RunState, cp *shared.CheckpointState, tool
 		text, _ := bound[0][fieldQuestion].(string)
 		return &decisionQuestion{text: text, options: options}, ""
 	}
+	qs, _ := toolInput[fieldQuestions].([]interface{})
 	for _, raw := range qs {
 		m, _ := raw.(map[string]interface{})
 		text, _ := m[fieldQuestion].(string)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +147,94 @@ func TestDefaultReviewCriteriaIDs(t *testing.T) {
 	ids[0] = "mutated"
 	if reflect.DeepEqual(DefaultReviewCriteriaIDs(), ids) {
 		t.Fatal("DefaultReviewCriteriaIDs must return a fresh copy")
+	}
+}
+
+// validManifestDoc is the fixed baseline every invalid case mutates: it loads
+// clean (its digest is the true CheckDefDigest of its registry entry).
+const validManifestDoc = `version: "2"
+project:
+  name: sample-project
+phases:
+  review:
+    verification_spec:
+      criteria:
+        - id: crit-extra
+          goal: logout flow covered
+          method: judgment
+      rubric: plugin:agents/reviewer.md
+check_registry:
+  - check_id: unit
+    command: go
+    args: [test, ./...]
+    cwd: .
+    env_allow: [PATH]
+    digest: d177246245d54d344e2dc1b623abf85e4137d724d7eff0c2e79a8e7cf68d63d4
+    trust: project
+`
+
+// TestLoadRuntimeManifestBaseline: the fixed baseline loads clean — every
+// invalid-shape case below is a MINIMAL mutation of it.
+func TestLoadRuntimeManifestBaseline(t *testing.T) {
+	writeProjectManifest(t, validManifestDoc)
+	m, err := LoadRuntimeManifest()
+	if err != nil {
+		t.Fatalf("baseline manifest must load: %v", err)
+	}
+	if m == nil || !reflect.DeepEqual(m.ReviewCriteriaIDs, []string{"crit-extra"}) || len(m.CheckRegistry) != 1 {
+		t.Fatalf("baseline projection = %+v", m)
+	}
+}
+
+// TestLoadRuntimeManifestInvalidShapesFailClosed (fix-round I2): the runtime
+// consumes the manifest as review scope and check-registry AUTHORITY, so
+// every validator-invalid shape it used to accept must now fail closed at
+// load — the runtime must never grant authority the project's own tooling
+// declares INVALID. Each case names the invariant it violates.
+func TestLoadRuntimeManifestInvalidShapesFailClosed(t *testing.T) {
+	cases := map[string]string{
+		"wrong stored digest label": strings.Replace(validManifestDoc,
+			"digest: d177246245d54d344e2dc1b623abf85e4137d724d7eff0c2e79a8e7cf68d63d4",
+			"digest: e177246245d54d344e2dc1b623abf85e4137d724d7eff0c2e79a8e7cf68d63d4", 1),
+		"trust typo":    strings.Replace(validManifestDoc, "trust: project", "trust: banana", 1),
+		"empty command": strings.Replace(validManifestDoc, "command: go", "command: \"\"", 1),
+		"duplicate check_id (byte-identical second entry)": validManifestDoc + `  - check_id: unit
+    command: go
+    args: [test, ./...]
+    cwd: .
+    env_allow: [PATH]
+    digest: d177246245d54d344e2dc1b623abf85e4137d724d7eff0c2e79a8e7cf68d63d4
+    trust: project
+`,
+		"unknown check entry field": strings.Replace(validManifestDoc, "    command: go", "    command: go\n    extra: nope", 1),
+		"judgment criterion citing check_id": strings.Replace(validManifestDoc,
+			"          method: judgment\n",
+			"          method: judgment\n          check_id: unit\n", 1),
+		"mechanical criterion citing unregistered check": strings.Replace(validManifestDoc,
+			"          method: judgment\n      rubric:",
+			"          method: judgment\n        - id: crit-mech\n          goal: g\n          method: mechanical\n          check_id: ghost\n      rubric:", 1),
+		"mechanical criterion without check_id": strings.Replace(validManifestDoc,
+			"          method: judgment\n      rubric:",
+			"          method: judgment\n        - id: crit-mech\n          goal: g\n          method: mechanical\n      rubric:", 1),
+		"criterion method invalid": strings.Replace(validManifestDoc, "method: judgment", "method: vibes", 1),
+		"duplicate criterion ids": strings.Replace(validManifestDoc,
+			"          method: judgment\n      rubric:",
+			"          method: judgment\n        - id: crit-extra\n          goal: g2\n          method: judgment\n      rubric:", 1),
+		"retired key chain": "chain: []\n" + validManifestDoc,
+		"retired key fan_out nested": strings.Replace(validManifestDoc,
+			"phases:\n  review:\n", "phases:\n  review:\n    fan_out: []\n", 1),
+		"yaml alias": strings.Replace(validManifestDoc,
+			"      rubric: plugin:agents/reviewer.md",
+			"      rubric: &rub plugin:agents/reviewer.md\n      readable: [*rub]", 1),
+		"null value": strings.Replace(validManifestDoc, "project:\n  name: sample-project", "project:", 1),
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			writeProjectManifest(t, content)
+			m, err := LoadRuntimeManifest()
+			if err == nil || m != nil {
+				t.Fatalf("a validator-invalid manifest must fail closed at load, got (%+v, %v)", m, err)
+			}
+		})
 	}
 }

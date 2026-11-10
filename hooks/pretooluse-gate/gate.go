@@ -28,8 +28,13 @@ const skillChange = "summoner:change"
 // skillReviewSubmit is the envelope-registration micro-skill (T17, spec §3 ⑤):
 // its args are ONE review envelope (strict JSON) which the gate decodes,
 // validates against the run's frozen acceptance view minus recorded drops and
-// the project's check registry, then registers through RequestReview — legal
-// only in REVIEW_PENDING (a [v] decision's obligation or the 终局⑤ path).
+// the project's check registry, then registers through RequestReview. Legal
+// entries: REVIEW_PENDING (a [v] decision's obligation, a same-envelope
+// re-send, or an in-flight review) and — spec §1 终局⑤默认强制 — the TERMINAL
+// DEFAULT position: ACTIVE immediately after the fixed review phase's
+// acceptance (the user's default CONTINUE at the review checkpoint). An
+// explicit SKIP of the review phase closes the default (UNREVIEWED); [v] at
+// any checkpoint remains the separate on-demand path (spec §4).
 const skillReviewSubmit = "summoner:review-submit"
 
 // decision is decide()'s verdict: allow with an effect plan, or deny with a
@@ -157,11 +162,13 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		if sub.PhaseID == "" {
 			return denySubmit("", "Summoner gate: summoner:phase-submit payload requires phase_id.")
 		}
-		// T17 standalone-review scope freeze: on the standalone review/ship
-		// routes the pre-review phase's submission IS the scope freeze — its
-		// criteria must come from the effective verification_spec, or the run
-		// would freeze a scope no rubric can verify.
-		if entry := standaloneReviewEntryPhase(run.Workflow); entry != "" && sub.PhaseID == entry {
+		// T17 standalone-review scope freeze (fix-round m3: EVERY phase of the
+		// route, not just the entry): on the standalone review/ship routes any
+		// accepted submission freezes criteria into the acceptance view, so
+		// every phase submission is machine-checked against the effective
+		// verification_spec — a later phase cannot launder scope-foreign
+		// criteria into the view a [v] would force into every envelope.
+		if standaloneReviewRoute(run.Workflow) {
 			if reason := checkReviewScopeCriteria(sub.CriteriaIDs); reason != "" {
 				return denySubmit(sub.PhaseID, reason)
 			}
@@ -297,9 +304,12 @@ func decideChangeSkill(in *gateInput, run *shared.RunState) decision {
 // untraced). The WAIT_USER discipline in decideSkill already refuses the
 // channel while a checkpoint is pending.
 func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
-	if run.Status != shared.StatusReviewPending {
+	if run.Status != shared.StatusReviewPending && !terminalDefaultReviewReady(run) {
+		if reviewPhaseSkipped(run) {
+			return deny("Summoner gate: summoner:review-submit refused — the review phase was explicitly skipped (UNREVIEWED), so the default terminal review is closed; [v] at a checkpoint is the on-demand path if the user wants one anyway.")
+		}
 		return deny(fmt.Sprintf(
-			"Summoner gate: summoner:review-submit is the envelope registration channel and is legal only in REVIEW_PENDING (a [v] decision's obligation or the 终局⑤ path), status is %s.",
+			"Summoner gate: summoner:review-submit is the envelope registration channel and is legal only in REVIEW_PENDING (a [v] decision's obligation or an in-flight review) or at the terminal default position (ACTIVE immediately after the review phase's acceptance), status is %s.",
 			run.Status))
 	}
 	args, ok := in.ToolInput["args"].(string)
@@ -338,25 +348,70 @@ func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
 	return allow(&effects{reviewSubmit: &env})
 }
 
-// standaloneReviewEntryPhase returns the phase id whose submission freezes the
-// standalone review scope: the phase immediately before "review" on the
-// STANDALONE review/ship routes only (context / prepare). The dev routes
-// (fix/new) embed their review phase after project-shaped work — their
-// acceptance view is not review-rubric-shaped and is not constrained here.
-func standaloneReviewEntryPhase(workflow string) string {
-	if workflow != "review" && workflow != "ship" {
-		return ""
+// terminalDefaultReviewReady reports the terminal default-review position
+// (spec §1 终局⑤默认强制: the terminal independent review runs by DEFAULT,
+// explicitly skippable): the run is ACTIVE, its workflow has the fixed
+// "review" phase, and that phase's LATEST visit was ACCEPTED — the user's
+// default CONTINUE at the review-phase checkpoint. Never true for arbitrary
+// ACTIVE positions: before the review phase ran, after an explicit SKIP
+// (UNREVIEWED), or after a recall revoked the acceptance, the default is
+// closed and [v] (spec §4) remains the only review entry.
+func terminalDefaultReviewReady(run *shared.RunState) bool {
+	if run.Status != shared.StatusActive || !workflowHasReviewPhase(run.Workflow) {
+		return false
 	}
+	v := latestReviewPhaseVisit(run)
+	return v != nil && v.Outcome == "accepted"
+}
+
+// reviewPhaseSkipped reports the explicit-skip closure: the workflow has a
+// review phase and its latest visit was settled as skipped (spec §1: 可显式
+// 跳过 → UNREVIEWED — the artifacts carry UNREVIEWED, and the default
+// terminal review does not run).
+func reviewPhaseSkipped(run *shared.RunState) bool {
+	if !workflowHasReviewPhase(run.Workflow) {
+		return false
+	}
+	v := latestReviewPhaseVisit(run)
+	return v != nil && v.Outcome == "skipped"
+}
+
+// workflowHasReviewPhase reports whether the workflow's fixed sequence
+// contains the "review" phase (dev routes embed it terminally; the standalone
+// review route is context+review; ship embeds it mid-route; ops/release have
+// none and can never take the default branch).
+func workflowHasReviewPhase(workflow string) bool {
 	seq, err := shared.WorkflowPhases(workflow)
 	if err != nil {
-		return ""
+		return false
 	}
-	for i, id := range seq {
-		if id == "review" && i > 0 {
-			return seq[i-1]
+	for _, id := range seq {
+		if id == "review" {
+			return true
 		}
 	}
-	return ""
+	return false
+}
+
+// latestReviewPhaseVisit returns the latest visit of the "review" phase
+// (recall appends fresh visits, so last-entry-wins), or nil.
+func latestReviewPhaseVisit(run *shared.RunState) *shared.PhaseState {
+	var last *shared.PhaseState
+	for i := range run.Phases {
+		if run.Phases[i].ID == "review" {
+			last = &run.Phases[i]
+		}
+	}
+	return last
+}
+
+// standaloneReviewRoute reports whether the workflow is a standalone
+// review/ship route whose acceptance view is review-rubric-shaped and
+// therefore scope-checked on every phase submission. The dev routes
+// (fix/new/debug) embed their review phase after project-shaped work — their
+// acceptance view is not review-rubric-shaped and is not constrained here.
+func standaloneReviewRoute(workflow string) bool {
+	return workflow == "review" || workflow == "ship"
 }
 
 // checkReviewScopeCriteria validates one standalone-review scope submission
@@ -429,14 +484,20 @@ func decideWrite(run *shared.RunState, toolName string) decision {
 // carries. Legality mirrors StartDelegation exactly (review round 2, R1):
 // reviewer only in REVIEW_PENDING, worker only in ACTIVE — pre-checked here
 // so an illegal delegation denies BEFORE any intent event is appended.
+// Fix-round C1: production plugin agents invoke as <plugin>:<name>, so the
+// framework's types also arrive as `summoner:reviewer` / `summoner:worker`;
+// both spellings are admitted (NormalizeAgentType strips exactly the
+// framework's own plugin prefix) and effects carry the canonical short form.
 func decideAgent(in *gateInput, run *shared.RunState) decision {
-	typ := stringField(in.ToolInput, "subagent_type")
-	if typ == "" {
+	raw := stringField(in.ToolInput, "subagent_type")
+	if raw == "" {
 		return deny("Summoner gate: Agent call without subagent_type — the gate cannot verify the delegation (fail-closed).")
 	}
+	typ := shared.NormalizeAgentType(raw)
 	if typ != "reviewer" && typ != "worker" {
 		return deny(fmt.Sprintf(
-			"Summoner gate: Agent subagent_type %q is not allowed — only reviewer or worker (fork/general-purpose delegation is refused).", typ))
+			"Summoner gate: Agent subagent_type %q is not allowed — only reviewer or worker (production plugin spelling: summoner:reviewer / summoner:worker; fork/general-purpose delegation is refused).",
+			raw))
 	}
 	// Same semantics as BudgetExhausted: a zero limit is unlimited.
 	if run.Limits.Delegations > 0 && run.Counters.Delegations >= run.Limits.Delegations {

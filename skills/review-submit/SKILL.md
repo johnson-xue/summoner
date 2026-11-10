@@ -1,9 +1,9 @@
 ---
 name: review-submit
-description: ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING) — invoke when the review's scope is frozen and the reviewer must be dispatched; never for anything else
+description: ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING or the terminal default position) — invoke when the review's scope is frozen and the reviewer must be dispatched; never for anything else
 user-invocable: false
 when_to_use:
-  - The run sits in REVIEW_PENDING under a [v] obligation (or the terminal ⑤ path) and the review envelope must be registered
+  - The run sits in REVIEW_PENDING (a [v] obligation or an in-flight review) or at the terminal default position (ACTIVE right after the review phase's acceptance), and the review envelope must be registered
   - Never to submit a phase, render a checkpoint, dispatch the reviewer (that is Agent), or bypass a decision
 ---
 
@@ -12,13 +12,17 @@ when_to_use:
 Zero logic lives here. This skill exists so the PreToolUse gate can observe and
 validate the review envelope (spec §3 ⑤ 审查信封): the main session MUST
 register every review through `Skill(summoner:review-submit, args=<envelope
-JSON>)`. The channel is legal ONLY in REVIEW_PENDING — a `[v]` decision's
-obligation (consumed by the registration) or the terminal ⑤ path. The gate
-decodes the args strictly (unknown fields are rejected), validates the envelope
-against the run's frozen acceptance view minus recorded user drops and the
-project's check registry (`summoner.yaml`), then registers the review PREPARED
-and traces `review.prepared`. A rejection (exit 2) names the reason and is
-never traced.
+JSON>)`. The channel's two legal entries: REVIEW_PENDING — a `[v]` decision's
+obligation (consumed by the registration), a same-envelope re-send, or an
+in-flight review — and the TERMINAL DEFAULT position (spec §1 终局⑤默认强制):
+ACTIVE immediately after the run's review phase took a plain `continue:` at
+its checkpoint, which is the default way a terminal review starts with NO
+[v] opt-in. An explicit `skip:` of the review phase (UNREVIEWED) closes the
+default. The gate decodes the args strictly (unknown fields are rejected),
+validates the envelope against the run's frozen acceptance view minus
+recorded user drops and the project's check registry (`summoner.yaml`), then
+registers the review PREPARED and traces `review.prepared`. A rejection
+(exit 2) names the reason and is never traced.
 
 ## args = one review-envelope JSON object
 
@@ -58,10 +62,12 @@ Field rules:
 - One review at a time: while a review is PREPARED/RUNNING, only a re-send of
   ITS envelope is legal (idempotent); a new review id is refused.
 
-On success the gate consumes the [v] obligation into the review record
-(PREPARED) and the reviewer delegation becomes admissible: dispatch with
-`Agent(subagent_type=reviewer)` carrying the PREPARED `review_id` in the
-prompt — the gate admits only that. The reviewer returns a structured
-ReviewResult; SubagentStop reconciles its claimed evidence ids against the
-reviewer's own transcript before accepting the verdict (a forged id fails the
-review, never the run — the user decides at the routed checkpoint).
+On success the gate consumes any outstanding [v] obligation into the review
+record (PREPARED; the terminal default path records none) and the reviewer
+delegation becomes admissible: dispatch with `Agent(subagent_type=
+summoner:reviewer)` carrying the PREPARED `review_id` in the prompt — the
+gate admits the plugin spelling and the bare `reviewer`, nothing else. The
+reviewer returns a structured ReviewResult; SubagentStop reconciles its
+claimed evidence ids against the reviewer's own transcript before accepting
+the verdict (a forged id fails the review, never the run — the user decides
+at the routed checkpoint).
