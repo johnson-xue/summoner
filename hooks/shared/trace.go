@@ -6,15 +6,18 @@ package shared
 // .jsonl. Events are the durable record: AppendEvent never touches run-state,
 // so a lost state file never blocks evidence capture.
 //
-// Every line is one JSON object: {type, seq, timestamp, source?, prompt_id?,
-// tool_use_id?, payload?, prev_hash, hash}. `type` is allow-listed (unknown
-// types are rejected at the door). The hash chain makes tampering detectable:
-// prev_hash = sha256 of the previous line's canonical bytes (first event:
-// sha256 of the empty string); hash = sha256 of this event's canonical bytes
-// including prev_hash, excluding the hash field itself. The canonical form is
-// pinned to encoding/json's struct-order + sorted-map-keys output — write and
-// verify share this one method, so any byte-level edit anywhere breaks either
-// that line's own hash or the next line's prev_hash.
+// Every line is one JSON object carrying the spec §7 common fields —
+// {schema_version, run_id, session_id, project_root_hash, type, seq,
+// timestamp, source?, prompt_id?, tool_use_id?, payload?, prev_hash, hash} —
+// so a line is self-describing even when torn from its path. `type` is
+// allow-listed (unknown types are rejected at the door). The hash chain makes
+// tampering detectable: prev_hash = sha256 of the previous line's canonical
+// bytes (first event: sha256 of the empty string); hash = sha256 of this
+// event's canonical bytes including prev_hash, excluding the hash field
+// itself. The canonical form is pinned to encoding/json's struct-order +
+// sorted-map-keys output — write and verify share this one method, so any
+// byte-level edit anywhere breaks either that line's own hash or the next
+// line's prev_hash.
 
 import (
 	"crypto/sha256"
@@ -104,19 +107,29 @@ func eventAllowed(typ string) bool {
 
 // --- event shape ---------------------------------------------------------------
 
-// TraceEvent is one trace line. Seq and the hash pair are assigned by
-// AppendEvent (caller-supplied values are ignored); a caller-provided
-// Timestamp is kept, an empty one is stamped with now UTC (RFC3339).
+// traceSchemaVersion is the in-line schema tag of every v2 trace event,
+// matching the run-state schema version.
+const traceSchemaVersion = "2"
+
+// TraceEvent is one trace line. The identity fields (SchemaVersion, RunID,
+// SessionID, ProjectRootHash), Seq and the hash pair are stamped by
+// AppendEvent from its arguments — caller-supplied values are ignored. A
+// caller-provided Timestamp is kept, an empty one is stamped with now UTC
+// (RFC3339).
 type TraceEvent struct {
-	Type      string                 `json:"type"`
-	Seq       int                    `json:"seq"`
-	Timestamp string                 `json:"timestamp"`
-	Source    string                 `json:"source,omitempty"`
-	PromptID  string                 `json:"prompt_id,omitempty"`
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Payload   map[string]interface{} `json:"payload,omitempty"`
-	PrevHash  string                 `json:"prev_hash"`
-	Hash      string                 `json:"hash,omitempty"`
+	SchemaVersion   string                 `json:"schema_version"`
+	RunID           string                 `json:"run_id"`
+	SessionID       string                 `json:"session_id"`
+	ProjectRootHash string                 `json:"project_root_hash"`
+	Type            string                 `json:"type"`
+	Seq             int                    `json:"seq"`
+	Timestamp       string                 `json:"timestamp"`
+	Source          string                 `json:"source,omitempty"`
+	PromptID        string                 `json:"prompt_id,omitempty"`
+	ToolUseID       string                 `json:"tool_use_id,omitempty"`
+	Payload         map[string]interface{} `json:"payload,omitempty"`
+	PrevHash        string                 `json:"prev_hash"`
+	Hash            string                 `json:"hash,omitempty"`
 }
 
 // canonicalBytes is THE pinned canonical serialization, used for both writing
@@ -176,13 +189,16 @@ func traceFilePath(runID string) (string, error) {
 
 // --- writing ---------------------------------------------------------------------
 
-// AppendEvent appends one event to the run's trace file, assigning seq (last
-// seq + 1, starting at 1), timestamp (if absent) and the hash pair. The write
-// is a single O_APPEND|O_CREATE Write of the fully-built line, so a reader
-// never observes a half-written event (single-process hooks assumption; no
-// cross-process locking in v1). Appending onto an unparseable tail fails
-// closed rather than chaining onto a broken line.
-func AppendEvent(runID string, ev TraceEvent) error {
+// AppendEvent appends one event to the run's trace file, stamping the spec §7
+// in-line identity fields (schema_version, run_id, session_id,
+// project_root_hash — the latter from ProjectKey(), so the line names its
+// project even when copied out of the tree), plus seq (last seq + 1, starting
+// at 1), timestamp (if absent) and the hash pair; the chain covers the full
+// line. The write is a single O_APPEND|O_CREATE Write of the fully-built
+// line, so a reader never observes a half-written event (single-process hooks
+// assumption; no cross-process locking in v1). Appending onto an unparseable
+// tail fails closed rather than chaining onto a broken line.
+func AppendEvent(runID, sessionID string, ev TraceEvent) error {
 	p, err := traceFilePath(runID)
 	if err != nil {
 		return err
@@ -195,6 +211,10 @@ func AppendEvent(runID string, ev TraceEvent) error {
 	if err != nil {
 		return err
 	}
+	ev.SchemaVersion = traceSchemaVersion
+	ev.RunID = runID
+	ev.SessionID = sessionID
+	ev.ProjectRootHash = ProjectKey()
 	ev.Seq = lastSeq + 1
 	if ev.Timestamp == "" {
 		ev.Timestamp = time.Now().UTC().Format(time.RFC3339)

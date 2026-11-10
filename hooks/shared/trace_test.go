@@ -51,7 +51,7 @@ func readTraceLines(t *testing.T, runID string) []TraceEvent {
 
 func mustAppend(t *testing.T, runID, typ string) {
 	t.Helper()
-	if err := AppendEvent(runID, TraceEvent{Type: typ, Source: "trace_test"}); err != nil {
+	if err := AppendEvent(runID, "sess-1", TraceEvent{Type: typ, Source: "trace_test"}); err != nil {
 		t.Fatalf("AppendEvent(%s): %v", typ, err)
 	}
 }
@@ -64,7 +64,7 @@ func TestEventMarshalAllowList(t *testing.T) {
 	useTraceDir(t)
 	const run = "run-tr-1"
 
-	err := AppendEvent(run, TraceEvent{Type: "bogus.event", Source: "trace_test"})
+	err := AppendEvent(run, "sess-1", TraceEvent{Type: "bogus.event", Source: "trace_test"})
 	if err == nil {
 		t.Fatal("AppendEvent accepted unknown event type bogus.event")
 	}
@@ -73,7 +73,7 @@ func TestEventMarshalAllowList(t *testing.T) {
 	}
 
 	for _, typ := range allEventTypes {
-		if err := AppendEvent(run, TraceEvent{Type: typ, Source: "trace_test"}); err != nil {
+		if err := AppendEvent(run, "sess-1", TraceEvent{Type: typ, Source: "trace_test"}); err != nil {
 			t.Fatalf("AppendEvent(%s): %v", typ, err)
 		}
 	}
@@ -105,7 +105,7 @@ func TestSeqMonotonic(t *testing.T) {
 	mustAppend(t, run, EventPhaseClosed)
 
 	// Caller-supplied seq is garbage; the writer owns seq assignment.
-	if err := AppendEvent(run, TraceEvent{Type: EventCheckpointOpened, Seq: 99, Source: "trace_test"}); err != nil {
+	if err := AppendEvent(run, "sess-1", TraceEvent{Type: EventCheckpointOpened, Seq: 99, Source: "trace_test"}); err != nil {
 		t.Fatalf("AppendEvent(checkpoint.opened): %v", err)
 	}
 	mustAppend(t, run, EventCheckpointDecided)
@@ -255,6 +255,38 @@ func TestCriticalEventsMissing(t *testing.T) {
 
 // --- supporting checks --------------------------------------------------------
 
+// TestLineIdentityFields: every written line carries the spec §7 common
+// identity fields in-line — schema_version, run_id, session_id (from
+// AppendEvent's params) and project_root_hash (from ProjectKey) — and the
+// hash chain covers them.
+func TestLineIdentityFields(t *testing.T) {
+	useTraceDir(t)
+	const run, sess = "run-tr-11", "sess-42"
+	if err := AppendEvent(run, sess, TraceEvent{Type: EventWorkflowStarted, Source: "trace_test"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	evs := readTraceLines(t, run)
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	ev := evs[0]
+	if ev.SchemaVersion != "2" {
+		t.Fatalf("schema_version = %q, want \"2\"", ev.SchemaVersion)
+	}
+	if ev.RunID != run {
+		t.Fatalf("run_id = %q, want %q", ev.RunID, run)
+	}
+	if ev.SessionID != sess {
+		t.Fatalf("session_id = %q, want %q", ev.SessionID, sess)
+	}
+	if ev.ProjectRootHash != ProjectKey() {
+		t.Fatalf("project_root_hash = %q, want %q", ev.ProjectRootHash, ProjectKey())
+	}
+	if err := VerifyChain(run); err != nil {
+		t.Fatalf("VerifyChain must cover identity fields: %v", err)
+	}
+}
+
 // TestTraceFirstPrevHash: the first event's prev_hash is sha256 of the empty
 // string; subsequent prev_hash values commit to the previous line's canonical
 // bytes.
@@ -291,7 +323,7 @@ func TestAppendEventIndependentOfRunState(t *testing.T) {
 func TestTraceRejectsUnsafeRunID(t *testing.T) {
 	useTraceDir(t)
 	for _, runID := range []string{"", "..", "a/b", "run evil"} {
-		if err := AppendEvent(runID, TraceEvent{Type: EventWorkflowStarted}); err == nil {
+		if err := AppendEvent(runID, "sess-1", TraceEvent{Type: EventWorkflowStarted}); err == nil {
 			t.Fatalf("AppendEvent accepted unsafe run id %q", runID)
 		}
 		if err := VerifyChain(runID); err == nil {
