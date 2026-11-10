@@ -308,6 +308,12 @@ func StartRun(runID, sessionID, workflow string, limits BudgetLimits) (*RunState
 	if !validID(sessionID) {
 		return nil, fmt.Errorf("start run: invalid session id %q", sessionID)
 	}
+	// F2 (review round 1): validateRunState rejects an empty workflow at load
+	// time, so StartRun must never write such a file — it would brick the
+	// session's next SessionRuns.
+	if workflow == "" {
+		return nil, errors.New("start run: workflow is required")
+	}
 	if _, err := LoadRun(runID); err == nil {
 		return nil, fmt.Errorf("start run %s: already exists (resume via LoadRun; refusing to overwrite)", runID)
 	} else if !errors.Is(err, ErrRunNotFound) {
@@ -774,6 +780,23 @@ func (r *RunState) RecordDecision(checkpointID string, d Decision) error {
 		case DecisionRecall:
 			if p := s.phaseForDecision(cp); p != nil && p.Outcome == "" {
 				p.Outcome = "recalled"
+				// F1 (review round 1): when the decision came from a
+				// checkpoint ABOVE the visit's own (review-result / recovery
+				// fallback), the recalled visit's still-PENDING checkpoint
+				// can never be decided — RecordDecision needs WAIT_USER and
+				// every WAIT_USER entry appends a newer checkpoint — so it
+				// would resurface as an orphan in ACTIVE and wedge the change
+				// loop. Supersede it (CurrentCheckpoint skips superseded). A
+				// checkpoint already decided (e.g. [v] then review RECALL),
+				// and the decision checkpoint itself, are left alone.
+				if p.CheckpointID != "" && p.CheckpointID != cp.ID {
+					for i := range s.Checkpoints {
+						if s.Checkpoints[i].ID == p.CheckpointID && !s.Checkpoints[i].Decided {
+							s.Checkpoints[i].Superseded = true
+							break
+						}
+					}
+				}
 			}
 			s.applyRecallAt(cp, recallIdx)
 			s.RecoveryPrior = "" // a recall supersedes the episode's restore

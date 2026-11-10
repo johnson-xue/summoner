@@ -1189,6 +1189,22 @@ func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
 	}
 	r.RequirementsVersion--
 
+	// Phase binding drifted after the display (review round 1, F3).
+	origPhase := cp.PhaseID
+	cp.PhaseID = "p-other"
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+		t.Fatal("phase drift after display: want error, got nil")
+	}
+	cp.PhaseID = origPhase
+
+	// Artifact version drifted after the display (review round 1, F3).
+	origArtifact := cp.ArtifactVersions["p1.md"]
+	cp.ArtifactVersions["p1.md"] = "tampered"
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+		t.Fatal("artifact-version drift after display: want error, got nil")
+	}
+	cp.ArtifactVersions["p1.md"] = origArtifact
+
 	// Untouched content still decides.
 	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
 		t.Fatalf("unchanged checkpoint decision: %v", err)
@@ -1697,6 +1713,150 @@ func TestMinorNonceRedrawsOnCollision(t *testing.T) {
 	for _, existing := range r.Checkpoints {
 		if existing.ID != cp.ID && existing.Nonce == cp.Nonce {
 			t.Fatalf("nonce collision between %s and %s", existing.ID, cp.ID)
+		}
+	}
+}
+
+// checkpointByID returns the checkpoint state with that id.
+func checkpointByID(t *testing.T, r *RunState, id string) CheckpointState {
+	t.Helper()
+	for _, cp := range r.Checkpoints {
+		if cp.ID == id {
+			return cp
+		}
+	}
+	t.Fatalf("checkpoint %s not found in %+v", id, r.Checkpoints)
+	return CheckpointState{}
+}
+
+// --- task 2.5 review round 1 ------------------------------------------------------
+
+// TestF1RecoveryRecallSupersedesOrphanedCheckpoint pins F1: a RECALL decided
+// at a recovery checkpoint sits ABOVE the phase visit's own still-pending
+// checkpoint; marking the visit recalled must also supersede that checkpoint
+// — otherwise it resurfaces as an orphan in ACTIVE, where it can never be
+// decided (RecordDecision requires WAIT_USER), wedging the change loop.
+func TestF1RecoveryRecallSupersedesOrphanedCheckpoint(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c-1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue) // p1 accepted
+	cp2 := openAndSubmit(t, r, "p2", "c-2")
+	displayCurrent(t, r) // cp-2 pending, WAIT_USER
+
+	// A failed probe episode parks the run at a recovery checkpoint above the
+	// still-pending cp-2.
+	r.MarkOutcomeUnknown("tu-1")
+	if err := r.ResolveOutcome("tu-1", OutcomeFailed); err != nil {
+		t.Fatalf("ResolveOutcome(failed): %v", err)
+	}
+	if cp := r.CurrentCheckpoint(); cp == nil || cp.Kind != CheckpointRecovery {
+		t.Fatalf("want a pending recovery checkpoint, got %+v", cp)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionRecall) // recall targets the accepted p1
+
+	// cp-2 is superseded, not orphaned.
+	if got := checkpointByID(t, r, cp2.ID); !got.Superseded {
+		t.Fatalf("cp-2 = %+v — the recalled visit's pending checkpoint must be superseded (F1)", got)
+	}
+	if cur := r.CurrentCheckpoint(); cur != nil {
+		t.Fatalf("CurrentCheckpoint = %s, want nil after the recovery-RECALL", cur.ID)
+	}
+	if got := lastVisit(t, r, "p2"); got.Outcome != "recalled" {
+		t.Fatalf("p2 latest visit = %+v, want recalled", got)
+	}
+	if got := lastVisit(t, r, "p1"); !got.Open {
+		t.Fatalf("p1 latest visit = %+v, want reopened by the recall", got)
+	}
+
+	// The run stays usable: the change loop is reachable again instead of
+	// wedged behind an undecidable orphan.
+	if err := r.OpenRequirementChange("post-recovery adjustment"); err != nil {
+		t.Fatalf("OpenRequirementChange after recovery-RECALL: %v", err)
+	}
+	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "n", Affected: []string{"c-2"}}); err != nil {
+		t.Fatalf("ApplyRequirementDelta after recovery-RECALL: %v (an orphaned checkpoint wedges the loop)", err)
+	}
+}
+
+// TestF1DirectPhaseRecallLeavesCheckpointDecided pins the distinction: a
+// RECALL decided ON the phase's own checkpoint (PHASE kind) needs no orphan
+// handling — that checkpoint is decided normally, never superseded.
+func TestF1DirectPhaseRecallLeavesCheckpointDecided(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c-1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	cp2 := openAndSubmit(t, r, "p2", "c-2")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionRecall) // RECALL decided ON cp-2
+
+	if got := checkpointByID(t, r, cp2.ID); !got.Decided || got.Superseded {
+		t.Fatalf("cp-2 = decided:%v superseded:%v — a direct phase RECALL decides its checkpoint", got.Decided, got.Superseded)
+	}
+	if cur := r.CurrentCheckpoint(); cur != nil {
+		t.Fatalf("CurrentCheckpoint = %s, want nil after the direct RECALL", cur.ID)
+	}
+	if got := lastVisit(t, r, "p1"); !got.Open {
+		t.Fatalf("p1 latest visit = %+v, want reopened", got)
+	}
+	if got := lastVisit(t, r, "p2"); got.Outcome != "recalled" {
+		t.Fatalf("p2 latest visit = %+v, want recalled", got)
+	}
+}
+
+// TestF1ReviewResultRecallDoesNotTouchDecidedCheckpoint pins the other side of
+// the F1 distinction: when the fallback-recalled visit's checkpoint was
+// already decided (e.g. [v] REVIEW_ON_DEMAND), a later RECALL at the
+// review-result checkpoint must NOT supersede it.
+func TestF1ReviewResultRecallDoesNotTouchDecidedCheckpoint(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c-1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue) // p1 accepted — the recall target
+	cp2 := openAndSubmit(t, r, "p2", "c-2")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionReviewOnDemand) // cp-2 decided [v]
+	if _, err := r.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass}); err != nil {
+		t.Fatalf("RecordReviewResult: %v", err)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionRecall) // at the REVIEW_RESULT checkpoint
+
+	if got := checkpointByID(t, r, cp2.ID); !got.Decided || got.Superseded {
+		t.Fatalf("cp-2 = decided:%v superseded:%v — a checkpoint decided via [v] must not be superseded", got.Decided, got.Superseded)
+	}
+	if got := lastVisit(t, r, "p2"); got.Outcome != "recalled" {
+		t.Fatalf("p2 latest visit = %+v, want recalled", got)
+	}
+	if got := lastVisit(t, r, "p1"); !got.Open {
+		t.Fatalf("p1 latest visit = %+v, want reopened", got)
+	}
+}
+
+// TestF2StartRunRejectsEmptyWorkflow pins F2: StartRun must refuse an empty
+// workflow (and empty ids) — a written file validateRunState rejects would
+// brick the session's next SessionRuns.
+func TestF2StartRunRejectsEmptyWorkflow(t *testing.T) {
+	prev := runStateDirOverride
+	runStateDirOverride = t.TempDir()
+	t.Cleanup(func() { runStateDirOverride = prev })
+
+	if _, err := StartRun("run-1", "sess-1", "", BudgetLimits{}); err == nil {
+		t.Fatal("StartRun with empty workflow: want error, got nil")
+	}
+	if _, err := LoadRun("run-1"); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("LoadRun after the refused StartRun = %v, want ErrRunNotFound (no file written)", err)
+	}
+
+	// Empty ids were already guarded by validID — pinned here with the guard.
+	for _, bad := range []struct{ runID, sessionID string }{{"", "sess-1"}, {"run-1", ""}} {
+		if _, err := StartRun(bad.runID, bad.sessionID, "fix", BudgetLimits{}); err == nil {
+			t.Fatalf("StartRun(%q, %q): want error, got nil", bad.runID, bad.sessionID)
 		}
 	}
 }
