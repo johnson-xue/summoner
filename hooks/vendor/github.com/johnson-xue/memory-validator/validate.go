@@ -13,10 +13,8 @@ import (
 )
 
 type Manifest struct {
-	Version string `yaml:"version"`
-	Project struct {
-		Name string `yaml:"name"`
-	} `yaml:"project"`
+	Version   string `yaml:"version"`
+	Project   struct{ Name string `yaml:"name"` } `yaml:"project"`
 	Phases    map[string]Phase    `yaml:"phases"`
 	Workflows map[string]Workflow `yaml:"workflows"`
 }
