@@ -303,8 +303,12 @@ Mutating actions are never auto-replayed.
   (tool.started on the trace, result never landed) plus dead worker
   delegations; Stop (turn end) marks tools only — a live delegation is not
   a crash. Reviewer delegations never convert (the review lifecycle owns
-  them). Each mark traces `tool.outcome_unknown` with `detected_by`
-  (`session-start` / `stop`).
+  them). Worker correlation is FIFO-per-type (SubagentStop carries no
+  tool_use id): the crash may be attributed to the WRONG worker identity —
+  the error direction is UNDER-MARKING a completed worker (truth "A crashed,
+  B completed" can mark B), never hiding an episode; the episode count and
+  the recovery checkpoint stay correct. Each mark traces
+  `tool.outcome_unknown` with `detected_by` (`session-start` / `stop`).
 - **During the episode** writes are denied and the crashed action is never
   auto-replayed. Read-class Bash probes stay allowed — they are the evidence
   channel, exempt from budget exhaustion alongside `summoner:probe-submit`.

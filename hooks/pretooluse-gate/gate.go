@@ -178,8 +178,11 @@ func decide(in *gateInput, run *shared.RunState) decision {
 		// T19 ladder order (spec §3 Bash 副作用信任阶梯): the probe channel,
 		// then the write matrix, then L2 admission, then ordinary reads.
 		if shared.IsSandboxProbeInvocation(command) {
-			// The in-band sandbox probe — read-class by shape, marker recorded
-			// for posttooluse's observation join (see bashClassEffect).
+			// The in-band sandbox probe — byte-exact admitted spelling only
+			// (fix-round F1: any env-prefix, $HOME/~/planted or foreign-dir
+			// variant is judged below as ordinary Bash and can never produce
+			// a probe observation). Marker recorded for posttooluse's
+			// observation join (see bashClassEffect).
 			return allow(&effects{bashClass: &bashClassEffect{readClass: true, probe: true}})
 		}
 		if isWriteClassCommand(command) {
@@ -224,12 +227,13 @@ func matchProjectCheck(command string) (shared.CheckDef, bool) {
 // decideL2Check admits ONE exact-match project check execution (T19, spec §3
 // L2). Requirements: the definition is not network-class (L3 → honest BLOCKED
 // l3_unsupported, never executed, never downgraded to "just run it"), and the
-// LATEST in-band sandbox-probe observation in the run's trace is "refused" —
-// the fresh exclusive write the sandbox must refuse, observed in-band (a hook
-// child is never inside the sandbox, so nothing hook-side can substitute). No
-// or declined probe → honest BLOCKED sandbox_unproven. Byte-exact match with
-// the registered line IS the sandbox-bypass check on the actual Bash input:
-// nothing can ride along an exact match.
+// run's trace holds a refused in-band sandbox-probe observation the admission
+// can PAIR with — strictly one probe per admitted check (fix-round M1): the
+// latest probe must be newer than the probe the PREVIOUS L2 admission
+// consumed, so a fresh probe is required after every admission. No, declined
+// or already-consumed probe → honest BLOCKED sandbox_unproven. Byte-exact
+// match with the registered line IS the sandbox-bypass check on the actual
+// Bash input: nothing can ride along an exact match.
 func decideL2Check(run *shared.RunState, def shared.CheckDef) decision {
 	if shared.IsNetworkCheckCommand(def) {
 		return denyWithEvent(fmt.Sprintf(
@@ -242,15 +246,19 @@ func decideL2Check(run *shared.RunState, def shared.CheckDef) decision {
 			"Summoner gate: cannot read the run's trace to verify the sandbox-probe pairing for check %s — denying (fail-closed): %v",
 			def.CheckID, err))
 	}
-	probeID, refused, found := shared.LatestSandboxProbe(evs, 0)
-	if !found {
+	probeID, pairing := shared.L2Pairing(evs, shared.GateFutureSeq)
+	switch pairing {
+	case shared.PairingMissing:
 		return denyWithEvent(fmt.Sprintf(
 			"Summoner gate: check %s needs a paired in-band sandbox probe before it may run — no probe observed in this run (BLOCKED sandbox_unproven). Run %s first (the adapter prints its wrapper; its refused fresh write proves the sandbox at that point in time), then re-run the exact check line.",
 			def.CheckID, shared.SandboxProbeBin), blockedCheckResult(def, "sandbox_unproven"))
-	}
-	if !refused {
+	case shared.PairingDeclined:
 		return denyWithEvent(fmt.Sprintf(
 			"Summoner gate: check %s is BLOCKED sandbox_unproven — the latest in-band probe (%s) did not prove the sandbox (write succeeded or unproven effect). L2 needs a refused probe; re-run %s and then the exact check line.",
+			def.CheckID, probeID, shared.SandboxProbeBin), blockedCheckResult(def, "sandbox_unproven"))
+	case shared.PairingConsumed:
+		return denyWithEvent(fmt.Sprintf(
+			"Summoner gate: check %s is BLOCKED sandbox_unproven — probe %s is already consumed by the previous L2 admission. The pairing is strictly one fresh probe per admitted check: re-run %s, then the exact check line.",
 			def.CheckID, probeID, shared.SandboxProbeBin), blockedCheckResult(def, "sandbox_unproven"))
 	}
 	return allow(&effects{bashClass: &bashClassEffect{readClass: true, l2: &def}})

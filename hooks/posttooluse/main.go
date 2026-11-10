@@ -249,7 +249,6 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 		"tool_name":       in.ToolName,
 		"response_sha256": responseDigest(in.ToolResponse),
 	}
-	var admission map[string]interface{}
 	if in.ToolName == "Bash" {
 		evs, err := shared.LoadRunEvents(run.RunID)
 		if err != nil {
@@ -258,7 +257,6 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 			evs = nil
 		}
 		if started, _, ok := shared.StartedEvent(evs, in.ToolUseID); ok {
-			admission = started
 			if _, marked := started["sandbox_probe"]; marked {
 				effect := shared.SandboxProbeUnproven
 				if e, ok := shared.ParseSandboxProbeWrapper(bashStdout(in.ToolResponse)); ok {
@@ -273,7 +271,7 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 		}, errW); err != nil {
 			return 2
 		}
-		return recordCheckResult(run, in, evs, admission != nil, errW)
+		return recordCheckResult(run, in, evs, errW)
 	}
 	if err := appendTrace(run, in, shared.TraceEvent{
 		Type:    shared.EventToolResult,
@@ -314,14 +312,15 @@ func bashStdout(toolResponse interface{}) string {
 // recordCheckResult concludes an L2 check execution (T19, spec §3 L2): the
 // call's tool.started carries the gate's l2_check admission binding —
 // re-verify the pairing against the CURRENT registry (definition digest, exact
-// command line, latest in-band probe before the admission refused), then
+// command line) and the admission's OWN probe (fix-round M1: shared.L2Pairing
+// over the events BEFORE that admission — latest probe, strictly newer than
+// the previous admission's probe — not just any latest observation), then
 // observe the exit: 0 passes, non-zero fails (and ticks the failed-check
 // budget), an unobservable exit is an honest BLOCKED. Every BLOCKED here is a
 // refusal to claim, never a quality verdict. evs is the pre-result event
-// snapshot (all probe observations precede the admission by construction);
-// hasAdmission is false when the trace could not be read at the join — then
-// the outcome is recorded as an unobservable BLOCKED, never credit.
-func recordCheckResult(run *shared.RunState, in *hookInput, evs []shared.TraceEvent, hasAdmission bool, errW io.Writer) int {
+// snapshot. An unreadable trace never reaches this join: the tool.result
+// append above fails on the same file and fails closed first.
+func recordCheckResult(run *shared.RunState, in *hookInput, evs []shared.TraceEvent, errW io.Writer) int {
 	binding, seq, ok := shared.L2Admission(evs, in.ToolUseID)
 	if !ok {
 		return 0 // not an admitted check execution — nothing to conclude
@@ -342,11 +341,6 @@ func recordCheckResult(run *shared.RunState, in *hookInput, evs []shared.TraceEv
 			return 2
 		}
 		return 0
-	}
-	if !hasAdmission {
-		// The trace was unreadable at the join: no verifiable admission —
-		// record the inability, claim nothing.
-		return blocked("exit_unobservable")
 	}
 	m, err := shared.LoadRuntimeManifest()
 	if err != nil || m == nil {
@@ -372,8 +366,12 @@ func recordCheckResult(run *shared.RunState, in *hookInput, evs []shared.TraceEv
 	if command, _ := in.ToolInput["command"].(string); command != shared.ExactCheckCommandLine(def) {
 		return blocked("admission_mismatch")
 	}
-	probeID, refused, probeFound := shared.LatestSandboxProbe(evs, seq)
-	if !probeFound || !refused {
+	// The admission's OWN probe (fix-round M1): latest observation before
+	// THIS admission, strictly newer than the previous admission's probe.
+	// A consumed, missing or declined pairing is an honest BLOCKED, never
+	// credit — belt for the gate's admission-time enforcement.
+	probeID, pairing := shared.L2Pairing(evs, seq)
+	if pairing != shared.PairingRefused {
 		return blocked("sandbox_unproven")
 	}
 	exit, haveExit := shared.BashExit(in.ToolResponse)

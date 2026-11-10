@@ -114,18 +114,30 @@ type CheckOutcome struct {
 // RunL1Check executes ONE L1 adapter op in-process: bounded file read, pure
 // predicate, no exec, no network. deadline is the AGGREGATE budget deadline
 // for the whole submit (the caller stamps start+L1AggregateBudget); a check
-// that starts past it is blocked without touching the filesystem.
+// that starts past it is blocked without touching the filesystem. Each check
+// additionally runs under its OWN L1PerCheckBudget deadline (fix-round M3:
+// the constant is enforced, not decorative) — stamped at entry and re-checked
+// after the capped read, so a check that overshoots its own budget is
+// BLOCKED without credit instead of lending its slowness to the aggregate.
 func RunL1Check(def CheckDef, deadline time.Time) CheckOutcome {
 	if time.Now().After(deadline) {
 		return CheckOutcome{CheckStatusBlocked, "l1_aggregate_deadline_exceeded"}
 	}
+	return runL1Op(def, time.Now().Add(L1PerCheckBudget))
+}
+
+// runL1Op dispatches one op under its per-check deadline.
+func runL1Op(def CheckDef, perCheck time.Time) CheckOutcome {
+	if time.Now().After(perCheck) {
+		return CheckOutcome{CheckStatusBlocked, "l1_deadline_exceeded"}
+	}
 	switch def.Command {
 	case CheckOpFileContains:
-		return l1FileContains(def)
+		return l1FileContains(def, perCheck)
 	case CheckOpDigestMatch:
-		return l1DigestMatch(def)
+		return l1DigestMatch(def, perCheck)
 	case CheckOpGrepCount:
-		return l1GrepCount(def)
+		return l1GrepCount(def, perCheck)
 	default:
 		return CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_unknown_adapter:%s — framework checks run only the shipped adapters (%s, %s, %s)", def.Command, CheckOpFileContains, CheckOpDigestMatch, CheckOpGrepCount)}
 	}
@@ -148,8 +160,11 @@ func l1ResolvePath(def CheckDef, p string) string {
 	return filepath.Clean(filepath.Join(base, p))
 }
 
-// l1Read bounded-reads one op's file argument (whole file, hard-capped).
-func l1Read(def CheckDef, args []string) ([]byte, CheckOutcome) {
+// l1Read bounded-reads one op's file argument (whole file, hard-capped). A
+// read that overshoots the op's per-check deadline is blocked AFTER the read
+// (the read itself is byte-capped, so the overshoot window is one capped
+// read) — no credit for a check that outlived its budget.
+func l1Read(def CheckDef, args []string, perCheck time.Time) ([]byte, CheckOutcome) {
 	if len(args) != 1 {
 		return nil, CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_args: want 1 file argument, got %d", len(args))}
 	}
@@ -167,14 +182,17 @@ func l1Read(def CheckDef, args []string) ([]byte, CheckOutcome) {
 	if n > L1MaxFileBytes {
 		return nil, CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_read_cap: file exceeds %d bytes", L1MaxFileBytes)}
 	}
+	if time.Now().After(perCheck) {
+		return nil, CheckOutcome{CheckStatusBlocked, "l1_deadline_exceeded"}
+	}
 	return buf[:n], CheckOutcome{}
 }
 
-func l1FileContains(def CheckDef) CheckOutcome {
+func l1FileContains(def CheckDef, perCheck time.Time) CheckOutcome {
 	if len(def.Args) != 2 {
 		return CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_args: %s wants (path, needle), got %d args", CheckOpFileContains, len(def.Args))}
 	}
-	b, bad := l1Read(def, def.Args[:1])
+	b, bad := l1Read(def, def.Args[:1], perCheck)
 	if bad.Status != "" {
 		return bad
 	}
@@ -186,14 +204,14 @@ func l1FileContains(def CheckDef) CheckOutcome {
 
 var l1DigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-func l1DigestMatch(def CheckDef) CheckOutcome {
+func l1DigestMatch(def CheckDef, perCheck time.Time) CheckOutcome {
 	if len(def.Args) != 2 {
 		return CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_args: %s wants (path, sha256), got %d args", CheckOpDigestMatch, len(def.Args))}
 	}
 	if !l1DigestPattern.MatchString(def.Args[1]) {
 		return CheckOutcome{CheckStatusBlocked, "l1_args: digest must be lowercase 64-hex sha256"}
 	}
-	b, bad := l1Read(def, def.Args[:1])
+	b, bad := l1Read(def, def.Args[:1], perCheck)
 	if bad.Status != "" {
 		return bad
 	}
@@ -204,7 +222,7 @@ func l1DigestMatch(def CheckDef) CheckOutcome {
 	return CheckOutcome{Status: CheckStatusFail, Reason: "digest mismatch"}
 }
 
-func l1GrepCount(def CheckDef) CheckOutcome {
+func l1GrepCount(def CheckDef, perCheck time.Time) CheckOutcome {
 	if len(def.Args) != 3 {
 		return CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_args: %s wants (path, pattern, count), got %d args", CheckOpGrepCount, len(def.Args))}
 	}
@@ -216,7 +234,7 @@ func l1GrepCount(def CheckDef) CheckOutcome {
 	if err != nil {
 		return CheckOutcome{CheckStatusBlocked, fmt.Sprintf("l1_pattern: %v", err)}
 	}
-	b, bad := l1Read(def, def.Args[:1])
+	b, bad := l1Read(def, def.Args[:1], perCheck)
 	if bad.Status != "" {
 		return bad
 	}
@@ -302,100 +320,40 @@ type probeWrapper struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// IsSandboxProbeInvocation reports whether a Bash command is EXACTLY the
-// anchored probe invocation: every segment's verb token is a path ENDING
-// `/hooks/bin/summoner-sandbox-probe`, with no operands, no redirects, no
-// second command. The BARE spelling is deliberately NOT admitted — the probe's
-// observation feeds L2 admission, and a bare name is PATH-shadowable by a
-// planted binary; only the plugin-bin anchor is the framework's own artifact.
+// SandboxProbeInvocation is the EXACT command string that opens the in-band
+// sandbox-probe channel: the full quoted literal the docs instruct the model
+// to run. Admission is BYTE equality against this string (or the
+// plugin-root-resolved absolute twin below) — no tokenizing, no prefix or
+// suffix matching, no env-assignment skipping. Fix-round F1 closed this hole:
+// the old assignment-skipping suffix matcher admitted
+// `HOME=<read-only dir> "<any>/hooks/bin/summoner-sandbox-probe"`, letting
+// the model point the probe's own HOME at any read-only directory so a
+// mode-bit EACCES was classified "refused" and a forged
+// `check.result {tier:"L2(basis:paired_probe@…)"}` was credited on an
+// unsandboxed host. Every other spelling is an ordinary Bash call.
+const SandboxProbeInvocation = `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`
+
+// SandboxProbeResolvedInvocation returns the absolute twin, derived from the
+// plugin root the HOOK binary itself knows (the platform's
+// CLAUDE_PLUGIN_ROOT environment, else the running binary's location) —
+// never from the Bash input under judgement.
+func SandboxProbeResolvedInvocation() string {
+	return filepath.Join(PluginRoot(), "hooks", "bin", SandboxProbeBin)
+}
+
+// IsSandboxProbeInvocation reports whether a Bash command is byte-exactly one
+// of the two admitted probe spellings: the quoted literal
+// SandboxProbeInvocation, or the plugin-root-resolved absolute path (quoted
+// or unquoted). A leading `HOME=…`/`env HOME=…` assignment, a `$HOME`/`~`
+// relative path, a foreign directory, an operand, or a one-byte difference
+// makes the call NON-matching — it is judged as ordinary Bash (write matrix,
+// L2 matching, read-class) and can never produce a probe observation.
 func IsSandboxProbeInvocation(command string) bool {
-	if command == "" {
-		return false
+	if command == SandboxProbeInvocation {
+		return true
 	}
-	norm := strings.ReplaceAll(command, "$(", "; ")
-	norm = strings.ReplaceAll(norm, "`", "; ")
-	segs := 0
-	for _, seg := range strings.FieldsFunc(norm, func(r rune) bool {
-		return r == ';' || r == '|' || r == '&' || r == '\n' || r == '\r'
-	}) {
-		segs++
-		words := probeTokenize(seg)
-		verbIdx, verb := resolveProbeVerb(words)
-		if verbIdx < 0 || len(words) != verbIdx+1 {
-			return false // any operand, wrapper or second token breaks the shape
-		}
-		if !strings.HasSuffix(verb, "/hooks/bin/"+SandboxProbeBin) {
-			return false
-		}
-	}
-	return segs > 0
-}
-
-// probeTokenize mirrors the gate's tokenizer (quotes join spans; an empty
-// quoted operand still yields a token).
-func probeTokenize(s string) []string {
-	var toks []string
-	var cur strings.Builder
-	var quote rune
-	hasTok := false
-	flush := func() {
-		if hasTok || cur.Len() > 0 {
-			toks = append(toks, cur.String())
-			cur.Reset()
-			hasTok = false
-		}
-	}
-	for _, r := range s {
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '\'' || r == '"':
-			quote = r
-			hasTok = true
-		case r == ' ' || r == '\t':
-			flush()
-		default:
-			cur.WriteRune(r)
-		}
-	}
-	flush()
-	return toks
-}
-
-// probeAssign matches leading VAR=value assignments for resolveProbeVerb.
-var probeAssign = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-
-// resolveProbeVerb skips leading VAR=value assignments and the wrappers
-// env/command/nohup (mirroring the gate's resolveVerb) and reduces absolute
-// paths to their base name.
-func resolveProbeVerb(words []string) (int, string) {
-	i := 0
-	for i < len(words) {
-		if probeAssign.MatchString(words[i]) {
-			i++
-			continue
-		}
-		base := words[i]
-		if strings.ContainsRune(base, '/') {
-			base = path.Base(base)
-		}
-		switch base {
-		case "env":
-			i++
-			for i < len(words) && (strings.HasPrefix(words[i], "-") || probeAssign.MatchString(words[i])) {
-				i++
-			}
-		case "command", "nohup":
-			i++
-		default:
-			return i, words[i]
-		}
-	}
-	return -1, ""
+	resolved := SandboxProbeResolvedInvocation()
+	return command == resolved || command == `"`+resolved+`"`
 }
 
 // ParseSandboxProbeWrapper finds the LAST adapter wrapper line in a Bash
@@ -449,6 +407,15 @@ func RunSandboxProbe(dir string) SandboxProbeResult {
 	if err != nil {
 		return SandboxProbeResult{Effect: SandboxProbeUnproven, Detail: "rand: " + err.Error()}
 	}
+	return probeAt(dir, name)
+}
+
+// probeAt is the probe core (fix-round F2 seam): ONE fresh-exclusive write
+// attempt at dir/name — O_CREATE|O_EXCL, so a file already sitting at that
+// name is never opened, overwritten or removed (an EEXIST collision is an
+// honest unproven, not a sandbox claim). On success the call removes ONLY
+// the file it created.
+func probeAt(dir, name string) SandboxProbeResult {
 	path := filepath.Join(dir, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err == nil {
@@ -596,6 +563,14 @@ func MutatingDanglingIntents(evs []TraceEvent, includeWorkerDelegations bool) []
 		out = append(out, DanglingIntent{ToolUseID: ev.ToolUseID, Kind: "tool", ToolName: name})
 	}
 	if includeWorkerDelegations {
+		// FIFO-per-type correlation (fix-round M2 direction note): a
+		// completion absorbs the OLDEST still-open start. SubagentStop input
+		// carries no tool_use id, so precise per-intent correlation is
+		// impossible with current hook payloads — the crash may be attributed
+		// to the WRONG worker identity (truth "A crashed, B completed" can
+		// mark B). The error direction is UNDER-MARKING a completed worker,
+		// never hiding the episode: the episode count and the recovery
+		// checkpoint remain correct, only the named id may differ.
 		var openWorkers []string
 		for _, ev := range evs {
 			switch ev.Type {
@@ -685,28 +660,78 @@ func ProbeEvidence(evs []TraceEvent, unknownID, probeID string, markingSeq int) 
 // whether its effect was REFUSED (sandbox proven at that point-in-time
 // moment). Writable/unproven return refused=false — an honest decline.
 func LatestSandboxProbe(evs []TraceEvent, beforeSeq int) (id string, refused bool, found bool) {
-	best := ""
-	bestRefused := false
+	id, _, effect, found := latestProbeBefore(evs, beforeSeq)
+	return id, effect == SandboxProbeRefused, found
+}
+
+// latestProbeBefore is the raw observation lookup under LatestSandboxProbe:
+// the newest tool.result carrying a sandbox_probe payload with seq < beforeSeq.
+func latestProbeBefore(evs []TraceEvent, beforeSeq int) (id string, seq int, effect string, found bool) {
 	for _, ev := range evs {
 		if ev.Type != EventToolResult {
 			continue
 		}
 		if beforeSeq > 0 && ev.Seq >= beforeSeq {
-			continue
+			continue // beforeSeq 0 = unbounded
 		}
 		m, _ := ev.Payload["sandbox_probe"].(map[string]interface{})
 		if m == nil {
 			continue
 		}
-		effect, _ := m["effect"].(string)
-		switch effect {
+		e, _ := m["effect"].(string)
+		switch e {
 		case SandboxProbeRefused, SandboxProbeWritable, SandboxProbeUnproven:
-			best = ev.ToolUseID
-			bestRefused = effect == SandboxProbeRefused
-			found = true
+			id, seq, effect, found = ev.ToolUseID, ev.Seq, e, true
 		}
 	}
-	return best, bestRefused, found
+	return id, seq, effect, found
+}
+
+// L2 pairing outcomes (fix-round M1 — per-admitted-check pairing).
+const (
+	PairingRefused  = "refused"  // fresh refused probe: the admission may proceed
+	PairingMissing  = "missing"  // no probe observation before the admission
+	PairingDeclined = "declined" // the paired probe was writable/unproven
+	PairingConsumed = "consumed" // the previous L2 admission already used this probe
+)
+
+// GateFutureSeq bounds "everything present is before the admission" for
+// gate-side pairing decisions (the admission under consideration is the NEXT
+// event; Seq values never approach this bound).
+const GateFutureSeq = 1 << 62
+
+// L2Pairing resolves the probe an L2 admission at admissionSeq pairs with,
+// ENFORCING the 1:1 alternation of fix-round M1: the admission's probe is
+// the LATEST observed in-band probe with seq < admissionSeq, and it must be
+// strictly NEWER than the probe paired by the PREVIOUS L2 admission (the
+// latest tool.started carrying l2_check with seq < admissionSeq). After an
+// admission consumes a probe, the next check needs a FRESH one — a probe at
+// seq 2 can never authorize a check at seq 1000 once any admission in
+// between paired it. The gate calls this with GateFutureSeq (the admission
+// is about to append); the completion join calls it with the admission's own
+// seq, verifying the pairing is THAT admission's probe.
+func L2Pairing(evs []TraceEvent, admissionSeq int) (string, string) {
+	curID, curSeq, curEffect, found := latestProbeBefore(evs, admissionSeq)
+	if !found {
+		return "", PairingMissing
+	}
+	if curEffect != SandboxProbeRefused {
+		return curID, PairingDeclined
+	}
+	prevAdmSeq := 0
+	for _, ev := range evs {
+		if ev.Type == EventToolStarted && ev.Seq < admissionSeq && ev.Seq > prevAdmSeq {
+			if _, isAdmission := ev.Payload["l2_check"]; isAdmission {
+				prevAdmSeq = ev.Seq
+			}
+		}
+	}
+	if prevAdmSeq > 0 {
+		if _, prevProbeSeq, _, ok := latestProbeBefore(evs, prevAdmSeq); ok && curSeq <= prevProbeSeq {
+			return curID, PairingConsumed
+		}
+	}
+	return curID, PairingRefused
 }
 
 // NewestCheckResult returns the newest check.result event naming a check id

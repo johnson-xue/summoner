@@ -382,6 +382,48 @@ func TestL2AdmissionRequiresPairedProbe(t *testing.T) {
 	wantExit2(t, code, stderr, "sandbox_unproven")
 }
 
+// TestL2PairingOneProbePerAdmission (fix-round M1): after an L2 admission
+// consumes a refused probe, the same check line without a FRESH probe is
+// denied (probe already consumed) — only a new refused probe re-opens
+// admission. A probe at seq 2 can never authorize a check at seq 1000 once
+// an admission in between paired it.
+func TestL2PairingOneProbePerAdmission(t *testing.T) {
+	useGateEnv(t)
+	writeLadderManifest(t, ladderCheck("unit", "go", []string{"test", "./..."}, "project"))
+	r := startFixRun(t, shared.BudgetLimits{})
+	acceptPhase(t, r, "diagnosis")
+
+	observeProbe(t, "run-1", "tu-q1", shared.SandboxProbeRefused)
+	if code, stderr := callGate(t, toolPayloadAt(t, "tu-c1", "Bash", bashInput("go test ./..."))); code != 0 {
+		t.Fatalf("first admitted execution exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// The same line again: the probe is CONSUMED by admission tu-c1 — denial
+	// names it, and a second BLOCKED check.result is traced.
+	code, stderr := callGate(t, toolPayloadAt(t, "tu-c2", "Bash", bashInput("go test ./...")))
+	wantExit2(t, code, stderr, "consumed")
+	for _, ev := range gateEventsOfType(t, "run-1", shared.EventCheckResult) {
+		if ev.ToolUseID == "tu-c2" && (ev.Payload["reason"] != "sandbox_unproven" || ev.Payload["status"] != "blocked") {
+			t.Fatalf("consumed denial check.result = %+v, want blocked/sandbox_unproven", ev.Payload)
+		}
+	}
+
+	// A FRESH refused probe re-opens admission.
+	observeProbe(t, "run-1", "tu-q2", shared.SandboxProbeRefused)
+	if code, stderr := callGate(t, toolPayloadAt(t, "tu-c3", "Bash", bashInput("go test ./..."))); code != 0 {
+		t.Fatalf("re-admitted after fresh probe exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	var binding map[string]interface{}
+	for _, ev := range readGateTrace(t, "run-1") {
+		if ev.Type == shared.EventToolStarted && ev.ToolUseID == "tu-c3" {
+			binding, _ = ev.Payload["l2_check"].(map[string]interface{})
+		}
+	}
+	if binding == nil || binding["check_id"] != "unit" {
+		t.Fatalf("re-admission binding = %+v, want unit", binding)
+	}
+}
+
 // TestL3NetworkCheckRefusedHonestly: a network-class registered check is
 // never executed — the refusal is a traced BLOCKED l3_unsupported.
 func TestL3NetworkCheckRefusedHonestly(t *testing.T) {

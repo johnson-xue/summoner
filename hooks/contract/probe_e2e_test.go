@@ -269,6 +269,175 @@ func TestEndToEndCheckLadder(t *testing.T) {
 	}
 }
 
+// TestProbeAdmissionExactSpellingEndToEnd (fix-round F1): the reviewer's
+// five forgery rows driven through the REAL binaries. Under the old
+// assignment-skipping suffix matcher, `HOME=<read-only dir>
+// "${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"` (and the env/
+// $HOME/~/any-dir variants) were admitted AS the probe channel, observed
+// "refused", and credited a `check.result {tier:"L2(basis:paired_probe@…)"}`.
+// Now every forged spelling is allowed only as an ordinary read — NO
+// sandbox_probe marker, so even a genuine adapter wrapper on stdout is never
+// observed, and the following L2 admission stays honestly BLOCKED. The
+// canonical literal (and the PluginRoot-resolved absolute twin) alone carry
+// the marker and open admission.
+func TestProbeAdmissionExactSpellingEndToEnd(t *testing.T) {
+	useContractEnv(t)
+	writeContractCheckManifest(t,
+		shared.CheckDef{CheckID: "unit", Command: "go", Args: []string{"test", "./..."}, Cwd: ".", Trust: "project"},
+	)
+	runID := "run-forge"
+	seedLiveRun(t, runID, "new")
+
+	// The "read-only dir" of the repro (mode-bit refusal; no sandbox needed).
+	ro := t.TempDir()
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o700) })
+	literal := `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`
+	// The adapter's genuine wrapper — what the forged runs print on stdout.
+	wrapper := `{"probe":"summoner-sandbox-probe/v1","effect":"refused","detail":"operation not permitted"}`
+
+	forged := []string{
+		`HOME=` + ro + ` ` + literal,
+		`env HOME=` + ro + ` ` + literal,
+		`"$HOME/planted/hooks/bin/summoner-sandbox-probe"`,
+		`"~/planted/hooks/bin/summoner-sandbox-probe"`,
+		`"` + ro + `/hooks/bin/summoner-sandbox-probe"`,
+	}
+	for i, cmd := range forged {
+		forgedTU := fmt.Sprintf("tu-f%d", i)
+		code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", forgedTU, map[string]interface{}{"command": cmd}), nil)
+		if code != 0 {
+			t.Fatalf("forged row %d (%q): gate exit = %d, want 0 — an ordinary read is allowed (stderr: %q)", i, cmd, code, stderr)
+		}
+		// The command "ran" and the wrapper landed on stdout — but the call
+		// was never the probe channel: no marker, no observation.
+		bashResultViaPostToolUse(t, forgedTU, cmd, wrapper, nil)
+		for _, ev := range eventsOfType(allTraceEvents(t), shared.EventToolResult) {
+			if ev.ToolUseID == forgedTU {
+				if _, has := ev.Payload["sandbox_probe"]; has {
+					t.Fatalf("forged row %d (%q): a sandbox_probe observation was recorded — the stamp must be denied", i, cmd)
+				}
+			}
+		}
+		// End-to-end denial: the L2 line stays honestly BLOCKED — no probe
+		// observation exists to pair with, so no credit can arise.
+		code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", fmt.Sprintf("tu-c%d", i), map[string]interface{}{"command": "go test ./..."}), nil)
+		if code != 2 || !strings.Contains(stderr, "sandbox_unproven") {
+			t.Fatalf("forged row %d: L2 admission exit %d stderr %q, want exit 2 / sandbox_unproven (the forged proof bought nothing)", i, code, stderr)
+		}
+	}
+
+	// Acceptance twin 1 — the canonical literal: marker stamped, observation
+	// lands, the L2 line is admitted (credit flows only through this door).
+	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-q-ok", map[string]interface{}{"command": literal}), nil)
+	if code != 0 {
+		t.Fatalf("canonical literal exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	marked := false
+	for _, ev := range eventsOfType(allTraceEvents(t), shared.EventToolStarted) {
+		if ev.ToolUseID == "tu-q-ok" && ev.Payload["sandbox_probe"] == "v1" {
+			marked = true
+		}
+	}
+	if !marked {
+		t.Fatal("the canonical literal invocation must carry the sandbox_probe marker")
+	}
+	bashResultViaPostToolUse(t, "tu-q-ok", literal, wrapper, nil)
+	for _, ev := range eventsOfType(allTraceEvents(t), shared.EventToolResult) {
+		if ev.ToolUseID == "tu-q-ok" {
+			if m, _ := ev.Payload["sandbox_probe"].(map[string]interface{}); m["effect"] != shared.SandboxProbeRefused {
+				t.Fatalf("canonical literal observation = %+v, want refused", m)
+			}
+		}
+	}
+	if code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-c-ok", map[string]interface{}{"command": "go test ./..."}), nil); code != 0 {
+		t.Fatalf("L2 admission after the canonical probe: exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// Acceptance twin 2 — the PluginRoot-RESOLVED absolute form (derived from
+	// the hook binary's own environment, never from the Bash input): with the
+	// plugin root pinned in the subprocess env, exactly that path is stamped.
+	root := t.TempDir()
+	resolved := root + "/hooks/bin/summoner-sandbox-probe"
+	if code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-q-res", map[string]interface{}{"command": `"` + resolved + `"`}), map[string]string{"CLAUDE_PLUGIN_ROOT": root}); code != 0 {
+		t.Fatalf("resolved twin exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	marked = false
+	for _, ev := range eventsOfType(allTraceEvents(t), shared.EventToolStarted) {
+		if ev.ToolUseID == "tu-q-res" && ev.Payload["sandbox_probe"] == "v1" {
+			marked = true
+		}
+	}
+	if !marked {
+		t.Fatal("the PluginRoot-resolved absolute twin must carry the sandbox_probe marker")
+	}
+	// A DIFFERENT directory's absolute path is not the twin.
+	if code, _, _ = runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-q-oth", map[string]interface{}{"command": `"` + ro + `/hooks/bin/summoner-sandbox-probe"`}), map[string]string{"CLAUDE_PLUGIN_ROOT": root}); code != 0 {
+		t.Fatalf("foreign absolute path exit = %d, want 0 (ordinary read — allowed, unmarked)", code)
+	}
+	for _, ev := range eventsOfType(allTraceEvents(t), shared.EventToolStarted) {
+		if ev.ToolUseID == "tu-q-oth" {
+			if _, has := ev.Payload["sandbox_probe"]; has {
+				t.Fatal("a foreign absolute path must never carry the sandbox_probe marker")
+			}
+		}
+	}
+}
+
+// TestL2PairingAlternationEndToEnd (fix-round M1): through the real
+// binaries, an admitted check consumes its probe — an immediate second
+// execution of the same line is honestly BLOCKED (probe consumed), and only
+// a fresh refused probe re-opens admission.
+func TestL2PairingAlternationEndToEnd(t *testing.T) {
+	useContractEnv(t)
+	writeContractCheckManifest(t,
+		shared.CheckDef{CheckID: "unit", Command: "go", Args: []string{"test", "./..."}, Cwd: ".", Trust: "project"},
+	)
+	runID := "run-alt"
+	seedLiveRun(t, runID, "new")
+	probeCmd := `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`
+	wrapper := `{"probe":"summoner-sandbox-probe/v1","effect":"refused","detail":"operation not permitted"}`
+
+	// Probe + first admitted execution.
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-q1", map[string]interface{}{"command": probeCmd}), nil); code != 0 {
+		t.Fatalf("probe exit = %d (stderr: %q)", code, stderr)
+	}
+	bashResultViaPostToolUse(t, "tu-q1", probeCmd, wrapper, nil)
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-c1", map[string]interface{}{"command": "go test ./..."}), nil); code != 0 {
+		t.Fatalf("first execution exit = %d (stderr: %q)", code, stderr)
+	}
+	exit := 0
+	bashResultViaPostToolUse(t, "tu-c1", "go test ./...", "ok", &exit)
+
+	// The immediate encore: BLOCKED, the probe is consumed.
+	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-c2", map[string]interface{}{"command": "go test ./..."}), nil)
+	if code != 2 || !strings.Contains(stderr, "consumed") {
+		t.Fatalf("encore execution: exit %d stderr %q, want exit 2 naming the consumed probe", code, stderr)
+	}
+
+	// Fresh probe → admission re-opens; the tier names the NEW probe.
+	if code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-q2", map[string]interface{}{"command": probeCmd}), nil); code != 0 {
+		t.Fatalf("second probe exit = %d (stderr: %q)", code, stderr)
+	}
+	bashResultViaPostToolUse(t, "tu-q2", probeCmd, wrapper, nil)
+	if code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-c3", map[string]interface{}{"command": "go test ./..."}), nil); code != 0 {
+		t.Fatalf("re-admitted execution exit = %d (stderr: %q)", code, stderr)
+	}
+	bashResultViaPostToolUse(t, "tu-c3", "go test ./...", "ok", &exit)
+	wantTier := "L2(basis:paired_probe@tu-q2, point-in-time)"
+	gotTier := ""
+	for _, ev := range eventsOfType(allTraceEvents(t), shared.EventCheckResult) {
+		if ev.ToolUseID == "tu-c3" && ev.Payload["status"] == shared.CheckStatusPass {
+			gotTier, _ = ev.Payload["tier"].(string)
+		}
+	}
+	if gotTier != wantTier {
+		t.Fatalf("second execution tier = %q, want %q (the admission's OWN fresh probe)", gotTier, wantTier)
+	}
+}
+
 // TestSandboxProbeAdapterBinary: the adapter prints exactly one parseable
 // wrapper, always exits 0, never leaves its fresh file behind, and classifies
 // a read-only HOME as refused (the write the sandbox must refuse).

@@ -208,26 +208,214 @@ func TestIsNetworkCheckCommand(t *testing.T) {
 
 // --- sandbox-probe invocation + wrapper ------------------------------------------
 
-func TestIsSandboxProbeInvocationAnchoredOnly(t *testing.T) {
+// usePluginRootEnv pins PluginRoot() for resolved-twin admission rows.
+func usePluginRootEnv(t *testing.T, root string) {
+	t.Helper()
+	old, had := os.LookupEnv("CLAUDE_PLUGIN_ROOT")
+	if err := os.Setenv("CLAUDE_PLUGIN_ROOT", root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("CLAUDE_PLUGIN_ROOT", old)
+		} else {
+			os.Unsetenv("CLAUDE_PLUGIN_ROOT")
+		}
+	})
+}
+
+// TestIsSandboxProbeInvocationExactSpelling (fix-round F1): admission is
+// BYTE equality against the one quoted literal the docs instruct (plus the
+// plugin-root-resolved absolute twin derived from the hook's own
+// environment/ binary location — never from the Bash input). The reviewer's
+// five forgery rows — HOME= prefix, env HOME=, $HOME/planted, ~/planted,
+// any-directory suffix — must all be NON-matching: under the old
+// assignment-skipping suffix matcher each of them could point the probe's
+// own HOME at a read-only directory and forge a "refused" observation on an
+// unsandboxed host.
+func TestIsSandboxProbeInvocationExactSpelling(t *testing.T) {
+	root := "/plg/root"
+	usePluginRootEnv(t, root)
+	resolved := root + "/hooks/bin/summoner-sandbox-probe"
 	for _, ok := range []string{
-		`"/root/hooks/bin/summoner-sandbox-probe"`,
-		"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe",
+		`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`, // the canonical literal
+		resolved,             // resolved absolute twin (unquoted)
+		`"` + resolved + `"`, // resolved absolute twin (quoted)
 	} {
 		if !IsSandboxProbeInvocation(ok) {
-			t.Errorf("IsSandboxProbeInvocation(%q) = false, want true (anchored plugin-bin form)", ok)
+			t.Errorf("IsSandboxProbeInvocation(%q) = false, want true (exact admitted spelling)", ok)
 		}
 	}
+	ro := "/some/read-only-dir"
 	for _, bad := range []string{
-		"summoner-sandbox-probe",                       // bare: PATH-shadowable, never the probe channel
-		"./summoner-sandbox-probe",                     // relative shadow
-		"/usr/local/bin/summoner-sandbox-probe",        // foreign directory prefix
-		"/root/hooks/bin/summoner-sandbox-probe extra", // operands break the fixed shape
-		"/root/hooks/bin/summoner-sandbox-probe; id",
-		"/root/hooks/bin/summoner-sandbox-probe > out", // a redirect is not the probe channel
+		// Forgery row 1: env assignment prefix re-points the probe's HOME.
+		`HOME=` + ro + ` "${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`,
+		// Forgery row 2: env(1) wrapper re-points HOME.
+		`env HOME=` + ro + ` "${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`,
+		// Forgery row 3: $HOME-relative planted path.
+		`"$HOME/planted/hooks/bin/summoner-sandbox-probe"`,
+		// Forgery row 4: tilde-relative planted path.
+		`"~/planted/hooks/bin/summoner-sandbox-probe"`,
+		// Forgery row 5: any-directory suffix match.
+		`"` + ro + `/hooks/bin/summoner-sandbox-probe"`,
+		`/any/where/hooks/bin/summoner-sandbox-probe`,
+		// Near-misses of the literal: one byte off is a different command.
+		`${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe`, // unquoted
+		`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe" `,
+		`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe" --home x`,
+		`'${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe'`, // single quotes
+		// Resolved-twin near-misses.
+		resolved + `; id`,
+		`env ` + resolved,
+		// Classic shadows.
+		"summoner-sandbox-probe",                // bare: PATH-shadowable
+		"./summoner-sandbox-probe",              // relative shadow
+		"/usr/local/bin/summoner-sandbox-probe", // foreign directory
 	} {
 		if IsSandboxProbeInvocation(bad) {
-			t.Errorf("IsSandboxProbeInvocation(%q) = true, want false", bad)
+			t.Errorf("IsSandboxProbeInvocation(%q) = true, want false (ordinary Bash, no probe stamp)", bad)
 		}
+	}
+	// A DIFFERENT plugin root resolves to a different twin — still exact.
+	usePluginRootEnv(t, "/other/root")
+	if IsSandboxProbeInvocation(resolved) {
+		t.Errorf("stale resolved twin %q must not admit once PluginRoot changes", resolved)
+	}
+	if !IsSandboxProbeInvocation("/other/root/hooks/bin/summoner-sandbox-probe") {
+		t.Error("the current PluginRoot's resolved twin must admit")
+	}
+}
+
+// TestRunSandboxProbeEffects (fix-round F2): the probe core's effect
+// classification and hygiene, exercised on directories the test creates.
+func TestRunSandboxProbeEffects(t *testing.T) {
+	// Writable: fresh write succeeds, only the probe's own file is removed.
+	writable := t.TempDir()
+	if got := RunSandboxProbe(writable); got.Effect != SandboxProbeWritable {
+		t.Fatalf("writable dir = %+v, want writable", got)
+	}
+	if entries, err := os.ReadDir(writable); err != nil || len(entries) != 0 {
+		t.Fatalf("writable probe left %d entries (%v), want none", len(entries), err)
+	}
+	// A pre-existing UNRELATED file is never touched.
+	precious := filepath.Join(writable, "keep-me")
+	if err := os.WriteFile(precious, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := RunSandboxProbe(writable); got.Effect != SandboxProbeWritable {
+		t.Fatalf("writable dir with content = %+v, want writable", got)
+	}
+	if b, err := os.ReadFile(precious); err != nil || string(b) != "keep" {
+		t.Fatalf("pre-existing file disturbed: %q (%v)", string(b), err)
+	}
+
+	// Mode-0555 directory → the fresh write is refused (EACCES). Under root
+	// DAC is bypassed and the write succeeds — both branches are the
+	// classifier's correct behavior, asserted, never skipped.
+	ro := t.TempDir()
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o700) })
+	got := RunSandboxProbe(ro)
+	if os.Geteuid() == 0 {
+		if got.Effect != SandboxProbeWritable {
+			t.Fatalf("root on 0555 dir = %+v, want writable (root bypasses DAC)", got)
+		}
+	} else if got.Effect != SandboxProbeRefused {
+		t.Fatalf("0555 dir = %+v, want refused", got)
+	}
+
+	// Missing directory (ENOENT) → unproven, never a refusal claim.
+	if got := RunSandboxProbe(filepath.Join(t.TempDir(), "gone")); got.Effect != SandboxProbeUnproven {
+		t.Fatalf("missing dir = %+v, want unproven", got)
+	}
+	// Path under a regular FILE (ENOTDIR) → unproven.
+	notdir := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(notdir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := RunSandboxProbe(filepath.Join(notdir, "probe")); got.Effect != SandboxProbeUnproven {
+		t.Fatalf("ENOTDIR = %+v, want unproven", got)
+	}
+}
+
+// TestProbeAtNeverTouchesExistingFile (fix-round F2): the O_EXCL core — a
+// file already sitting at the probe's would-be name is never opened,
+// overwritten or removed; the collision is an honest unproven.
+func TestProbeAtNeverTouchesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	const name = ".summoner-sandbox-probe-collide"
+	seed := filepath.Join(dir, name)
+	if err := os.WriteFile(seed, []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeAt(dir, name); got.Effect != SandboxProbeUnproven {
+		t.Fatalf("name collision = %+v, want unproven (O_EXCL refusal is not a sandbox claim)", got)
+	}
+	if b, err := os.ReadFile(seed); err != nil || string(b) != "precious" {
+		t.Fatalf("colliding file disturbed: %q (%v)", string(b), err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("probe dir now holds %d entries (%v), want exactly the seed", len(entries), err)
+	}
+}
+
+// TestL2PairingOneProbePerAdmission (fix-round M1): the pairing is strictly
+// 1:1 — an admission's probe is the latest observation before it, and it
+// must be strictly NEWER than the probe the PREVIOUS admission consumed.
+func TestL2PairingOneProbePerAdmission(t *testing.T) {
+	probeObs := func(id string, seq int, effect string) TraceEvent {
+		return scanEvent(EventToolResult, id, seq, map[string]interface{}{"sandbox_probe": map[string]interface{}{"effect": effect}})
+	}
+	l2Adm := func(id string, seq int) TraceEvent {
+		return scanEvent(EventToolStarted, id, seq, map[string]interface{}{
+			"tool_name": "Bash", "read_class": true,
+			"l2_check": map[string]interface{}{"check_id": "unit", "digest": "d"}})
+	}
+	evs := []TraceEvent{
+		probeObs("q1", 3, SandboxProbeRefused),
+		l2Adm("c1", 5), // admission #1 pairs q1
+		probeObs("q2", 9, SandboxProbeRefused),
+		l2Adm("c2", 11), // admission #2 pairs q2
+	}
+	// Join-side: each admission finds its OWN probe.
+	if id, out := L2Pairing(evs, 5); out != PairingRefused || id != "q1" {
+		t.Errorf("admission #1 pairing = (%q, %q), want (q1, refused)", id, out)
+	}
+	if id, out := L2Pairing(evs, 11); out != PairingRefused || id != "q2" {
+		t.Errorf("admission #2 pairing = (%q, %q), want (q2, refused)", id, out)
+	}
+	// Gate-side (admission is the NEXT event): after admission #1 consumed
+	// q1, re-using q1 is CONSUMED; only after the fresh q2 does it clear.
+	if id, out := L2Pairing(evs[:2], GateFutureSeq); out != PairingConsumed || id != "q1" {
+		t.Errorf("post-admission reuse = (%q, %q), want (q1, consumed)", id, out)
+	}
+	if id, out := L2Pairing(evs[:3], GateFutureSeq); out != PairingRefused || id != "q2" {
+		t.Errorf("fresh probe after admission = (%q, %q), want (q2, refused)", id, out)
+	}
+	// No probe at all → missing.
+	if _, out := L2Pairing([]TraceEvent{l2Adm("c0", 2)}, GateFutureSeq); out != PairingMissing {
+		t.Errorf("no probe = %q, want missing", out)
+	}
+	// Latest probe not refused → declined.
+	if _, out := L2Pairing([]TraceEvent{probeObs("q0", 2, SandboxProbeWritable)}, GateFutureSeq); out != PairingDeclined {
+		t.Errorf("writable probe = %q, want declined", out)
+	}
+}
+
+// TestL1PerCheckDeadline (fix-round M3): the per-check budget is ENFORCED —
+// an op whose deadline has passed is blocked without credit, even with the
+// aggregate budget still open.
+func TestL1PerCheckDeadline(t *testing.T) {
+	dir := useCheckrunEnv(t)
+	writeFile(t, filepath.Join(dir, "f.txt"), "needle")
+	def := l1Def(CheckOpFileContains, "f.txt", "needle")
+	if got := runL1Op(def, time.Now().Add(-time.Second)); got.Status != CheckStatusBlocked || !strings.Contains(got.Reason, "l1_deadline_exceeded") {
+		t.Errorf("expired per-check deadline = %+v, want blocked l1_deadline_exceeded", got)
+	}
+	if got := runL1Op(def, time.Now().Add(time.Minute)); got.Status != CheckStatusPass {
+		t.Errorf("live per-check deadline = %+v, want pass", got)
 	}
 }
 

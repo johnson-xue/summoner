@@ -220,24 +220,36 @@ spec §3). Checks may be cited at phase-submit as `check://<check_id>`.
   `framework` trust is BLOCKED unexecuted.
 - **L2 `trust: project`** — the model runs the EXACT registered line
   (`command` + `args`, byte-exact) as an ordinary Bash call. The gate admits
-  that line only when it is read-class AND the LATEST in-band sandbox probe
-  refused its fresh HOME write; `posttooluse` re-verifies definition digest,
-  exact line and pairing before writing `check.result`. A pass carries the
-  tier `L2(basis:paired_probe@<probe-id>, point-in-time)` — sandbox proof is
-  observational and time-scoped, never a standing property. No/declined
-  probe → honest BLOCKED `sandbox_unproven`; definition drift → BLOCKED
-  `definition_changed`; unobservable exit → BLOCKED. Never a pass without
-  the pairing.
+  that line only when it is read-class AND it can PAIR with a refused in-band
+  sandbox probe: strictly one fresh probe per admitted check (the probe must
+  be the latest observation and strictly newer than the probe the PREVIOUS L2
+  admission consumed — after every admission a fresh probe is required; a
+  probe at seq 2 never authorizes a check at seq 1000). `posttooluse`
+  re-verifies definition digest, exact line and the admission's OWN probe
+  before writing `check.result`. A pass carries the tier
+  `L2(basis:paired_probe@<probe-id>, point-in-time)` — sandbox proof is
+  observational and time-scoped, never a standing property. No/declined/
+  consumed probe → honest BLOCKED `sandbox_unproven`; definition drift →
+  BLOCKED `definition_changed`; unobservable exit → BLOCKED. Never a pass
+  without the pairing.
 - **L3 network-class** — network commands are NEVER run by the framework:
   exit 2 with a traced BLOCKED `l3_unsupported`. A network check can never
   earn citation credit; drop the ref.
 
-The in-band probe is `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`
-(invoked exactly like that, no operands): it attempts one fresh-exclusive
-write in `$HOME` (never overwriting or removing an existing file), classifies
-refusal conservatively (EPERM/EACCES/EROFS), always exits 0, and prints a
-wrapper line the posttooluse hook observes ONLY on the gate-marked probe
-call — a forged wrapper line in ordinary command output is never observed.
+The in-band probe is `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`.
+Admission of the invocation is BYTE EXACT: the full quoted literal above, or
+the plugin-root-resolved absolute twin
+(`<pluginroot>/hooks/bin/summoner-sandbox-probe`, derived from the hook
+binary's own environment or executable location — never from the Bash
+input). Any other spelling — a
+leading `HOME=…`/`env HOME=…` assignment, a `$HOME`/`~` relative path, a
+foreign directory, an operand, a one-byte difference — is judged as ordinary
+Bash and can never produce a probe observation. The adapter attempts one
+fresh-exclusive write in `$HOME` (O_EXCL: an existing file is never
+overwritten or removed), classifies refusal conservatively
+(EPERM/EACCES/EROFS), always exits 0, and prints a wrapper line the
+posttooluse hook observes ONLY on the gate-marked probe call — a forged
+wrapper line in ordinary command output is never observed.
 
 Citation rules at phase-submit: L1 refs re-run in-gate; an L2 ref needs the
 NEWEST observed result for that id to be a PASS under the CURRENT recomputed

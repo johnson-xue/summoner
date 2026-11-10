@@ -177,7 +177,19 @@ func TestL2CheckResultWrittenOnCompletion(t *testing.T) {
 		t.Fatalf("digest = %v, want the current registry digest", res["digest"])
 	}
 
-	// Failing execution: status fail + the failed-check budget ticks.
+	// Failing execution: status fail + the failed-check budget ticks. Fix-
+	// round M1: the previous admission consumed tu-q1, so this execution
+	// needs its OWN fresh refused probe first (the pairing is 1:1).
+	appendPostEvent(t, shared.TraceEvent{
+		Type:      shared.EventToolStarted,
+		ToolUseID: "tu-q2",
+		Payload:   map[string]interface{}{"tool_name": "Bash", "read_class": true, "sandbox_probe": "v1"},
+	})
+	appendPostEvent(t, shared.TraceEvent{
+		Type:      shared.EventToolResult,
+		ToolUseID: "tu-q2",
+		Payload:   map[string]interface{}{"sandbox_probe": map[string]interface{}{"effect": shared.SandboxProbeRefused}},
+	})
 	admittedL2(t, "tu-c2", def)
 	if code, stderr := callHook(t, postUsePayload(t, "Bash", "tu-c2",
 		map[string]interface{}{"command": "go test ./..."},
@@ -191,7 +203,18 @@ func TestL2CheckResultWrittenOnCompletion(t *testing.T) {
 		t.Fatalf("FailedChecks = %d, want 1 (a failing L2 execution ticks the budget)", got)
 	}
 
-	// Unobservable exit: honest BLOCKED, no budget tick, no tier claim.
+	// Unobservable exit: honest BLOCKED, no budget tick, no tier claim. Needs
+	// its own fresh probe — admission tu-c2 consumed tu-q2 (pairing is 1:1).
+	appendPostEvent(t, shared.TraceEvent{
+		Type:      shared.EventToolStarted,
+		ToolUseID: "tu-q3",
+		Payload:   map[string]interface{}{"tool_name": "Bash", "read_class": true, "sandbox_probe": "v1"},
+	})
+	appendPostEvent(t, shared.TraceEvent{
+		Type:      shared.EventToolResult,
+		ToolUseID: "tu-q3",
+		Payload:   map[string]interface{}{"sandbox_probe": map[string]interface{}{"effect": shared.SandboxProbeRefused}},
+	})
 	admittedL2(t, "tu-c3", def)
 	if code, stderr := callHook(t, postUsePayload(t, "Bash", "tu-c3",
 		map[string]interface{}{"command": "go test ./..."},
@@ -225,6 +248,44 @@ func TestL2CheckResultBlockedWithoutPairing(t *testing.T) {
 	}
 	if res := checkResultOf(t, "tu-c1"); res["status"] != shared.CheckStatusBlocked || res["reason"] != "sandbox_unproven" {
 		t.Fatalf("unpaired result = %+v, want blocked/sandbox_unproven", res)
+	}
+}
+
+// TestL2JoinRejectsConsumedProbe (fix-round M1): the completion join verifies
+// the admission's OWN probe. A second admitted execution trying to ride the
+// probe the FIRST admission consumed — even with exit 0 and every other
+// binding intact — is an honest BLOCKED sandbox_unproven, never a pass.
+func TestL2JoinRejectsConsumedProbe(t *testing.T) {
+	useHookEnv(t)
+	def := writePostManifest(t, "unit", "go", []string{"test", "./..."})
+	startRun(t)
+	appendPostEvent(t, shared.TraceEvent{
+		Type:      shared.EventToolStarted,
+		ToolUseID: "tu-q1",
+		Payload:   map[string]interface{}{"tool_name": "Bash", "read_class": true, "sandbox_probe": "v1"},
+	})
+	appendPostEvent(t, shared.TraceEvent{
+		Type:      shared.EventToolResult,
+		ToolUseID: "tu-q1",
+		Payload:   map[string]interface{}{"sandbox_probe": map[string]interface{}{"effect": shared.SandboxProbeRefused}},
+	})
+	// First admission consumes tu-q1; the forged/incoherent trace under test
+	// appends a SECOND admission with no fresh probe between them.
+	admittedL2(t, "tu-c1", def)
+	admittedL2(t, "tu-c2", def)
+	if code, stderr := callHook(t, postUsePayload(t, "Bash", "tu-c2",
+		map[string]interface{}{"command": "go test ./..."},
+		map[string]interface{}{"stdout": "ok", "exit_code": 0})); code != 0 {
+		t.Fatalf("exit = %d (stderr: %q)", code, stderr)
+	}
+	if res := checkResultOf(t, "tu-c2"); res["status"] != shared.CheckStatusBlocked || res["reason"] != "sandbox_unproven" {
+		t.Fatalf("consumed-probe result = %+v, want blocked/sandbox_unproven (one probe per admitted check)", res)
+	}
+	if _, has := checkResultOf(t, "tu-c2")["tier"]; has {
+		t.Fatal("a consumed-probe BLOCKED must never claim a tier")
+	}
+	if got := reloadHookRun(t).Counters.FailedChecks; got != 0 {
+		t.Fatalf("FailedChecks = %d, want 0 (BLOCKED never ticks)", got)
 	}
 }
 
