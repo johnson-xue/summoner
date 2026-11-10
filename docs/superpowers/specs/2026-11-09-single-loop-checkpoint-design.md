@@ -98,7 +98,7 @@
 - **薄入口原则**：`/summoner:*` 命令定目标、选能力、管闭环；方法论正文一律由所选 provider skill 承载。Summoner 不新增与现成 skills 重复的方法论 skill。
 - **capability→provider 唯一主选**：manifest 中每个能力恰好一个 `default` provider，其余显式标 `alternate`——不并列默认，消除自动触发竞争。roster 大而全的推荐清单随之收敛。
 - **平台事实**：插件 skills 有命名空间，同名不互斥、可同时加载；语义重叠必须由路由层（manifest）裁决，不能指望平台名称优先级自动去重。
-- **触发面收缩**：内部辅助 skill（phase-submit 等）`disable-model-invocation: true`；对外 skill 描述写精确触发条件。
+- **触发面收缩**：内部辅助 skill（phase-submit 等）`user-invocable: false`（2026-11-10 平台事实验证修正：`disable-model-invocation: true` 会让平台直接拦截模型的 Skill 调用——而 phase-submit 等恰是模型的提交/变更通道；`user-invocable: false` 隐藏用户菜单、保留模型调用、description 常驻上下文，配合精确 description 防自动触发竞争）；对外 skill 描述写精确触发条件。
 - **去重审计交付物**：`references/capability-map.md`——能力 | 主选 provider | 被删除的 Summoner 重复实现 | 触发措辞。可用使用信号（如 skill_activated 遥测，可选）复核：未观测到使用的推荐项降级或移除。
 - **review/ship 边界成文**：review 回答「这份变更有哪些问题」，ship 回答「能否发布」；ship 引用 review/验证证据做 GO/NO-GO 决策，不重复同一审查。
 
