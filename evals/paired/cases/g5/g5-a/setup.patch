@@ -1,6 +1,5 @@
-diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
---- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers.go	2026-11-10 16:52:54
+--- a/repo/internal/api/handlers.go
++++ b/repo/internal/api/handlers.go
 @@ -3,6 +3,7 @@
  package api
  
@@ -9,15 +8,15 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
  	"io"
  	"log"
  	"os"
-@@ -49,6 +50,44 @@
- 		}
- 	}
+@@ -51,6 +52,46 @@
  	return out, nil
-+}
-+
+ }
+ 
 +// Page is a pagination window for the query APIs.
 +type Page struct {
-+	Limit  int
++	// Limit is the maximum result count; valid values are 1..MaxPageLimit.
++	Limit int
++	// Offset skips this many matching items; negative values clamp to zero.
 +	Offset int
 +}
 +
@@ -51,12 +50,13 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
 +		end = len(all)
 +	}
 +	return all[p.Offset:end], nil
- }
- 
++}
++
  // ExportReport renders and writes a report file under dir, returning
-diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/handlers_test.go
---- orig/repo/internal/api/handlers_test.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers_test.go	2026-11-10 16:52:54
+ // the written path. All exports must go through report.Export (C1).
+ func (s *Service) ExportReport(dir, filename string) (string, error) {
+--- a/repo/internal/api/handlers_test.go
++++ b/repo/internal/api/handlers_test.go
 @@ -76,3 +76,46 @@
  		t.Fatalf("unknown accessor must error (C6)")
  	}
@@ -104,9 +104,8 @@ diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/
 +		}
 +	}
 +}
-diff --color -ruN orig/repo/self-report.md new/repo/self-report.md
---- orig/repo/self-report.md	1970-01-01 08:00:00
-+++ new/repo/self-report.md	2026-11-10 16:52:54
+--- a/repo/self-report.md
++++ b/repo/self-report.md
 @@ -0,0 +1,21 @@
 +# 分页查询交付自检报告（QueryItemsPage）
 +

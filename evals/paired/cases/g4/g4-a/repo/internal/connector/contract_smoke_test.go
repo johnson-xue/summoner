@@ -22,3 +22,13 @@ func TestSmokeInstantiate(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistryDefaultsAreConfigured catches registration of zero-value
+// connectors that bypass their configured constructors.
+func TestRegistryDefaultsAreConfigured(t *testing.T) {
+	for _, c := range All() {
+		if c.MaxRetries() < 1 || c.Backoff(1) <= 0 {
+			t.Fatalf("%s: inactive defaults, budget=%d first=%v", c.Name(), c.MaxRetries(), c.Backoff(1))
+		}
+	}
+}

@@ -1,10 +1,48 @@
-diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
---- orig/repo/internal/api/handlers.go	2026-11-10 16:38:15
-+++ new/repo/internal/api/handlers.go	2026-11-10 16:52:54
-@@ -3,9 +3,12 @@
+--- a/repo/internal/api/csv_records_test.go
++++ b/repo/internal/api/csv_records_test.go
+@@ -0,0 +1,35 @@
++package api
++
++import (
++	"encoding/csv"
++	"os"
++	"strings"
++	"testing"
++
++	"inventoryd/internal/store"
++)
++
++// TestExportOwnerCSVEscapesRecords catches raw comma/newline/quote
++// joining independently of the filename-policy audit.
++func TestExportOwnerCSVEscapesRecords(t *testing.T) {
++	svc := NewService(store.New(), quietLogger())
++	const name = "bolt,\"large\"\nsteel"
++	if _, err := svc.CreateItem(store.Item{ID: "A", Name: name, Stock: 3, OwnerEmail: "ops@example.invalid"}); err != nil {
++		t.Fatal(err)
++	}
++	path, err := svc.ExportOwnerCSV(t.TempDir(), "stock.csv", "ops@example.invalid")
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	records, err := csv.NewReader(strings.NewReader(string(b))).ReadAll()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(records) != 2 || len(records[1]) != 3 || records[1][1] != name || records[1][2] != "3" {
++		t.Fatalf("CSV roundtrip = %#v", records)
++	}
++}
+--- a/repo/internal/api/handlers.go
++++ b/repo/internal/api/handlers.go
+@@ -3,9 +3,13 @@
  package api
  
  import (
++	"encoding/csv"
 +	"fmt"
  	"io"
  	"log"
@@ -14,19 +52,15 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
  	"strings"
  
  	"inventoryd/internal/report"
-@@ -45,6 +48,78 @@
- 	needle := strings.ToLower(q)
- 	for _, it := range s.St.List() {
- 		if needle == "" || strings.Contains(strings.ToLower(it.Name), needle) {
-+			out = append(out, it)
-+		}
-+	}
-+	return out, nil
-+}
-+
+@@ -51,6 +55,84 @@
+ 	return out, nil
+ }
+ 
 +// Page is a pagination window for the query APIs.
 +type Page struct {
-+	Limit  int
++	// Limit is the maximum result count; valid values are 1..MaxPageLimit.
++	Limit int
++	// Offset skips this many matching items; negative values clamp to zero.
 +	Offset int
 +}
 +
@@ -68,19 +102,23 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
 +	if err := os.MkdirAll(dir, 0o755); err != nil {
 +		return "", err
 +	}
-+	path := filepath.Join(dir, filename)
-+	f, err := os.Create(path)
-+	if err != nil {
-+		return "", err
-+	}
-+	defer f.Close()
-+	if _, err := f.WriteString("id,name,stock\n"); err != nil {
++	var b strings.Builder
++	w := csv.NewWriter(&b)
++	if err := w.Write([]string{"id", "name", "stock"}); err != nil {
 +		return "", err
 +	}
 +	for _, it := range items {
-+		if _, err := f.WriteString(it.ID + "," + it.Name + "," + strconv.Itoa(it.Stock) + "\n"); err != nil {
++		if err := w.Write([]string{it.ID, it.Name, strconv.Itoa(it.Stock)}); err != nil {
 +			return "", err
 +		}
++	}
++	w.Flush()
++	if err := w.Error(); err != nil {
++		return "", err
++	}
++	path := filepath.Join(dir, filename)
++	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
++		return "", err
 +	}
 +	return path, nil
 +}
@@ -90,12 +128,17 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
 +	var out []store.Item
 +	for _, it := range s.St.List() {
 +		if strings.EqualFold(it.OwnerEmail, email) {
- 			out = append(out, it)
- 		}
- 	}
-diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/handlers_test.go
---- orig/repo/internal/api/handlers_test.go	2026-11-10 16:38:15
-+++ new/repo/internal/api/handlers_test.go	2026-11-10 16:52:54
++			out = append(out, it)
++		}
++	}
++	return out, nil
++}
++
+ // ExportReport renders and writes a report file under dir, returning
+ // the written path. All exports must go through report.Export (C1).
+ func (s *Service) ExportReport(dir, filename string) (string, error) {
+--- a/repo/internal/api/handlers_test.go
++++ b/repo/internal/api/handlers_test.go
 @@ -76,3 +76,26 @@
  		t.Fatalf("unknown accessor must error (C6)")
  	}
@@ -123,9 +166,8 @@ diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/
 +		t.Fatalf("owner csv = %q, %v", b, err)
 +	}
 +}
-diff --color -ruN orig/repo/self-report.md new/repo/self-report.md
---- orig/repo/self-report.md	1970-01-01 08:00:00
-+++ new/repo/self-report.md	2026-11-10 16:52:54
+--- a/repo/self-report.md
++++ b/repo/self-report.md
 @@ -0,0 +1,19 @@
 +# 分页 + 货主导出交付自检报告
 +

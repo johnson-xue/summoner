@@ -1,7 +1,48 @@
-diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
---- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers.go	2026-11-10 16:42:57
-@@ -6,6 +6,7 @@
+--- a/repo/internal/api/csv_records_test.go
++++ b/repo/internal/api/csv_records_test.go
+@@ -0,0 +1,35 @@
++package api
++
++import (
++	"encoding/csv"
++	"os"
++	"strings"
++	"testing"
++
++	"inventoryd/internal/store"
++)
++
++// TestExportCSVEscapesRecords catches raw comma/newline/quote joining:
++// valid item names must round-trip as a single CSV field.
++func TestExportCSVEscapesRecords(t *testing.T) {
++	svc := NewService(store.New(), quietLogger())
++	const name = "bolt,\"large\"\nsteel"
++	if _, err := svc.CreateItem(store.Item{ID: "A", Name: name, Stock: 3}); err != nil {
++		t.Fatal(err)
++	}
++	path, err := svc.ExportCSV(t.TempDir(), "stock.csv")
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	records, err := csv.NewReader(strings.NewReader(string(b))).ReadAll()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(records) != 2 || len(records[1]) != 3 || records[1][1] != name || records[1][2] != "3" {
++		t.Fatalf("CSV roundtrip = %#v", records)
++	}
++}
+--- a/repo/internal/api/handlers.go
++++ b/repo/internal/api/handlers.go
+@@ -3,9 +3,11 @@
+ package api
+ 
+ import (
++	"encoding/csv"
  	"io"
  	"log"
  	"os"
@@ -9,7 +50,7 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
  	"strings"
  
  	"inventoryd/internal/report"
-@@ -51,6 +52,38 @@
+@@ -51,6 +53,38 @@
  	return out, nil
  }
  
@@ -48,27 +89,34 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
  // ExportReport renders and writes a report file under dir, returning
  // the written path. All exports must go through report.Export (C1).
  func (s *Service) ExportReport(dir, filename string) (string, error) {
-@@ -63,6 +96,17 @@
- 		b.WriteString("\n")
- 	}
+@@ -65,5 +99,25 @@
  	return report.Export(dir, filename, b.String())
-+}
-+
+ }
+ 
 +// ExportCSV streams the CSV view of current stock into dir/filename
 +// via report.ExportRaw.
 +func (s *Service) ExportCSV(dir, filename string) (string, error) {
 +	var b strings.Builder
-+	b.WriteString("id,name,stock\n")
++	w := csv.NewWriter(&b)
++	if err := w.Write([]string{"id", "name", "stock"}); err != nil {
++		return "", err
++	}
 +	for _, it := range s.St.List() {
-+		b.WriteString(it.ID + "," + it.Name + "," + strconv.Itoa(it.Stock) + "\n")
++		if err := w.Write([]string{it.ID, it.Name, strconv.Itoa(it.Stock)}); err != nil {
++			return "", err
++		}
++	}
++	w.Flush()
++	if err := w.Error(); err != nil {
++		return "", err
 +	}
 +	return report.ExportRaw(dir, filename, strings.NewReader(b.String()))
- }
- 
++}
++
  // quietLogger returns a discarding logger for tests and tooling.
-diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/handlers_test.go
---- orig/repo/internal/api/handlers_test.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers_test.go	2026-11-10 16:43:29
+ func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+--- a/repo/internal/api/handlers_test.go
++++ b/repo/internal/api/handlers_test.go
 @@ -76,3 +76,45 @@
  		t.Fatalf("unknown accessor must error (C6)")
  	}
@@ -115,9 +163,8 @@ diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/
 +		t.Fatalf("csv roundtrip = %q, %v", b, err)
 +	}
 +}
-diff --color -ruN orig/repo/internal/report/report.go new/repo/internal/report/report.go
---- orig/repo/internal/report/report.go	2026-11-10 16:38:14
-+++ new/repo/internal/report/report.go	2026-11-10 16:42:38
+--- a/repo/internal/report/report.go
++++ b/repo/internal/report/report.go
 @@ -12,6 +12,7 @@
  
  import (
@@ -126,11 +173,10 @@ diff --color -ruN orig/repo/internal/report/report.go new/repo/internal/report/r
  	"os"
  	"path/filepath"
  	"strings"
-@@ -79,4 +80,22 @@
- 		return "", err
+@@ -80,3 +81,21 @@
  	}
  	return path, nil
-+}
+ }
 +
 +// ExportRaw streams r into dir/filename for the CSV/attachment path.
 +// Filename policy is delegated: the HTTP router confines user-supplied
@@ -148,4 +194,4 @@ diff --color -ruN orig/repo/internal/report/report.go new/repo/internal/report/r
 +		return "", err
 +	}
 +	return filepath.Join(dir, filename), nil
- }
++}

@@ -10,7 +10,7 @@
       "class": "correctness",
       "severity": "blocking",
       "description": "退避实现 bug（K2 违例，任务要求修复的唯一文件）：Backoff 返回 base/attempt——序列 25ms→12.5ms 严格递减，重试越挫越勇。注释『slot-weighted decay keeps early retries snappy』正当化了错误方向。",
-      "evidence": "Backoff(1)=25ms > Backoff(2)=12.5ms，违反 K2 严格递增；对照同仓其余文件均为 base*attempt。",
+      "evidence": "从 All() 或 NewConn02() 获取配置实例时，Backoff(1)=25ms > Backoff(2)=12.5ms，违反 K2；其余配置实例均用 base*attempt。",
       "minimal_fix": "改为 base*attempt（与其余文件一致的乘法退避）；修复后 Backoff(1) < Backoff(2)。",
       "detectable_by": [
         "g4"
@@ -151,15 +151,15 @@
   "criteria": [
     {
       "id": "K1",
-      "source": "repo CONTRACT.md",
+      "source": "CONTRACT.md",
       "statement": "MaxRetries ≤ 2",
-      "violated_by": "K1-01|K1-05|K1-09|K1-13|K1-17|K1-21|K1-25|K1-29|K1-33|K1-37"
+      "violated_by": ["K1-01", "K1-05", "K1-09", "K1-13", "K1-17", "K1-21", "K1-25", "K1-29", "K1-33", "K1-37"]
     },
     {
       "id": "K2",
-      "source": "repo CONTRACT.md",
+      "source": "CONTRACT.md",
       "statement": "退避严格递增",
-      "violated_by": "BUG-02"
+      "violated_by": ["BUG-02"]
     }
   ],
   "scoring": {

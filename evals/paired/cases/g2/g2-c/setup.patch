@@ -1,7 +1,6 @@
-diff --color -ruN orig/repo/internal/api/admin.go new/repo/internal/api/admin.go
---- orig/repo/internal/api/admin.go	1970-01-01 08:00:00
-+++ new/repo/internal/api/admin.go	2026-11-10 16:45:56
-@@ -0,0 +1,99 @@
+--- a/repo/internal/api/admin.go
++++ b/repo/internal/api/admin.go
+@@ -0,0 +1,100 @@
 +package api
 +
 +import (
@@ -12,11 +11,10 @@ diff --color -ruN orig/repo/internal/api/admin.go new/repo/internal/api/admin.go
 +	"inventoryd/internal/store"
 +)
 +
-+// adminMu serializes admin read-modify-write cycles. The store has no
-+// compare-and-swap: GetByID returns a copy, so two concurrent
-+// read-modify-Put sequences would lose updates. Every admin mutation
-+// takes this mutex for its whole cycle — until the store grows a CAS
-+// primitive, this is the correctness boundary.
++// adminMu serializes Service writes, including inventory wipes, across
++// read-modify-write cycles. Store provides single-operation safety, not
++// a transaction spanning GetByID and Put; raw Store callers remain
++// responsible for their own compound-operation isolation.
 +var adminMu sync.Mutex
 +
 +// RequireRole runs fn only when the service was constructed with the
@@ -30,6 +28,8 @@ diff --color -ruN orig/repo/internal/api/admin.go new/repo/internal/api/admin.go
 +}
 +
 +func (s *Service) WipeAll() error {
++	adminMu.Lock()
++	defer adminMu.Unlock()
 +	for _, it := range s.St.List() {
 +		if err := s.St.Delete(it.ID); err != nil {
 +			return err
@@ -83,7 +83,7 @@ diff --color -ruN orig/repo/internal/api/admin.go new/repo/internal/api/admin.go
 +		if err != nil {
 +			return err
 +		}
-+		if n > it.Stock {
++		if n < 0 || n > it.Stock {
 +			return store.ErrInvalid
 +		}
 +		it.Stock -= n
@@ -101,9 +101,51 @@ diff --color -ruN orig/repo/internal/api/admin.go new/repo/internal/api/admin.go
 +func (s *Service) NotifyExport(ch chan string, name string) {
 +	go func() { ch <- name }()
 +}
-diff --color -ruN orig/repo/internal/api/admin_test.go new/repo/internal/api/admin_test.go
---- orig/repo/internal/api/admin_test.go	1970-01-01 08:00:00
-+++ new/repo/internal/api/admin_test.go	2026-11-10 16:46:02
+--- a/repo/internal/api/admin_lock_test.go
++++ b/repo/internal/api/admin_lock_test.go
+@@ -0,0 +1,40 @@
++package api
++
++import (
++	"testing"
++	"time"
++)
++
++// TestWipeAllSharesMutationBoundary catches a wipe bypassing the
++// serialization boundary of concurrent read-modify-write operations.
++// The timer is only a bounded blocked-state observation, not app data.
++func TestWipeAllSharesMutationBoundary(t *testing.T) {
++	svc := seedAdminSvc(t, "admin")
++	adminMu.Lock()
++	locked := true
++	defer func() {
++		if locked {
++			adminMu.Unlock()
++		}
++	}()
++	started := make(chan struct{})
++	done := make(chan error, 1)
++	go func() {
++		close(started)
++		done <- svc.WipeAll()
++	}()
++	<-started
++	select {
++	case err := <-done:
++		t.Fatalf("wipe bypassed active admin mutation boundary: %v", err)
++	case <-time.After(100 * time.Millisecond):
++	}
++	adminMu.Unlock()
++	locked = false
++	if err := <-done; err != nil {
++		t.Fatal(err)
++	}
++	if len(svc.St.List()) != 0 {
++		t.Fatal("wipe did not complete after boundary released")
++	}
++}
+--- a/repo/internal/api/admin_test.go
++++ b/repo/internal/api/admin_test.go
 @@ -0,0 +1,75 @@
 +package api
 +
@@ -180,10 +222,9 @@ diff --color -ruN orig/repo/internal/api/admin_test.go new/repo/internal/api/adm
 +		t.Fatal("event lost")
 +	}
 +}
-diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
---- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers.go	2026-11-10 16:46:42
-@@ -12,18 +12,26 @@
+--- a/repo/internal/api/handlers.go
++++ b/repo/internal/api/handlers.go
+@@ -12,24 +12,34 @@
  	"inventoryd/internal/store"
  )
  
@@ -213,3 +254,35 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
  }
  
  // CreateItem validates and stores one item. Invalid input is rejected
+ // with store.ErrInvalid and callers must surface it — never assume
+ // success (REVIEW-CRITERIA.md C2).
+ func (s *Service) CreateItem(it store.Item) (store.Item, error) {
++	adminMu.Lock()
++	defer adminMu.Unlock()
+ 	if err := s.St.Put(it); err != nil {
+ 		return store.Item{}, err
+ 	}
+--- a/repo/internal/api/reserve_negative_test.go
++++ b/repo/internal/api/reserve_negative_test.go
+@@ -0,0 +1,21 @@
++package api
++
++import (
++	"errors"
++	"testing"
++
++	"inventoryd/internal/store"
++)
++
++// TestReserveRejectsNegative catches accidental stock growth through a
++// negative reservation quantity.
++func TestReserveRejectsNegative(t *testing.T) {
++	svc := seedAdminSvc(t, "admin")
++	if err := svc.Reserve("A", -3); !errors.Is(err, store.ErrInvalid) {
++		t.Fatalf("Reserve(-3) = %v, want ErrInvalid", err)
++	}
++	it, err := svc.St.GetByID("A")
++	if err != nil || it.Stock != 5 {
++		t.Fatalf("invalid reservation changed stock: %+v, %v", it, err)
++	}
++}

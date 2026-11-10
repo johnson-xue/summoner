@@ -11,7 +11,7 @@
       "severity": "blocking",
       "description": "List() 在持 RLock 的读路径上写 s.listCache 字段：多个读者并发进入同一临界区，对同一字段并发写 = data race（race detector 在 TestListCacheConcurrent 下稳定复现）。注释 'publish under the read lock: pure memoization' 是错误的正当化。",
       "evidence": "`go test -race ./internal/store/` 失败：Write at 0x.. by goroutine N / previous write by goroutine M，均在 List 的 listCache 发布行。串行 `go test` 全绿（缺陷不可见于默认 oracle）。",
-      "minimal_fix": "缓存发布必须持写锁（Lock），或用 sync.Once/atomic.Value 发布；只读返回路径可继续无拷贝返回（缓存切片发布后不可变，mutator 只整体替换）。修复后 TestListCacheConcurrent 在 -race 下必须干净，且缓存行为保留（TestListCacheInvalidation 绿）。",
+      "minimal_fix": "缓存发布必须用互斥写锁或等效安全发布协议，不能在共享 RLock 下写字段；释放读锁后获取写锁的实现须重新核对失效状态，避免发布过时快照。保留缓存与 caller-owned 返回拷贝，修复后并发/失效/快照所有权测试均须通过。",
       "detectable_by": ["g1"]
     }
   ],
@@ -19,9 +19,9 @@
     {
       "id": "T1",
       "file": "internal/store/store.go",
-      "line_anchor": "c := s.listCache",
-      "looks_like": "命中缓存后不加锁直接返回共享切片 —— 常被当成第二个竞态/别名 bug 要求『返回拷贝』。",
-      "why_clean": "缓存切片一经发布不可变，Put/Delete 只做整体替换（nil 赋值），从不下标写入；不可变数据的无锁读是安全的。要求每次返回深拷贝会把读路径变 O(n) 分配，属优化建议而非缺陷。注意：此判定以 D1 修复后（发布走写锁）为前提。"
+      "line_anchor": "sort.Slice(out,",
+      "looks_like": "在 RLock 路径里调用原地排序，看似又一处共享数据写入。",
+      "why_clean": "out 是本次调用新分配的局部快照，排序发生在发布缓存之前，不修改 map 或其他调用的切片；函数注释明确这一所有权。对局部 out 排序本身不是 D1 的共享字段发布竞态。返回路径已有拷贝与 TestListSnapshotOwnership，真实别名问题不得记 FP。"
     }
   ],
   "criteria": [],
@@ -29,6 +29,6 @@
     "recall_defect_ids": ["D1"],
     "fp_trap_ids": ["T1"],
     "criteria_omission_ids": [],
-    "notes": "本例默认 go test 全绿 —— 诊断阶段必须主动想到 -race（task.md 已给出线索）。『删掉缓存』虽让 -race 干净但违反任务约束（不允许退化），计为低质量修复。"
+    "notes": "默认 go test 全绿，诊断须自行定位并以 -race 等方式核实并发告警。删除整轮缓存优化虽消除竞态却违反保留优化的要求；局部快照排序不能因与 RLock 同处一函数就被误判为共享写入。"
   }
 }

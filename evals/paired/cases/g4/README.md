@@ -16,3 +16,9 @@
 
 参数分布刻意做了非平凡化（base delay 按 `i%7`、zone 按 `i%5`、owner
 按 `i%3` 轮转），避免“grep 一个常量就出答案”。
+
+`registry.go` 通过构造器（`NewConnXX()`）装配全部连接器并显式给出
+配置默认值，`registry_smoke_test.go` 含 `TestRegistryDefaultsAreConfigured`
+（budget≥1 且 Backoff(1)>0）——零值空壳注册表不再能掩盖植入的违规分布。
+实测规模：g4-a 19 文件 / 25,415 UTF-8 字节；g4-b 44 文件 / 64,109
+UTF-8 字节（`meta.yaml` 的 est_context_tokens 仅为 bytes/4 规划提示）。

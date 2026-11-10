@@ -1,6 +1,5 @@
-diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
---- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers.go	2026-11-10 16:45:25
+--- a/repo/internal/api/handlers.go
++++ b/repo/internal/api/handlers.go
 @@ -65,5 +65,16 @@
  	return report.Export(dir, filename, b.String())
  }
@@ -18,9 +17,8 @@ diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handl
 +
  // quietLogger returns a discarding logger for tests and tooling.
  func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
-diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/handlers_test.go
---- orig/repo/internal/api/handlers_test.go	2026-11-10 16:38:14
-+++ new/repo/internal/api/handlers_test.go	2026-11-10 16:45:25
+--- a/repo/internal/api/handlers_test.go
++++ b/repo/internal/api/handlers_test.go
 @@ -76,3 +76,13 @@
  		t.Fatalf("unknown accessor must error (C6)")
  	}
@@ -35,37 +33,54 @@ diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/
 +		t.Fatalf("OwnerShareF(3,0) = %v, want 0", got)
 +	}
 +}
-diff --color -ruN orig/repo/internal/report/report.go new/repo/internal/report/report.go
---- orig/repo/internal/report/report.go	2026-11-10 16:38:14
-+++ new/repo/internal/report/report.go	2026-11-10 16:44:35
+--- a/repo/internal/report/direct_build_test.go
++++ b/repo/internal/report/direct_build_test.go
+@@ -0,0 +1,16 @@
++package report
++
++import (
++	"testing"
++
++	"inventoryd/internal/store"
++)
++
++// TestBuildAcceptsDirectItems exercises the public boundary without
++// store.Put: Build must not panic on an empty item id.
++func TestBuildAcceptsDirectItems(t *testing.T) {
++	sum := Build("direct", []store.Item{{Name: "loose", Stock: 1}})
++	if len(sum.Wire) != 1 || sum.Wire[0] != "|loose|1" {
++		t.Fatalf("direct wire = %v, want [|loose|1]", sum.Wire)
++	}
++}
+--- a/repo/internal/report/report.go
++++ b/repo/internal/report/report.go
 @@ -43,11 +43,22 @@
  	for _, it := range items {
  		lines = append(lines, pricing.Line{PriceCents: it.PriceCents, Qty: it.Stock})
  		sum.Display = append(sum.Display, fmt.Sprintf("%-6s %-14s %5d", it.ID, it.Name, it.Stock))
 -		wire := fmt.Sprintf("%s|%s|%d", it.ID, it.Name, it.Stock)
 -		sum.Wire = append(sum.Wire, strings.ToValidUTF8(textutil.TruncateBytes(wire, WireLineBytes), "?"))
-+		sum.Wire = append(sum.Wire, strings.ToValidUTF8(textutil.TruncateBytes(mustWireFrame(it), WireLineBytes), "?"))
++		sum.Wire = append(sum.Wire, strings.ToValidUTF8(mustWireFrame(it, WireLineBytes), "?"))
  	}
  	sum.TotalCents = pricing.Total(lines)
  	return sum
 +}
 +
-+// mustWireFrame renders one raw wire frame. It panics on a violated
-+// invariant (empty id can never reach the wire layer — store rejects it
-+// on Put). Internal-only helper: REVIEW-CRITERIA.md C6 scopes the
-+// no-panic rule to EXPORTED APIs; package-internal invariant asserts
-+// are the documented exception.
-+func mustWireFrame(it store.Item) string {
-+	if it.ID == "" {
-+		panic("report: wire frame requires an id")
++// mustWireFrame renders a byte-bounded frame. The budget is an internal
++// invariant: its only caller supplies the fixed, positive WireLineBytes
++// constant. Item fields, including an empty ID, never reach the panic
++// condition. C6 permits package-internal invariant assertions.
++func mustWireFrame(it store.Item, budget int) string {
++	if budget <= 0 {
++		panic("report: wire budget must be positive")
 +	}
-+	return fmt.Sprintf("%s|%s|%d", it.ID, it.Name, it.Stock)
++	frame := fmt.Sprintf("%s|%s|%d", it.ID, it.Name, it.Stock)
++	return textutil.TruncateBytes(frame, budget)
  }
  
  // SharePct formats a stock share as a display percentage. Float is
-diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/store.go
---- orig/repo/internal/store/store.go	2026-11-10 16:38:14
-+++ new/repo/internal/store/store.go	2026-11-10 16:45:25
+--- a/repo/internal/store/store.go
++++ b/repo/internal/store/store.go
 @@ -5,6 +5,7 @@
  
  import (
@@ -91,9 +106,8 @@ diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/stor
  	}
  	delete(s.items, id)
  	return nil
-diff --color -ruN orig/repo/internal/store/store_test.go new/repo/internal/store/store_test.go
---- orig/repo/internal/store/store_test.go	2026-11-10 16:38:14
-+++ new/repo/internal/store/store_test.go	2026-11-10 16:45:25
+--- a/repo/internal/store/store_test.go
++++ b/repo/internal/store/store_test.go
 @@ -3,6 +3,7 @@
  import (
  	"errors"
@@ -102,12 +116,10 @@ diff --color -ruN orig/repo/internal/store/store_test.go new/repo/internal/store
  	"sync"
  	"testing"
  )
-@@ -93,5 +94,18 @@
- 	wg.Wait()
- 	if got := len(st.List()); got != 8 {
+@@ -95,3 +96,16 @@
  		t.Fatalf("List() = %d items, want 8", got)
-+	}
-+}
+ 	}
+ }
 +
 +// TestDeleteWrapsErrNotFound pins the wrapped sentinel: errors.Is must
 +// keep matching while the message names the missing id.
@@ -119,5 +131,5 @@ diff --color -ruN orig/repo/internal/store/store_test.go new/repo/internal/store
 +	}
 +	if !strings.Contains(err.Error(), "GONE") {
 +		t.Fatalf("message must name the id: %v", err)
- 	}
- }
++	}
++}

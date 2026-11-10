@@ -15,5 +15,5 @@ cec01d7772b0e025dcdf991e2c42a2028373316823de0e9c3b01a43ca4f5ae84  ./repo/interna
 b7a9ca82603cd9a928a82c1126d3be7df4f956465366cbf415e2bf27046b572b  ./repo/internal/connector/conn_12.go
 aa4492fbd4e727c3ac9a5b3eaf3e6bb3c735744f600b9b797db58959386464e7  ./repo/internal/connector/conn_13.go
 f3daa132a02e86bf3c13761a4493dc308c4c68ae88fb669970f0baac7f1942d5  ./repo/internal/connector/conn_14.go
-0adfac19abc2015c92effa960ee7f56784d9e0735e613419e3e102b7b5fcd5c1  ./repo/internal/connector/connectors.go
-4de78eed93b2e877c29bfec69ca054eade2c5352c072c438d7fe81d977372f4b  ./repo/internal/connector/contract_smoke_test.go
+c2076138c5a2e2d16ec83505a825c8d3bdf64febae31542e6a297034ecc5924e  ./repo/internal/connector/connectors.go
+3348aa2bcf4604d5974b9c56428099315af723a8c2140702cb8fea93c352267c  ./repo/internal/connector/contract_smoke_test.go

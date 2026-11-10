@@ -13,7 +13,8 @@
   志、报告或导出内容中（`Item.OwnerEmail` 仅为内部元数据）。
 - **C4 (blocking) 记账路径整数分。** 金额计算全程 int64 cents；float
   仅允许纯展示用途，且须注释声明 display-only（参考 `report.SharePct`）。
-- **C5 (blocking) 新增导出 API 必须有 doc comment。** godoc 规范：新增
-  exported 标识符必须有以标识符名开头的注释。
+- **C5 (blocking) 新增导出 API 必须有 doc comment。** 新增生产代码中的
+  exported 标识符（含公开字段）必须有以标识符名开头的注释；
+  `*_test.go` 的测试入口不属于发布 API。
 - **C6 (major) 导出 API 禁止 panic。** 导出函数用 error 返回；`panic`
   仅限包内 invariant 断言（参考 `store`、`report` 现有风格）。

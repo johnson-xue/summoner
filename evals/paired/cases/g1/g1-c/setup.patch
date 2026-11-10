@@ -1,6 +1,5 @@
-diff --color -ruN orig/repo/internal/store/cache_test.go new/repo/internal/store/cache_test.go
---- orig/repo/internal/store/cache_test.go	1970-01-01 08:00:00
-+++ new/repo/internal/store/cache_test.go	2026-11-10 16:40:26
+--- a/repo/internal/store/cache_test.go
++++ b/repo/internal/store/cache_test.go
 @@ -0,0 +1,40 @@
 +package store
 +
@@ -42,22 +41,52 @@ diff --color -ruN orig/repo/internal/store/cache_test.go new/repo/internal/store
 +		t.Fatalf("cache invalidation broken: %d then %d", len(first), len(second))
 +	}
 +}
-diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/store.go
---- orig/repo/internal/store/store.go	2026-11-10 16:38:14
-+++ new/repo/internal/store/store.go	2026-11-10 16:40:23
-@@ -44,6 +44,11 @@
+--- a/repo/internal/store/list_snapshot_test.go
++++ b/repo/internal/store/list_snapshot_test.go
+@@ -0,0 +1,29 @@
++package store
++
++import "testing"
++
++// TestListSnapshotOwnership catches a cached slice leaking back to its
++// callers: changing one result must not change a later result or store.
++func TestListSnapshotOwnership(t *testing.T) {
++	st := New()
++	for _, id := range []string{"A", "B"} {
++		if err := st.Put(Item{ID: id, Name: id}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	cold := st.List()
++	cold[0].ID = "Z"
++	warm := st.List()
++	if warm[0].ID != "A" || warm[1].ID != "B" {
++		t.Fatalf("cold result changed cache: %+v", warm)
++	}
++	warm[0].Name = "changed"
++	later := st.List()
++	if later[0].Name != "A" {
++		t.Fatalf("warm result changed cache: %+v", later)
++	}
++	it, err := st.GetByID("A")
++	if err != nil || it.ID != "A" || it.Name != "A" {
++		t.Fatalf("result changed store: %+v, %v", it, err)
++	}
++}
+--- a/repo/internal/store/store.go
++++ b/repo/internal/store/store.go
+@@ -44,6 +44,10 @@
  type Store struct {
  	mu    sync.RWMutex
  	items map[string]Item
 +
-+	// listCache memoizes List(). Readers repopulate it lazily;
-+	// Put/Delete invalidate it. Cached slices are immutable once
-+	// published: mutators REPLACE the cache, never edit it in place.
++	// listCache memoizes List(). Put/Delete replace or invalidate it;
++	// callers receive independent snapshots, never this backing slice.
 +	listCache []Item
  }
  
  // New returns an empty store.
-@@ -58,6 +63,7 @@
+@@ -58,6 +62,7 @@
  	s.mu.Lock()
  	defer s.mu.Unlock()
  	s.items[it.ID] = it
@@ -65,18 +94,21 @@ diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/stor
  	return nil
  }
  
-@@ -74,15 +80,22 @@
+@@ -74,16 +79,28 @@
  
  // List returns all items ordered by ID (ascending). The ordering is
  // part of the contract; insertion order is unspecified and must not be
 -// relied upon (README 行为契约).
 +// relied upon (README 行为契约). Results are memoized: a read-heavy
-+// workload hits the cache, any mutation invalidates it.
++// workload hits the cache, any mutation invalidates it. Each returned
++// slice is caller-owned. Sorting uses a local snapshot, not the map or
++// a previously published cache slice.
  func (s *Store) List() []Item {
  	s.mu.RLock()
 -	defer s.mu.RUnlock()
 +	if s.listCache != nil {
-+		c := s.listCache
++		c := make([]Item, len(s.listCache))
++		copy(c, s.listCache)
 +		s.mu.RUnlock()
 +		return c
 +	}
@@ -85,12 +117,16 @@ diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/stor
  		out = append(out, it)
  	}
  	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+-	return out
 +	s.listCache = out // publish under the read lock: pure memoization
++	result := make([]Item, len(out))
++	copy(result, out)
 +	s.mu.RUnlock()
- 	return out
++	return result
  }
  
-@@ -94,6 +107,7 @@
+ // Delete removes an item.
+@@ -94,6 +111,7 @@
  		return ErrNotFound
  	}
  	delete(s.items, id)

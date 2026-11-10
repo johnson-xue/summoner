@@ -1,6 +1,5 @@
-diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/store.go
---- orig/repo/internal/store/store.go	2026-11-10 16:38:14
-+++ new/repo/internal/store/store.go	2026-11-10 16:39:57
+--- a/repo/internal/store/store.go
++++ b/repo/internal/store/store.go
 @@ -29,7 +29,9 @@
  // BatchError reports a BatchDelete that stopped early. Done lists the
  // ids removed before the failure; Failed is the id that stopped the
@@ -35,9 +34,8 @@ diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/stor
  	}
  	return nil
  }
-diff --color -ruN orig/repo/internal/store/store_test.go new/repo/internal/store/store_test.go
---- orig/repo/internal/store/store_test.go	2026-11-10 16:38:14
-+++ new/repo/internal/store/store_test.go	2026-11-10 16:40:05
+--- a/repo/internal/store/store_test.go
++++ b/repo/internal/store/store_test.go
 @@ -57,25 +57,26 @@
  	}
  }

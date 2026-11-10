@@ -38,13 +38,13 @@
     },
     {
       "id": "R4",
-      "file": "README.md",
-      "line_anchor": "## 行为契约",
+      "file": "internal/store/store.go",
+      "line_anchor": "// ErrNotFound is returned by GetByID",
       "class": "docs",
       "severity": "major",
-      "description": "任务条款 3：仓库文档提到旧名处一并更新。README 行为契约节以 `store.List` 为例列出契约（未直接写 GetByID），需核对；包级 doc comment 中提到 GetByID 的（store.go ErrNotFound 注释等）属于代码注释，随 R1/R2 一并处理。",
-      "evidence": "grep -rn GetByID 全仓无残留（不含 CHANGELOG 的迁移说明条目）。",
-      "minimal_fix": "全仓旧名清零（CHANGELOG 历史记录条目除外）。",
+      "description": "任务条款 3 的当前 API 说明：ErrNotFound 等生产代码注释仍描述 GetByID 时，应同步改成 Fetch；这是独立于编译和反射调用修复的文档完成度要求。",
+      "evidence": "初始 store.go 的 ErrNotFound 注释确实含旧 API 名；交付时查找当前代码/文档，不应留下仍把旧名当作现行 API 的说明。CHANGELOG 的迁移历史旧名不算残留。",
+      "minimal_fix": "更新实际含旧 API 名的当前注释和文档，不要求修改没有旧名的 README。",
       "detectable_by": ["g3"]
     }
   ],
@@ -54,6 +54,7 @@
     "recall_defect_ids": ["R1", "R2", "R3"],
     "fp_trap_ids": [],
     "criteria_omission_ids": [],
-    "notes": "holdout。R3/R4 是任务条款完成度（非代码缺陷），分片臂最容易漏的恰是这类『不属任何代码分片』的条款——这是组③协调量测量的核心场景。R4 降级为 major：单独漏掉不阻断发布但算完成度缺口。"
+    "completion_item_ids": ["R4"],
+    "notes": "holdout。R1/R2/R3 属 blocking 验收要求，R4 单列为非阻断完成度指标，不混入阻断召回分母；R3/R4 的跨代码/文档完成度与协调开销分别报告。"
   }
 }

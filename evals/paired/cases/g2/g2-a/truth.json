@@ -9,9 +9,9 @@
       "line_anchor": "func ExportRaw",
       "class": "security",
       "severity": "blocking",
-      "description": "ExportRaw 对 filename 无任何清洗直接 filepath.Join(dir, filename)：调用方传入 \"../x\" 或绝对路径即可写到导出目录之外。doc comment 声称『HTTP router 已用 prefix check 限定』——该 router 不存在，属虚构的正当化。同时违反 C1（所有导出必须走 report.Export）。",
+      "description": "ExportRaw 对 filename 无清洗直接 filepath.Join(dir, filename)，传入 ../evil.csv 可写到导出目录之外。doc comment 声称已有 HTTP router 的 prefix check，但该 router 不存在；同时绕过了 C1 要求的 report.Export 路径。绝对路径不作为本例逃逸证据，Go 1.16 的 filepath.Join 不会据此丢弃 dir。",
       "evidence": "ExportRaw(dir, \"../evil.csv\", r) 在 dir 之外创建文件；repo 内不存在任何 prefix-check 路由；C1 明文要求走 Export。",
-      "minimal_fix": "删除 ExportRaw 或使其委托 report.Export 的清洗；ExportCSV 的 filename 进入统一清洗路径。",
+      "minimal_fix": "ExportCSV 的落盘委托 report.Export；ExportRaw 如保留为导出入口，也须委托同一路径，不以仅复制清洗代码作为 C1 路由条款的替代。",
       "detectable_by": ["g2"]
     },
     {
@@ -54,9 +54,9 @@
     }
   ],
   "criteria": [
-    { "id": "C1", "source": "REVIEW-CRITERIA.md", "statement": "文件导出必须走 report.Export 安全路径", "violated_by": "D1" },
-    { "id": "C2", "source": "REVIEW-CRITERIA.md", "statement": "写路径错误必须上抛", "violated_by": "D2" },
-    { "id": "C3", "source": "REVIEW-CRITERIA.md", "statement": "PII 禁止出现在日志/报告/导出", "violated_by": "D3" }
+    { "id": "C1", "source": "REVIEW-CRITERIA.md", "statement": "文件导出必须走 report.Export 安全路径", "violated_by": ["D1"] },
+    { "id": "C2", "source": "REVIEW-CRITERIA.md", "statement": "写路径错误必须上抛", "violated_by": ["D2"] },
+    { "id": "C3", "source": "REVIEW-CRITERIA.md", "statement": "PII 禁止出现在日志/报告/导出", "violated_by": ["D3"] }
   ],
   "scoring": {
     "recall_defect_ids": ["D1", "D2", "D3"],

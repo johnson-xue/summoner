@@ -25,7 +25,7 @@
     }
   ],
   "criteria": [
-    { "id": "C2", "source": "REVIEW-CRITERIA.md", "statement": "写路径错误必须上抛；吞错后返回成功视为阻断缺陷", "violated_by": "D1" }
+    { "id": "C2", "source": "REVIEW-CRITERIA.md", "statement": "写路径错误必须上抛；吞错后返回成功视为阻断缺陷", "violated_by": ["D1"] }
   ],
   "scoring": {
     "recall_defect_ids": ["D1"],

@@ -17,6 +17,6 @@
     "recall_defect_ids": [],
     "fp_trap_ids": ["T1"],
     "criteria_omission_ids": [],
-    "notes": "干净负例：实现正确（Limit=0 拒绝且有测试）、self-report 诚实（列出未覆盖项）。正确结论 = 接受交付（novel 建议允许，无 blocking）。任何制造出 blocking 发现的输出都是 FP——包括对 self-report『未覆盖项』的过度发挥（那两项已如实声明且合理）。"
+    "notes": "干净负例预期无阻断发现：Limit=0 拒绝且有测试、Page 字段满足 C5、self-report 如实列出未覆盖项。契约常量或已声明范围不是阻断缺陷；若审查发现额外真实问题，须按 novel_true 规则复核，不能因 clean_negative 标签就自动判 FP。"
   }
 }

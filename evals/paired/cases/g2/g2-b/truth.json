@@ -9,7 +9,7 @@
       "file": "internal/report/report.go",
       "line_anchor": "func mustWireFrame",
       "looks_like": "新增 panic —— C6 禁止 panic 的字面违反，审查者极易直接判阻断。",
-      "why_clean": "C6 原文：『panic 仅限包内 invariant 断言』。mustWireFrame 是包内未导出 helper，其 panic 分支（空 id）在 store.Put 校验后不可达，doc comment 已声明。判它违规 = 没读标准的例外条款。"
+      "why_clean": "C6 允许包内 invariant 断言。mustWireFrame 的唯一调用点传入正的 WireLineBytes 常量，panic 条件只取决于这个固定内部预算，不取决于公开 Build 的输入字段；TestBuildAcceptsDirectItems 验证绕过 store.Put 的空 ID 也不会 panic。把这个不可由公开输入触发的分支报告成实际公开 API panic 是误报。"
     },
     {
       "id": "T2",

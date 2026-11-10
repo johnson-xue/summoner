@@ -5,8 +5,9 @@ difficulty: medium
 repo: self
 setup: none            # 自带生成仓库（repo/），不用 frozen_base
 workflow: custom
-est_context_tokens: 12000
+est_context_tokens: 6400
 arm_notes: >
-  15 文件 / 约 76KB。折叠臂须在主循环逐文件读（≈12k tokens 材料）；隔
-  离臂可分片派发。测量：清单召回（5 项全中？）、越权修改（顺手改 K1）、
-  时长、协调量。
+  15 连接器 / 19 文件 / 实测 25,415 UTF-8 字节（est_context_tokens 为
+  bytes/4 规划提示，非 tokenizer 实测）。折叠臂须在主循环逐文件读；
+  隔离臂可分片派发。测量：清单召回（5 项 = 4 K1 + 1 K2 全中）、
+  越权修改（顺手改 K1）、时长、协调量。

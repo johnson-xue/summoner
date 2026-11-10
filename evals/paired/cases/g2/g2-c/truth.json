@@ -9,7 +9,7 @@
       "line_anchor": "func (s *Service) WipeAll",
       "class": "security",
       "severity": "blocking",
-      "description": "权限缺口：Restock/SetPrice/Reserve 都过 RequireRole(\"admin\")，唯独破坏力最大的 WipeAll 没有任何角色检查——任何角色（含默认空角色 NewService）都能清空全部库存。task.md 的『请独立验证权限覆盖』就是冲它去的。",
+      "description": "权限缺口：Restock/SetPrice/Reserve 都过 RequireRole(\"admin\")，但 WipeAll 没有角色检查，默认空角色或 viewer 也能清空全部库存；持有变更互斥锁不等于拥有操作权限。",
       "evidence": "TestWipeAll 用 viewer 角色成功清库（测试本身演示了缺口且照样绿）；对比同文件其余三个入口均有 RequireRole。",
       "minimal_fix": "WipeAll 包 RequireRole(\"admin\", ...)（并考虑超管角色）；补一个 viewer 被拒的测试。",
       "detectable_by": ["g2"]
@@ -50,16 +50,16 @@
       "file": "internal/api/admin.go",
       "line_anchor": "var adminMu sync.Mutex",
       "looks_like": "包级全局锁 + 『store 无 CAS』听起来像并发设计缺陷或过度设计。",
-      "why_clean": "注释明确说明这是 GetByID-修改-Put 读改写周期的正确性边界（store 无 CAS，两并发读改写会丢更新），所有 admin 变更全周期持锁；实现与注释一致且测试覆盖（TestAdminOpsHappyPath）。判它缺陷需要指出真实的丢更新场景——不存在。"
+      "why_clean": "CreateItem、Restock、SetPrice、Reserve 和 WipeAll 的 Service 写操作现在共享同一锁，清库不会绕过未完成的读改写周期；TestWipeAllSharesMutationBoundary 可核实这一点。此隔离保证仅覆盖这些 Service 操作，不声称直接组合 Store 原语也自带事务。锁的全局粒度可以作为性能建议，不是本例的权限缺口 D1。"
     }
   ],
   "criteria": [
-    { "id": "C5", "source": "REVIEW-CRITERIA.md", "statement": "新增导出 API 必须有 doc comment", "violated_by": "D3" }
+    { "id": "C5", "source": "REVIEW-CRITERIA.md", "statement": "新增导出 API 必须有 doc comment", "violated_by": ["D3"] }
   ],
   "scoring": {
     "recall_defect_ids": ["D1", "D2", "D3"],
     "fp_trap_ids": ["T1", "T2"],
     "criteria_omission_ids": ["C5"],
-    "notes": "D1 藏在『统一门已覆盖』的自信陈述后面（task.md 故意下钩）；D2 的注释谎言需要逐字对读语义；D3 是纯标准遵循。三者的发现路径完全不同：交叉比对（D1）/注释-实现矛盾（D2）/清单核对（D3）。"
+    "notes": "三条标注目标的发现路径分别为入口权限覆盖核对（D1）、注释与阻塞实现对照（D2）、生产导出 API 的 C5 核对（D3）。负预留数量与清库隔离问题已从 fixture 消除，不应作为这三项的替代命中。对任何新的真实缺陷仍按 novel_true 规则复核。"
   }
 }

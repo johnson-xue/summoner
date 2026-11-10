@@ -125,7 +125,7 @@ func (c *Conn{i:02d}) Ping() error {{
 }}
 """
 
-registry = ",\n".join(f"\t\t&Conn{i:02d}{{}}" for i in range(N))
+registry = ",\n".join(f"\t\tNewConn{i:02d}()" for i in range(N))
 registry_file = f"""// Package connector hosts one file per upstream slot. The layout is
 // generated and stable; the behavior contract is CONTRACT.md at the
 // repo root.
@@ -170,6 +170,16 @@ func TestSmokeInstantiate(t *testing.T) {{
 			if c.Backoff(k) < 0 {{
 				t.Fatalf("%s: negative backoff at attempt %d", c.Name(), k)
 			}}
+		}}
+	}}
+}}
+
+// TestRegistryDefaultsAreConfigured catches registration of zero-value
+// connectors that bypass their configured constructors.
+func TestRegistryDefaultsAreConfigured(t *testing.T) {{
+	for _, c := range All() {{
+		if c.MaxRetries() < 1 || c.Backoff(1) <= 0 {{
+			t.Fatalf("%s: inactive defaults, budget=%d first=%v", c.Name(), c.MaxRetries(), c.Backoff(1))
 		}}
 	}}
 }}

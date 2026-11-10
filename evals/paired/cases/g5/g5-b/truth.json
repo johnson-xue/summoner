@@ -9,15 +9,15 @@
       "line_anchor": "func (s *Service) ExportOwnerCSV",
       "class": "criteria",
       "severity": "blocking",
-      "description": "C1 违例：货主 CSV 导出绕过 report.Export，直接 os.Create(filepath.Join(dir, filename))，filename 无清洗——路径参数可含 ../ 或绝对路径写穿导出目录。self-report.md 却声称『C1 ✓ 导出统一走安全管线』——标准的核对必须以代码为准，不能以自检报告为准。",
+      "description": "C1 违例：ExportOwnerCSV 绕过 report.Export，直接 os.WriteFile(filepath.Join(dir, filename))，传入 ../evil.csv 可写穿导出目录。self-report.md 却声称 C1 已通过；核对必须以实际代码为准。绝对路径不作为 Go 1.16 下的逃逸证据。",
       "evidence": "REVIEW-CRITERIA.md C1 明文『所有落盘必须经 internal/report 的 Export』；ExportOwnerCSV 的 doc comment 用『轻量专用路径』自我豁免，但标准没有豁免条款；测试只用干净文件名。",
-      "minimal_fix": "ExportOwnerCSV 委托 report.Export（或同等清洗）；修 self-report 的错误声明。",
+      "minimal_fix": "ExportOwnerCSV 的落盘必须委托 report.Export，满足 C1 的路由与清洗两项要求；修正 self-report 的错误声明，保留 CSV 字段转义。",
       "detectable_by": ["g5"]
     }
   ],
   "fp_traps": [],
   "criteria": [
-    { "id": "C1", "source": "REVIEW-CRITERIA.md", "statement": "文件导出必须走 report.Export 安全路径", "violated_by": "D1" }
+    { "id": "C1", "source": "REVIEW-CRITERIA.md", "statement": "文件导出必须走 report.Export 安全路径", "violated_by": ["D1"] }
   ],
   "scoring": {
     "recall_defect_ids": ["D1"],

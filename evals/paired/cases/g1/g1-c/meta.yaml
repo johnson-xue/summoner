@@ -7,6 +7,6 @@ setup: setup.patch
 workflow: fix
 est_context_tokens: 2500
 arm_notes: >
-  holdout。并发缺陷 + 默认 oracle 不可见：比较两臂的诊断纪律（是否主动
-  上 -race）与修复质量（保留缓存 vs 退化删除）。T1 考『修复后仍要求返回
-  拷贝』的过度修复误报。
+  并发缺陷在默认 oracle 下不可见。比较诊断是否自行定位并使用 -race，
+  修复是否保留缓存且保持返回快照隔离。T1 只针对局部快照排序的误报，
+  不把真实的共享切片污染归为陷阱。
