@@ -611,7 +611,9 @@ func (r *RunState) phaseForDecision(cp *CheckpointState) *PhaseState {
 
 // decidePhase settles the phase a checkpoint decides. Re-accepting a phase
 // re-validates its criteria: each one leaves Stale (task-2.5 M10) — stale
-// means "needs re-verification", and the user just re-verified it.
+// means "needs re-verification", and the user just re-verified it. An
+// ACCEPTANCE also freezes the visit into the run's cumulative acceptance
+// view (spec §3 冻结验收视图) inside the caller's commit.
 func (r *RunState) decidePhase(cp *CheckpointState, accepted bool) {
 	p := r.phaseForDecision(cp)
 	if p == nil {
@@ -623,9 +625,43 @@ func (r *RunState) decidePhase(cp *CheckpointState, accepted bool) {
 		for _, c := range p.AcceptedCriteria {
 			r.removeStale(c)
 		}
+		r.freezeAcceptance(p, cp)
 	} else {
 		p.Outcome = "skipped"
 	}
+}
+
+// freezeAcceptance records one accepted visit in the cumulative frozen
+// acceptance view (spec §3: 需求被用户接受那一刻由 hooks 生成并冻结，生产者不
+// 能裁剪). v2 maps phase→requirement 1:1: FrozenRequirement.ID is the phase id,
+// the criteria are the visit's accepted criteria, and the artifact scope is
+// the deciding checkpoint's artifact versions. The entry is REPLACED per ID
+// (the serialization-side last-entry-wins of ResolveFrozenView stays the belt
+// for hand-assembled state), and the view's version is stamped with the
+// RequirementsVersion at freeze time.
+func (r *RunState) freezeAcceptance(p *PhaseState, cp *CheckpointState) {
+	artifacts := make([]string, 0, len(cp.ArtifactVersions))
+	for path := range cp.ArtifactVersions {
+		artifacts = append(artifacts, path)
+	}
+	sort.Strings(artifacts)
+	entry := FrozenRequirement{
+		ID:          p.ID,
+		CriteriaIDs: append([]string(nil), p.AcceptedCriteria...),
+		Artifacts:   artifacts,
+	}
+	replaced := false
+	for i := range r.Acceptance.Requirements {
+		if r.Acceptance.Requirements[i].ID == p.ID {
+			r.Acceptance.Requirements[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		r.Acceptance.Requirements = append(r.Acceptance.Requirements, entry)
+	}
+	r.Acceptance.Version = r.RequirementsVersion
 }
 
 // planRecall resolves the recall target — the most recent accepted prior
@@ -1190,12 +1226,13 @@ func (r *RunState) StartDelegation(reviewID string, isReviewer bool) error {
 
 // RecordReviewResult concludes the in-flight review and opens a review-result
 // checkpoint (PASS still leaves the run WAIT_USER — spec §3). Enum violations
-// are protocol errors: the review is marked FAILED, the failure routes to a
-// REVIEW_RESULT checkpoint so the run stays recoverable, the routing IS
-// persisted, and an error is returned to the caller. BLOCKED and the quality
-// verdict are mutually exclusive (task-2.5 M12): BLOCKED must not pose as a
-// quality conclusion and COMPLETED must not carry a reason code. NEEDS-FIX
-// consumes run rework budget; BLOCKED does not.
+// and empty-evidence PASS results are protocol errors: the review is marked
+// FAILED, the failure routes to a REVIEW_RESULT checkpoint so the run stays
+// recoverable, the routing IS persisted, and an error is returned to the
+// caller. BLOCKED and the quality verdict are mutually exclusive
+// (task-2.5 M12): BLOCKED must not pose as a quality conclusion and COMPLETED
+// must not carry a reason code. NEEDS-FIX consumes run rework budget; BLOCKED
+// does not.
 func (r *RunState) RecordReviewResult(res ReviewResult) error {
 	// protocolErr carries the enum problem out AFTER the routing persisted —
 	// returning it from the closure would roll the routing back.
@@ -1229,6 +1266,13 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 			}
 		default:
 			problem = fmt.Sprintf("run_status must be %s or %s", ReviewRunCompleted, ReviewRunBlocked)
+		}
+		if problem == "" {
+			// 空证据 (spec §3): a PASS-track result with no evidence ids is a
+			// rubber-stamp — same protocol-error routing as the enum checks.
+			if err := ValidateEvidence(res); err != nil {
+				problem = err.Error()
+			}
 		}
 		if problem != "" {
 			rv.Status = ReviewFailed

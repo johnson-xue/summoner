@@ -15,11 +15,18 @@ package shared
 // bytes (first event: sha256 of the empty string); hash = sha256 of this
 // event's canonical bytes including prev_hash, excluding the hash field
 // itself. The canonical form is pinned to encoding/json's struct-order +
-// sorted-map-keys output — write and verify share this one method, so any
-// byte-level edit anywhere breaks either that line's own hash or the next
-// line's prev_hash.
+// sorted-map-keys output — write and verify share this one method. On verify,
+// every line is additionally decoded STRICTLY (DisallowUnknownFields +
+// json.Number, so numeric lexemes ≥2^53 survive re-marshal) and its RAW bytes
+// must equal the canonical re-marshal EXACTLY: a whitespace-varied,
+// field-reordered or field-injected line fails even when its stored hash and
+// prev_hash are internally consistent (the last line has no successor
+// committing to its bytes — only strict raw-line canonical equality closes
+// that injection). Any byte-level edit anywhere breaks either that line's own
+// hash, the next line's prev_hash, or the raw-equality check.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,7 +34,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // --- event types (allow-list) -------------------------------------------------
@@ -228,7 +234,7 @@ func AppendEvent(runID, sessionID string, ev TraceEvent) error {
 	ev.ProjectRootHash = ProjectKey()
 	ev.Seq = lastSeq + 1
 	if ev.Timestamp == "" {
-		ev.Timestamp = time.Now().UTC().Format(time.RFC3339)
+		ev.Timestamp = nowUTC()
 	}
 	ev.PrevHash = prevHash
 	if ev.Hash, err = eventHash(ev); err != nil {
@@ -303,10 +309,28 @@ func traceLines(b []byte) [][]byte {
 
 // --- verification -----------------------------------------------------------------
 
+// decodeTraceLine decodes one trace line STRICTLY: unknown fields are
+// rejected (DisallowUnknownFields) and numbers keep their lexemes (UseNumber,
+// so payload ints ≥ 2^53 survive the canonical re-marshal byte-identically
+// instead of being float64-rounded).
+func decodeTraceLine(raw []byte) (TraceEvent, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	var ev TraceEvent
+	if err := dec.Decode(&ev); err != nil {
+		return TraceEvent{}, err
+	}
+	return ev, nil
+}
+
 // VerifyChain re-reads the run's trace and recomputes the chain: every line
-// must parse, carry seq == its 1-based line number, hash to its stored value,
-// and commit via prev_hash to the previous line's canonical bytes (line 1 to
-// sha256("")). The first bad line is named in the returned error.
+// must STRICTLY decode, carry seq == its 1-based line number, hash to its
+// stored value, commit via prev_hash to the previous line's canonical bytes
+// (line 1 to sha256("")), and be byte-identical to its own canonical form —
+// raw-line canonical equality closes the last-line unknown-field injection
+// (a tolerant decode drops injected fields, so a re-hashed line would
+// otherwise verify). The first bad line is named in the returned error.
 func VerifyChain(runID string) error {
 	p, err := traceFilePath(runID)
 	if err != nil {
@@ -323,9 +347,9 @@ func VerifyChain(runID string) error {
 	prevCanonical := hashHex(nil) // sha256 of the empty string
 	for i, raw := range lines {
 		n := i + 1
-		var ev TraceEvent
-		if err := json.Unmarshal(raw, &ev); err != nil {
-			return fmt.Errorf("verify chain: line %d is not valid JSON: %w", n, err)
+		ev, err := decodeTraceLine(raw)
+		if err != nil {
+			return fmt.Errorf("verify chain: line %d: strict decode: %w", n, err)
 		}
 		if ev.Seq != n {
 			return fmt.Errorf("verify chain: line %d has seq %d, want %d", n, ev.Seq, n)
@@ -340,11 +364,14 @@ func VerifyChain(runID string) error {
 		if ev.PrevHash != prevCanonical {
 			return fmt.Errorf("verify chain: line %d prev_hash does not match line %d's canonical bytes (stored %s, want %s)", n, n-1, ev.PrevHash, prevCanonical)
 		}
-		// The next line's prev_hash commits to THIS line's canonical bytes.
 		cb, err := canonicalBytes(ev)
 		if err != nil {
 			return fmt.Errorf("verify chain: line %d: %w", n, err)
 		}
+		if !bytes.Equal(raw, cb) {
+			return fmt.Errorf("verify chain: line %d is not byte-identical to its canonical form (whitespace, field order or injected fields)", n)
+		}
+		// The next line's prev_hash commits to THIS line's canonical bytes.
 		prevCanonical = hashHex(cb)
 	}
 	return nil
@@ -352,8 +379,11 @@ func VerifyChain(runID string) error {
 
 // CriticalControlEventsPresent checks the minimal mechanical completeness
 // rule: a trace with any events must contain workflow.started AND one of
-// workflow.ended / workflow.aborted / post_game.completed. An absent or empty
-// file is no error yet (nothing has happened, or capture has not started).
+// workflow.ended / workflow.aborted / post_game.completed. The chain is
+// verified FIRST — completeness over an unverified chain is decorative; a
+// tampered trace is a chain error even when the critical events "are all
+// there". An absent or empty file is no error yet (nothing has happened, or
+// capture has not started).
 func CriticalControlEventsPresent(runID string) error {
 	p, err := traceFilePath(runID)
 	if err != nil {
@@ -365,6 +395,9 @@ func CriticalControlEventsPresent(runID string) error {
 			return nil // zero events — no error yet
 		}
 		return err
+	}
+	if err := VerifyChain(runID); err != nil {
+		return fmt.Errorf("critical events: %w", err)
 	}
 	lines := traceLines(b)
 	if len(lines) == 0 {

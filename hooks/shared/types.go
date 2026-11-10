@@ -225,6 +225,16 @@ type PhaseState struct {
 	CheckpointID     string   `json:"checkpoint_id,omitempty"`
 }
 
+// CriteriaDrop is one recorded user-explicit criterion drop (spec §3 冻结验收
+// 视图: 信封 criteria 集 = 冻结集 − 有记录的用户显式 drop——逐 id、逐次决定).
+// The runtime recording path arrives with T10; T7 adds the field and the
+// envelope validation that consumes it.
+type CriteriaDrop struct {
+	ID           string `json:"id"`
+	At           string `json:"at,omitempty"`
+	CheckpointID string `json:"checkpoint_id,omitempty"`
+}
+
 // CheckpointState is one human checkpoint (spec §4). A decision is accepted
 // only after the checkpoint was displayed with a matching content digest.
 // Superseded marks the checkpoint a WAIT_USER-entered requirement change
@@ -336,14 +346,22 @@ type RunState struct {
 	RecoveryPrior       RunStatus         `json:"recovery_prior,omitempty"`
 	Stale               []string          `json:"stale,omitempty"`
 	Phases              []PhaseState      `json:"phases,omitempty"`
-	Checkpoints         []CheckpointState `json:"checkpoints,omitempty"`
-	Reviews             []ReviewRecord    `json:"reviews,omitempty"`
-	Recalls             []RecallRecord    `json:"recalls,omitempty"`
-	OutcomeUnknowns     []OutcomeUnknown  `json:"outcome_unknowns,omitempty"`
-	Limits              BudgetLimits      `json:"budget_limits"`
-	Counters            BudgetCounters    `json:"budget_counters"`
-	StartedAt           string            `json:"started_at,omitempty"`
-	UpdatedAt           string            `json:"updated_at,omitempty"`
+	// Acceptance is the cumulative frozen acceptance view (spec §3): every
+	// accepted phase visit frozen at user acceptance — one FrozenRequirement
+	// per phase id (v2 maps phase→requirement 1:1), read with
+	// last-entry-wins. Producers cannot trim it; envelopes validate against
+	// it (ValidateEnvelope). CriteriaDrops are the recorded user-explicit
+	// criterion drops the envelope set subtracts (逐 id、逐次决定).
+	Acceptance      FrozenView        `json:"acceptance"`
+	CriteriaDrops   []CriteriaDrop    `json:"criteria_drops,omitempty"`
+	Checkpoints     []CheckpointState `json:"checkpoints,omitempty"`
+	Reviews         []ReviewRecord    `json:"reviews,omitempty"`
+	Recalls         []RecallRecord    `json:"recalls,omitempty"`
+	OutcomeUnknowns []OutcomeUnknown  `json:"outcome_unknowns,omitempty"`
+	Limits          BudgetLimits      `json:"budget_limits"`
+	Counters        BudgetCounters    `json:"budget_counters"`
+	StartedAt       string            `json:"started_at,omitempty"`
+	UpdatedAt       string            `json:"updated_at,omitempty"`
 }
 
 // PhaseSubmission is the summoner:phase-submit payload: the phase's result —

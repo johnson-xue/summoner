@@ -831,7 +831,7 @@ func TestRequestReviewResendSameEnvelope(t *testing.T) {
 	if err := r.MarkReviewRunning("rev-1"); err != nil {
 		t.Fatalf("MarkReviewRunning: %v", err)
 	}
-	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: "COMPLETED", Verdict: "PASS"}); err != nil {
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: "COMPLETED", Verdict: "PASS", EvidenceToolCallIDs: []string{"toolu-1"}}); err != nil {
 		t.Fatalf("RecordReviewResult: %v", err)
 	}
 	displayCurrent(t, r)
@@ -1864,7 +1864,7 @@ func TestF1ReviewResultRecallDoesNotTouchDecidedCheckpoint(t *testing.T) {
 	if _, err := r.RequestReview(testEnvelope()); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
-	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass}); err != nil {
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass, EvidenceToolCallIDs: []string{"toolu-1"}}); err != nil {
 		t.Fatalf("RecordReviewResult: %v", err)
 	}
 	displayCurrent(t, r)
@@ -1931,5 +1931,78 @@ func TestStartDelegationEnforcesOwnBudget(t *testing.T) {
 	}
 	if r.Reviews[0].Status != ReviewPrepared {
 		t.Fatalf("review = %s, want PREPARED (refused dispatch must not start it)", r.Reviews[0].Status)
+	}
+}
+
+// TestFrozenAcceptanceViewPersistence pins spec §3 冻结验收视图: every accepted
+// phase visit is frozen into the run's cumulative acceptance view inside
+// RecordDecision's commit — one FrozenRequirement per phase id (v2 maps
+// phase→requirement 1:1), replaced on re-acceptance, stamped with the
+// RequirementsVersion at freeze time; skipped phases contribute nothing; the
+// view and the recorded criteria drops persist through Save/Load.
+func TestFrozenAcceptanceViewPersistence(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+
+	// Accepted p1 freezes its visit's criteria + checkpoint artifacts.
+	openAndSubmit(t, r, "p1", "c-1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if len(r.Acceptance.Requirements) != 1 {
+		t.Fatalf("acceptance requirements = %+v, want one p1 entry", r.Acceptance.Requirements)
+	}
+	fr := r.Acceptance.Requirements[0]
+	if fr.ID != "p1" || !reflect.DeepEqual(fr.CriteriaIDs, []string{"c-1"}) || !reflect.DeepEqual(fr.Artifacts, []string{"p1.md"}) {
+		t.Fatalf("frozen p1 entry = %+v, want criteria [c-1] and artifact [p1.md]", fr)
+	}
+	if r.Acceptance.Version != r.RequirementsVersion {
+		t.Fatalf("acceptance version = %d, want RequirementsVersion %d at freeze time", r.Acceptance.Version, r.RequirementsVersion)
+	}
+
+	// A skipped phase contributes nothing.
+	openAndSubmit(t, r, "p2", "c-2")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionSkip)
+	if len(r.Acceptance.Requirements) != 1 {
+		t.Fatalf("skipped phase must not enter the acceptance view: %+v", r.Acceptance.Requirements)
+	}
+
+	// Re-acceptance replaces the per-id entry (last-entry-wins), not appends.
+	openAndSubmit(t, r, "p3", "c-3")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	openAndSubmit(t, r, "p1", "c-1b") // second p1 visit with fresh criteria
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if len(r.Acceptance.Requirements) != 2 {
+		t.Fatalf("acceptance requirements = %+v, want p1 replaced (2 entries), not appended", r.Acceptance.Requirements)
+	}
+	var p1 FrozenRequirement
+	for _, req := range r.Acceptance.Requirements {
+		if req.ID == "p1" {
+			p1 = req
+		}
+	}
+	if !reflect.DeepEqual(p1.CriteriaIDs, []string{"c-1b"}) {
+		t.Fatalf("re-accepted p1 = %+v, want the LAST visit's criteria [c-1b]", p1)
+	}
+
+	// The view, its version stamp and recorded drops persist through Save/Load.
+	r.CriteriaDrops = []CriteriaDrop{{ID: "c-1", At: "2026-11-10T00:00:00Z", CheckpointID: "cp-9"}}
+	if err := r.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Acceptance, r.Acceptance) {
+		t.Fatalf("acceptance view did not round-trip: %+v vs %+v", loaded.Acceptance, r.Acceptance)
+	}
+	if !reflect.DeepEqual(loaded.CriteriaDrops, r.CriteriaDrops) {
+		t.Fatalf("criteria drops did not round-trip: %+v vs %+v", loaded.CriteriaDrops, r.CriteriaDrops)
+	}
+	// The persisted view resolves through the same last-entry-wins rule.
+	if got := loaded.AcceptanceView(); len(got.Requirements) != 2 {
+		t.Fatalf("AcceptanceView = %+v, want the two collapsed entries", got.Requirements)
 	}
 }

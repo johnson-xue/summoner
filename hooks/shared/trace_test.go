@@ -392,6 +392,150 @@ func TestTraceGluedTailRefused(t *testing.T) {
 	}
 }
 
+// --- T7 hardening: strict decode + raw-line canonical equality -----------------
+
+// rewriteTraceLine applies f to one line's bytes and rewrites the file.
+func rewriteTraceLine(t *testing.T, path string, idx int, f func([]byte) []byte) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	lines[idx] = string(f([]byte(lines[idx])))
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("rewrite trace: %v", err)
+	}
+}
+
+// TestVerifyChainUnknownFieldInjection: an injected unknown field on the LAST
+// line fails verification — even when the tamperer re-hashes the line so it is
+// internally consistent. The last line has no successor committing to its
+// bytes, so only strict decoding catches it.
+func TestVerifyChainUnknownFieldInjection(t *testing.T) {
+	useTraceDir(t)
+	const run = "run-tr-inject"
+	mustAppend(t, run, EventWorkflowStarted)
+	mustAppend(t, run, EventPhaseStarted)
+	path := traceFileFor(t, run)
+
+	inject := func(line []byte) []byte {
+		var m map[string]interface{}
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("unmarshal line: %v", err)
+		}
+		m["injected"] = "field"
+		// Re-hash so the line is internally consistent: hash = sha256 over
+		// the injected line with the hash field cleared.
+		delete(m, "hash")
+		b, _ := json.Marshal(m)
+		m["hash"] = hashHex(b)
+		out, _ := json.Marshal(m)
+		return out
+	}
+	rewriteTraceLine(t, path, 1, inject)
+
+	err := VerifyChain(run)
+	if err == nil {
+		t.Fatal("unknown-field injection on the last line must fail verification")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("error must name line 2, got: %v", err)
+	}
+}
+
+// TestVerifyChainRejectsNonCanonicalLine: a line that decodes to a valid event
+// with a valid hash chain but is not byte-identical to the canonical form —
+// whitespace-varied or field-reordered — fails verification. Tolerant decoding
+// would accept both; only strict raw-line canonical equality closes them.
+func TestVerifyChainRejectsNonCanonicalLine(t *testing.T) {
+	t.Run("whitespace varied", func(t *testing.T) {
+		useTraceDir(t)
+		const run = "run-tr-ws"
+		mustAppend(t, run, EventWorkflowStarted)
+		mustAppend(t, run, EventPhaseStarted)
+		rewriteTraceLine(t, traceFileFor(t, run), 1, func(line []byte) []byte {
+			return append([]byte(" "), append(line, ' ')...) // leading + trailing space
+		})
+		if err := VerifyChain(run); err == nil {
+			t.Fatal("whitespace-varied line must fail verification")
+		} else if !strings.Contains(err.Error(), "line 2") {
+			t.Fatalf("error must name line 2, got: %v", err)
+		}
+	})
+
+	t.Run("field reordered", func(t *testing.T) {
+		useTraceDir(t)
+		const run = "run-tr-reorder"
+		mustAppend(t, run, EventWorkflowStarted)
+		mustAppend(t, run, EventPhaseStarted)
+		rewriteTraceLine(t, traceFileFor(t, run), 1, func(line []byte) []byte {
+			var m map[string]interface{}
+			if err := json.Unmarshal(line, &m); err != nil {
+				t.Fatalf("unmarshal line: %v", err)
+			}
+			out, _ := json.Marshal(m) // map marshal = sorted keys, not struct order
+			return out
+		})
+		if err := VerifyChain(run); err == nil {
+			t.Fatal("field-reordered line must fail verification")
+		} else if !strings.Contains(err.Error(), "line 2") {
+			t.Fatalf("error must name line 2, got: %v", err)
+		}
+	})
+}
+
+// TestVerifyChainPreservesBigPayloadInt: payload ints ≥ 2^53 verify clean —
+// json.Number decoding keeps the numeric lexeme, so the canonical re-marshal
+// is byte-identical instead of float64-rounding the value.
+func TestVerifyChainPreservesBigPayloadInt(t *testing.T) {
+	useTraceDir(t)
+	const run = "run-tr-bignum"
+	if err := AppendEvent(run, "sess-1", TraceEvent{
+		Type:    EventToolResult,
+		Source:  "trace_test",
+		Payload: map[string]interface{}{"count": int64(9007199254740993)}, // 2^53+1
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := VerifyChain(run); err != nil {
+		t.Fatalf("big payload int must verify (lexeme preserved): %v", err)
+	}
+	b, err := os.ReadFile(traceFileFor(t, run))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	if !strings.Contains(string(b), "9007199254740993") {
+		t.Fatal("the exact numeric lexeme must survive on disk")
+	}
+}
+
+// TestCriticalEventsVerifyChainFirst: the completeness scan runs AFTER chain
+// verification — critical events present in a broken chain are a chain error,
+// not a pass.
+func TestCriticalEventsVerifyChainFirst(t *testing.T) {
+	useTraceDir(t)
+	const run = "run-tr-crit-chain"
+	mustAppend(t, run, EventWorkflowStarted)
+	mustAppend(t, run, EventPostGameCompleted)
+	path := traceFileFor(t, run)
+	rewriteTraceLine(t, path, 1, func(line []byte) []byte {
+		var ev TraceEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatalf("unmarshal line: %v", err)
+		}
+		ev.Payload = map[string]interface{}{"forged": true} // stale stored hash
+		return mustJSON(t, ev)
+	})
+	err := CriticalControlEventsPresent(run)
+	if err == nil {
+		t.Fatal("critical events over a broken chain must fail, not pass")
+	}
+	if !strings.Contains(err.Error(), "verify chain") {
+		t.Fatalf("error must surface the chain failure, got: %v", err)
+	}
+}
+
 // --- test utilities ------------------------------------------------------------
 
 func mustJSON(t *testing.T, v interface{}) []byte {

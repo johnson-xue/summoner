@@ -49,9 +49,9 @@
       "description": "Root Cause Analyst — systematic error diagnosis, stack trace analysis, log correlation, hypothesis-driven debugging"
     },
     {
-      "name": "review-agent",
-      "path": "agents/review-agent.md",
-      "description": "Graph-mode ⑤ reviewer — evidence-only verdicts on node outputs (walker-scheduled); a verdict with empty evidence_tool_calls is a rubber-stamp"
+      "name": "reviewer",
+      "path": "agents/reviewer.md",
+      "description": "Single-loop ⑤ reviewer — independent black-box re-derivation of one artifact set against a frozen acceptance envelope; returns a structured ReviewResult with evidence_tool_call_ids (a PASS with empty evidence is a rubber-stamp protocol error)"
     }
   ],
   "commands": [
