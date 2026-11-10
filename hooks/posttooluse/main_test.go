@@ -803,10 +803,37 @@ func TestParseFailureFailsClosed(t *testing.T) {
 		"no tool_name":   mustJSON(t, map[string]interface{}{"hook_event_name": "PostToolUse", "session_id": hookSession, "tool_use_id": "tu-1"}),
 		"no tool_use_id": mustJSON(t, map[string]interface{}{"hook_event_name": "PostToolUse", "session_id": hookSession, "tool_name": "Read"}),
 		"unknown event":  mustJSON(t, map[string]interface{}{"hook_event_name": "Nonsense", "session_id": hookSession, "tool_name": "Read", "tool_use_id": "tu-1"}),
+		// Task 6 (C1): empty hook_event_name is a miswire now that
+		// hooks.json wires BOTH events explicitly — fail closed.
+		"no event name": mustJSON(t, map[string]interface{}{"session_id": hookSession, "tool_name": "Read", "tool_use_id": "tu-1"}),
 	} {
 		code, stderr := callHook(t, payload)
 		if code != 2 {
 			t.Errorf("%s: exit code = %d, want 2 (stderr: %q)", name, code, stderr)
 		}
+	}
+}
+
+// TestPostToolUseFailureEmptyErrorFailsClosed (task 6 / C2): a
+// PostToolUseFailure payload with an EMPTY error string is malformed for a
+// KNOWN event — same shape-validation principle the gate applies. Fail-closed
+// exit 2, nothing recorded.
+func TestPostToolUseFailureEmptyErrorFailsClosed(t *testing.T) {
+	useHookEnv(t)
+	startRun(t)
+	payload := mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUseFailure",
+		"session_id":      hookSession,
+		"tool_name":       "Bash",
+		"tool_use_id":     "tu-noerr",
+		"tool_input":      map[string]interface{}{"command": "make"},
+		"error":           "",
+	})
+	code, stderr := callHook(t, payload)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %q)", code, stderr)
+	}
+	if evs := readHookTrace(t, "run-1"); len(evs) != 0 {
+		t.Fatalf("refused payload must record nothing, got %v", traceTypesOf(evs))
 	}
 }

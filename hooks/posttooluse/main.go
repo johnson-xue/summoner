@@ -39,8 +39,9 @@ import (
 // postSource stamps every trace event this binary appends.
 const postSource = "posttooluse"
 
-// Platform event names (ruling 2). Empty is tolerated as PostToolUse —
-// first-generation payloads carried no hook_event_name field.
+// Platform event names (ruling 2). hooks.json wires BOTH events explicitly,
+// so an empty hook_event_name is a miswire, not a legacy payload — it fails
+// closed like any unknown event (task 6 / C1).
 const (
 	eventPostToolUse        = "PostToolUse"
 	eventPostToolUseFailure = "PostToolUseFailure"
@@ -124,9 +125,9 @@ func runHook(stdin io.Reader, errW io.Writer) int {
 		return 2
 	}
 	switch in.EventName {
-	case eventPostToolUse, eventPostToolUseFailure, "":
+	case eventPostToolUse, eventPostToolUseFailure:
 	default:
-		fmt.Fprintf(errW, "summoner posttooluse: unknown hook_event_name %q (this binary serves PostToolUse and PostToolUseFailure) — fail-closed\n", in.EventName)
+		fmt.Fprintf(errW, "summoner posttooluse: unknown or empty hook_event_name %q (this binary serves PostToolUse and PostToolUseFailure, both wired explicitly in hooks.json) — fail-closed\n", in.EventName)
 		return 2
 	}
 
@@ -154,6 +155,14 @@ func runHook(stdin io.Reader, errW io.Writer) int {
 
 	if in.ToolName == "" || in.ToolUseID == "" {
 		fmt.Fprintf(errW, "summoner posttooluse: payload requires tool_name and tool_use_id (spec §7 platform correlation keys) — fail-closed\n")
+		return 2
+	}
+
+	// PostToolUseFailure without an error string is a malformed payload for
+	// a KNOWN event — the same shape-validation principle the gate applies
+	// (task 6 / C2): fail closed, record nothing.
+	if in.EventName == eventPostToolUseFailure && in.Error == "" {
+		fmt.Fprintf(errW, "summoner posttooluse: PostToolUseFailure payload requires a non-empty error string — fail-closed\n")
 		return 2
 	}
 

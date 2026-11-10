@@ -3,7 +3,7 @@
 PLATFORMS := darwin-amd64 darwin-arm64 linux-amd64
 
 BIN_DIR := bin
-HOOKS := session-start pretooluse-gate stop validate-manifest posttooluse subagentstop
+HOOKS := session-start pretooluse-gate stop validate-manifest posttooluse subagentstop userpromptsubmit
 
 all: build
 

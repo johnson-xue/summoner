@@ -82,7 +82,7 @@ echo "   ✓ installed content byte-identical to checkout (version $CHECKOUT_VER
 # hooks present, executable, AND WIRED: `claude plugin validate` does not
 # check that hooks.json paths resolve (audit: a typo'd hooks entry passed the
 # whole gate and installed with zero active hooks), so assert it here.
-for b in session-start pretooluse-skill stop; do
+for b in session-start pretooluse-gate stop validate-manifest posttooluse subagentstop userpromptsubmit; do
   bin="$INSTALLED/hooks/bin/$b"
   if [[ ! -x "$bin" ]]; then
     echo "✗ hook binary missing or not executable: $bin"
