@@ -1,0 +1,12 @@
+case_id: g5-a
+group: 5
+split: train
+difficulty: medium
+repo: frozen_base
+setup: setup.patch
+workflow: review
+est_context_tokens: 2800
+arm_notes: >
+  组⑤核心对照：基线臂独立⑤（新上下文、新证据源）vs 候选臂同上下文自审。
+  D1 的发现依赖主动探针（Limit=0 用例）；self-report 的『边界全覆盖』是
+  钓饵。质量与独立性两列分开记分。

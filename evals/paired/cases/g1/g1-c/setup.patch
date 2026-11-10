@@ -1,0 +1,100 @@
+diff --color -ruN orig/repo/internal/store/cache_test.go new/repo/internal/store/cache_test.go
+--- orig/repo/internal/store/cache_test.go	1970-01-01 08:00:00
++++ new/repo/internal/store/cache_test.go	2026-11-10 16:40:26
+@@ -0,0 +1,40 @@
++package store
++
++import (
++	"sync"
++	"testing"
++)
++
++// TestListCacheConcurrent drives the memoization path the way the
++// concurrent export worker does: many readers racing on a cold cache.
++func TestListCacheConcurrent(t *testing.T) {
++	st := New()
++	for _, id := range []string{"A", "B", "C", "D"} {
++		if err := st.Put(Item{ID: id, Name: "n" + id}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	var wg sync.WaitGroup
++	for i := 0; i < 16; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			if got := st.List(); len(got) != 4 {
++				t.Errorf("List() = %d items, want 4", len(got))
++			}
++		}()
++	}
++	wg.Wait()
++}
++
++// TestListCacheInvalidation: mutation drops the memo, next read rebuilds.
++func TestListCacheInvalidation(t *testing.T) {
++	st := New()
++	st.Put(Item{ID: "A", Name: "a"})
++	first := st.List()
++	st.Put(Item{ID: "B", Name: "b"})
++	second := st.List()
++	if len(first) != 1 || len(second) != 2 {
++		t.Fatalf("cache invalidation broken: %d then %d", len(first), len(second))
++	}
++}
+diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/store.go
+--- orig/repo/internal/store/store.go	2026-11-10 16:38:14
++++ new/repo/internal/store/store.go	2026-11-10 16:40:23
+@@ -44,6 +44,11 @@
+ type Store struct {
+ 	mu    sync.RWMutex
+ 	items map[string]Item
++
++	// listCache memoizes List(). Readers repopulate it lazily;
++	// Put/Delete invalidate it. Cached slices are immutable once
++	// published: mutators REPLACE the cache, never edit it in place.
++	listCache []Item
+ }
+ 
+ // New returns an empty store.
+@@ -58,6 +63,7 @@
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+ 	s.items[it.ID] = it
++	s.listCache = nil
+ 	return nil
+ }
+ 
+@@ -74,15 +80,22 @@
+ 
+ // List returns all items ordered by ID (ascending). The ordering is
+ // part of the contract; insertion order is unspecified and must not be
+-// relied upon (README 行为契约).
++// relied upon (README 行为契约). Results are memoized: a read-heavy
++// workload hits the cache, any mutation invalidates it.
+ func (s *Store) List() []Item {
+ 	s.mu.RLock()
+-	defer s.mu.RUnlock()
++	if s.listCache != nil {
++		c := s.listCache
++		s.mu.RUnlock()
++		return c
++	}
+ 	out := make([]Item, 0, len(s.items))
+ 	for _, it := range s.items {
+ 		out = append(out, it)
+ 	}
+ 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
++	s.listCache = out // publish under the read lock: pure memoization
++	s.mu.RUnlock()
+ 	return out
+ }
+ 
+@@ -94,6 +107,7 @@
+ 		return ErrNotFound
+ 	}
+ 	delete(s.items, id)
++	s.listCache = nil
+ 	return nil
+ }
+ 

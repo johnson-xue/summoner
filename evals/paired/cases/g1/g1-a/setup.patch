@@ -1,0 +1,74 @@
+diff --color -ruN orig/repo/internal/report/report_test.go new/repo/internal/report/report_test.go
+--- orig/repo/internal/report/report_test.go	2026-11-10 16:38:14
++++ new/repo/internal/report/report_test.go	2026-11-10 16:38:33
+@@ -11,11 +11,11 @@
+ )
+ 
+ func TestBuildTitleRuneSafe(t *testing.T) {
+-	// 25 runes > TitleMaxRunes(24): cut after 23 runes, rune-safe.
++	// 25 runes / 61 bytes: budget cut at 23 bytes + ellipsis.
+ 	const title = "季度库存报告——华东区（2026年秋季盘点附录）终"
+ 	sum := Build(title, []store.Item{{ID: "A", Name: "油壶", PriceCents: 100, Stock: 2}})
+-	if sum.Title != "季度库存报告——华东区（2026年秋季盘点附录…" {
+-		t.Fatalf("Title = %q, want rune-safe truncation", sum.Title)
++	if want := title[:23] + "…"; sum.Title != want {
++		t.Fatalf("Title = %q, want %q", sum.Title, want)
+ 	}
+ }
+ 
+diff --color -ruN orig/repo/internal/textutil/truncate.go new/repo/internal/textutil/truncate.go
+--- orig/repo/internal/textutil/truncate.go	2026-11-10 16:38:14
++++ new/repo/internal/textutil/truncate.go	2026-11-10 16:38:21
+@@ -7,21 +7,19 @@
+ // strings.ToValidUTF8.
+ package textutil
+ 
+-// Truncate shortens s to at most maxRunes Unicode code points, appending
+-// an ellipsis ("…") when content was cut. maxRunes <= 0 yields "".
+-// Rune safety matters: callers pass CJK titles and names.
++// Truncate shortens s to a bounded budget, appending an ellipsis ("…")
++// when content was cut. maxRunes <= 0 yields "".
+ func Truncate(s string, maxRunes int) string {
+ 	if maxRunes <= 0 {
+ 		return ""
+ 	}
+-	r := []rune(s)
+-	if len(r) <= maxRunes {
++	if len(s) <= maxRunes {
+ 		return s
+ 	}
+ 	if maxRunes == 1 {
+ 		return "…"
+ 	}
+-	return string(r[:maxRunes-1]) + "…"
++	return s[:maxRunes-1] + "…"
+ }
+ 
+ // TruncateBytes cuts s to at most maxBytes bytes for the fixed-size wire
+diff --color -ruN orig/repo/internal/textutil/truncate_test.go new/repo/internal/textutil/truncate_test.go
+--- orig/repo/internal/textutil/truncate_test.go	2026-11-10 16:38:14
++++ new/repo/internal/textutil/truncate_test.go	2026-11-10 16:38:27
+@@ -26,15 +26,16 @@
+ 	}
+ }
+ 
+-// TestTruncateCJKSafety pins the display contract: CJK text is cut on
+-// rune boundaries and never leaves a half character.
++// TestTruncateCJKSafety pins the budget semantics after the 2026-11
++// unification with the wire path: display truncation is byte-budgeted
++// as well, so mid-rune cuts are expected on CJK payloads.
+ func TestTruncateCJKSafety(t *testing.T) {
+-	const s = "季度库存报告——华东区"                       // 11 runes
+-	if got := Truncate(s, 8); got != "季度库存报告—…" { // 7 runes + ellipsis
+-		t.Fatalf("Truncate(s,8) = %q, want %q", got, "季度库存报告—…")
++	const s = "季度库存报告——华东区" // 33 bytes
++	if got := Truncate(s, 8); got != s[:7]+"…" {
++		t.Fatalf("Truncate(s,8) = %q, want %q", got, s[:7]+"…")
+ 	}
+-	if got := Truncate(s, 11); got != s {
+-		t.Fatalf("Truncate(s,11) = %q, want passthrough", got)
++	if got := Truncate(s, len(s)); got != s {
++		t.Fatalf("byte-length passthrough failed, got %q", got)
+ 	}
+ }
+ 

@@ -1,0 +1,215 @@
+diff --color -ruN orig/repo/internal/api/admin.go new/repo/internal/api/admin.go
+--- orig/repo/internal/api/admin.go	1970-01-01 08:00:00
++++ new/repo/internal/api/admin.go	2026-11-10 16:45:56
+@@ -0,0 +1,99 @@
++package api
++
++import (
++	"fmt"
++	"sync"
++	"time"
++
++	"inventoryd/internal/store"
++)
++
++// adminMu serializes admin read-modify-write cycles. The store has no
++// compare-and-swap: GetByID returns a copy, so two concurrent
++// read-modify-Put sequences would lose updates. Every admin mutation
++// takes this mutex for its whole cycle — until the store grows a CAS
++// primitive, this is the correctness boundary.
++var adminMu sync.Mutex
++
++// RequireRole runs fn only when the service was constructed with the
++// required role. It is the single gate every privileged entry point
++// must pass through.
++func (s *Service) RequireRole(role string, fn func() error) error {
++	if s.role != role {
++		return fmt.Errorf("api: role %q required", role)
++	}
++	return fn()
++}
++
++func (s *Service) WipeAll() error {
++	for _, it := range s.St.List() {
++		if err := s.St.Delete(it.ID); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++// Restock adds n units to an item (admin).
++func (s *Service) Restock(id string, n int) error {
++	return s.RequireRole("admin", func() error {
++		adminMu.Lock()
++		defer adminMu.Unlock()
++		it, err := s.St.GetByID(id)
++		if err != nil {
++			return err
++		}
++		if n < 0 {
++			return store.ErrInvalid
++		}
++		it.Stock += n
++		return s.St.Put(it)
++	})
++}
++
++// SetPrice sets the price in cents (admin).
++func (s *Service) SetPrice(id string, cents int64) error {
++	return s.RequireRole("admin", func() error {
++		adminMu.Lock()
++		defer adminMu.Unlock()
++		if cents < 0 {
++			return store.ErrInvalid
++		}
++		it, err := s.St.GetByID(id)
++		if err != nil {
++			return err
++		}
++		it.PriceCents = cents
++		return s.St.Put(it)
++	})
++}
++
++// Reserve decrements stock by n (admin). Audit timestamps are always
++// UTC — the reporting window spans regions and local-time stamps have
++// caused ordering bugs before.
++func (s *Service) Reserve(id string, n int) error {
++	return s.RequireRole("admin", func() error {
++		adminMu.Lock()
++		defer adminMu.Unlock()
++		it, err := s.St.GetByID(id)
++		if err != nil {
++			return err
++		}
++		if n > it.Stock {
++			return store.ErrInvalid
++		}
++		it.Stock -= n
++		if err := s.St.Put(it); err != nil {
++			return err
++		}
++		s.Audit.Printf("reserve %s -%d at %s", id, n, time.Now().UTC().Format(time.RFC3339))
++		return nil
++	})
++}
++
++// NotifyExport publishes an export event asynchronously. Events are
++// dropped when no receiver is ready (fire-and-forget telemetry, the
++// dashboard polls and misses are acceptable).
++func (s *Service) NotifyExport(ch chan string, name string) {
++	go func() { ch <- name }()
++}
+diff --color -ruN orig/repo/internal/api/admin_test.go new/repo/internal/api/admin_test.go
+--- orig/repo/internal/api/admin_test.go	1970-01-01 08:00:00
++++ new/repo/internal/api/admin_test.go	2026-11-10 16:46:02
+@@ -0,0 +1,75 @@
++package api
++
++import (
++	"errors"
++	"testing"
++	"time"
++
++	"inventoryd/internal/store"
++)
++
++func seedAdminSvc(t *testing.T, role string) *Service {
++	t.Helper()
++	svc := NewServiceWithRole(store.New(), quietLogger(), role)
++	if _, err := svc.CreateItem(store.Item{ID: "A", Name: "油壶", PriceCents: 100, Stock: 5}); err != nil {
++		t.Fatal(err)
++	}
++	return svc
++}
++
++func TestAdminGateEnforced(t *testing.T) {
++	svc := seedAdminSvc(t, "viewer")
++	for name, fn := range map[string]func() error{
++		"restock":  func() error { return svc.Restock("A", 1) },
++		"setprice": func() error { return svc.SetPrice("A", 200) },
++		"reserve":  func() error { return svc.Reserve("A", 1) },
++	} {
++		if err := fn(); err == nil {
++			t.Fatalf("%s must require admin role", name)
++		}
++	}
++}
++
++func TestAdminOpsHappyPath(t *testing.T) {
++	svc := seedAdminSvc(t, "admin")
++	if err := svc.Restock("A", 5); err != nil {
++		t.Fatal(err)
++	}
++	if err := svc.SetPrice("A", 250); err != nil {
++		t.Fatal(err)
++	}
++	if err := svc.Reserve("A", 3); err != nil {
++		t.Fatal(err)
++	}
++	it, _ := svc.St.GetByID("A")
++	if it.Stock != 7 || it.PriceCents != 250 {
++		t.Fatalf("admin ops lost updates: %+v", it)
++	}
++	if err := svc.Reserve("A", 99); !errors.Is(err, store.ErrInvalid) {
++		t.Fatalf("over-reserve must reject, got %v", err)
++	}
++}
++
++func TestWipeAll(t *testing.T) {
++	svc := seedAdminSvc(t, "viewer")
++	if err := svc.WipeAll(); err != nil {
++		t.Fatal(err)
++	}
++	if got := len(svc.St.List()); got != 0 {
++		t.Fatalf("WipeAll left %d items", got)
++	}
++}
++
++func TestNotifyExportDelivers(t *testing.T) {
++	svc := seedAdminSvc(t, "viewer")
++	ch := make(chan string, 1)
++	svc.NotifyExport(ch, "daily.csv")
++	select {
++	case got := <-ch:
++		if got != "daily.csv" {
++			t.Fatalf("got %q", got)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("event lost")
++	}
++}
+diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
+--- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
++++ new/repo/internal/api/handlers.go	2026-11-10 16:46:42
+@@ -12,18 +12,26 @@
+ 	"inventoryd/internal/store"
+ )
+ 
+-// Service bundles the inventory store with an audit logger.
++// Service bundles the inventory store with an audit logger and the
++// session role used by RequireRole (see admin.go).
+ type Service struct {
+ 	St    *store.Store
+ 	Audit *log.Logger
++	role  string
+ }
+ 
+-// NewService wires a service; a nil audit logger falls back to stderr.
++// NewService wires a service with no privileged role; a nil audit
++// logger falls back to stderr.
+ func NewService(st *store.Store, audit *log.Logger) *Service {
++	return NewServiceWithRole(st, audit, "")
++}
++
++// NewServiceWithRole wires a service running under an explicit role.
++func NewServiceWithRole(st *store.Store, audit *log.Logger, role string) *Service {
+ 	if audit == nil {
+ 		audit = log.New(os.Stderr, "audit ", log.LstdFlags)
+ 	}
+-	return &Service{St: st, Audit: audit}
++	return &Service{St: st, Audit: audit, role: role}
+ }
+ 
+ // CreateItem validates and stores one item. Invalid input is rejected

@@ -1,0 +1,12 @@
+case_id: g2-a
+group: 2
+split: train
+difficulty: medium
+repo: frozen_base
+setup: setup.patch
+workflow: ship
+est_context_tokens: 3000
+arm_notes: >
+  基线臂 /ship 多 persona fan-out（code-reviewer/security-auditor/
+  test-engineer）+ merge；候选臂单 rubric reviewer 以 REVIEW-CRITERIA.md
+  为准。测量：三域缺陷召回分布、T1/T2 误报、是否逐条对照标准（标准遗漏）。

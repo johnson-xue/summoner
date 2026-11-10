@@ -1,0 +1,34 @@
+{
+  "case_id": "g5-a",
+  "group": 5,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "D1",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "if p.Limit == 0",
+      "class": "correctness",
+      "severity": "blocking",
+      "description": "Limit==0 未按自身 doc comment 的要求拒绝（\"0 is NOT a valid 'give me everything' request and MUST be rejected\"），而是返回全量——实现与自己的文档矛盾，且正是分页要防的非受控响应。配套测试没有任何 Limit=0 用例（空泛边界覆盖），self-report.md 声称『边界全覆盖』却列举的 Limit 值恰好没有 0。",
+      "evidence": "QueryItemsPage(\"\", Page{Limit: 0}) 返回全部条目而非错误；对照同函数 doc comment 的 MUST 措辞；测试表 {1,2,100,-1,501} 无 0。",
+      "minimal_fix": "拒绝语义统一为 `p.Limit < 1 || p.Limit > MaxPageLimit` 报错；补 Limit=0 拒绝测试。",
+      "detectable_by": ["g5"]
+    }
+  ],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "if p.Offset < 0",
+      "looks_like": "『Offset 负数未报错』像又一处缺校验。",
+      "why_clean": "doc comment 明文声明宽松语义（documented leniency for client-side math）且测试 TestQueryItemsPageWindows 覆盖 -5 钳制。判它缺陷 = 没读声明。"
+    }
+  ],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": ["D1"],
+    "fp_trap_ids": ["T1"],
+    "criteria_omission_ids": [],
+    "notes": "独立性分列指标的核心例：发现 D1 的关键动作是『不信任 self-report，自写/自跑 Limit=0 探针』。verdict 若只复述报告内容（引用集 ⊆ self-report）记为无新证据；若引用自己运行的探针结果记为有新证据。"
+  }
+}

@@ -1,0 +1,78 @@
+diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/store.go
+--- orig/repo/internal/store/store.go	2026-11-10 16:38:14
++++ new/repo/internal/store/store.go	2026-11-10 16:39:57
+@@ -29,7 +29,9 @@
+ // BatchError reports a BatchDelete that stopped early. Done lists the
+ // ids removed before the failure; Failed is the id that stopped the
+ // batch; Err is the underlying error. Partial state is real: the ids in
+-// Done ARE deleted and must not be blindly retried.
++// Done ARE deleted and must not be blindly retried. The struct is kept
++// for wire-compat with old callers that deserialize it; new behavior
++// (below) no longer produces it.
+ type BatchError struct {
+ 	Done   []string
+ 	Failed string
+@@ -97,17 +99,15 @@
+ 	return nil
+ }
+ 
+-// BatchDelete deletes ids in order and FAILS FAST: the first error stops
+-// the batch and is returned wrapped in *BatchError with the partial
+-// state. Callers needing best-effort semantics must loop Delete
+-// themselves (REVIEW-CRITERIA.md C2).
++// BatchDelete deletes ids on a best-effort basis: ids that fail (e.g.
++// already gone) are skipped, everything else is deleted, and the batch
++// reports success. Idempotent retries are the caller's responsibility.
+ func (s *Store) BatchDelete(ids []string) error {
+-	var done []string
+ 	for _, id := range ids {
+ 		if err := s.Delete(id); err != nil {
+-			return &BatchError{Done: done, Failed: id, Err: err}
++			_ = err // best effort: skip and keep going
++			continue
+ 		}
+-		done = append(done, id)
+ 	}
+ 	return nil
+ }
+diff --color -ruN orig/repo/internal/store/store_test.go new/repo/internal/store/store_test.go
+--- orig/repo/internal/store/store_test.go	2026-11-10 16:38:14
++++ new/repo/internal/store/store_test.go	2026-11-10 16:40:05
+@@ -57,25 +57,26 @@
+ 	}
+ }
+ 
+-// TestBatchDeleteFailsFast pins C2: the batch stops at the first error
+-// and later ids remain untouched.
+-func TestBatchDeleteFailsFast(t *testing.T) {
++// TestBatchDeleteBestEffort pins the best-effort semantics adopted in
++// the 2026-11 batch API revision: failures are skipped, the batch
++// reports success.
++func TestBatchDeleteBestEffort(t *testing.T) {
+ 	st := New()
+ 	for _, id := range []string{"A", "B", "C"} {
+ 		if err := st.Put(Item{ID: id, Name: "n" + id}); err != nil {
+ 			t.Fatal(err)
+ 		}
+ 	}
+-	err := st.BatchDelete([]string{"A", "MISSING", "C"})
+-	var be *BatchError
+-	if !errors.As(err, &be) {
+-		t.Fatalf("BatchDelete = %v, want *BatchError", err)
++	if err := st.BatchDelete([]string{"A", "MISSING", "C"}); err != nil {
++		t.Fatalf("best-effort batch must succeed, got %v", err)
+ 	}
+-	if be.Failed != "MISSING" || len(be.Done) != 1 || be.Done[0] != "A" {
+-		t.Fatalf("partial state = %+v", *be)
++	for _, id := range []string{"A", "C"} {
++		if _, err := st.GetByID(id); !errors.Is(err, ErrNotFound) {
++			t.Fatalf("%s must be deleted", id)
++		}
+ 	}
+-	if _, err := st.GetByID("C"); err != nil {
+-		t.Fatalf("C must survive fail-fast stop: %v", err)
++	if _, err := st.GetByID("B"); err != nil {
++		t.Fatalf("B must survive: %v", err)
+ 	}
+ }
+ 

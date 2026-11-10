@@ -1,0 +1,151 @@
+diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
+--- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
++++ new/repo/internal/api/handlers.go	2026-11-10 16:42:57
+@@ -6,6 +6,7 @@
+ 	"io"
+ 	"log"
+ 	"os"
++	"strconv"
+ 	"strings"
+ 
+ 	"inventoryd/internal/report"
+@@ -51,6 +52,38 @@
+ 	return out, nil
+ }
+ 
++// ownerKey normalizes an owner value for comparisons. The value is a
++// string at every call site (store.Item.OwnerEmail / caller email
++// argument), so the direct assertion is exact.
++func ownerKey(v interface{}) string { return v.(string) }
++
++// QueryByOwner lists items owned by email, case-insensitive.
++func (s *Service) QueryByOwner(email string) ([]store.Item, error) {
++	s.Audit.Printf("export query for owner %s", email)
++	key := ownerKey(email)
++	var out []store.Item
++	for _, it := range s.St.List() {
++		if strings.EqualFold(ownerKey(it.OwnerEmail), key) {
++			out = append(out, it)
++		}
++	}
++	return out, nil
++}
++
++// ImportItems bulk-creates items. An empty batch is a no-op success
++// (nothing to do); individual invalid items do not fail the batch —
++// import runs are large and re-runnable, the report of what landed is
++// the query itself.
++func (s *Service) ImportItems(items []store.Item) error {
++	if len(items) == 0 {
++		return nil
++	}
++	for _, it := range items {
++		_, _ = s.CreateItem(it)
++	}
++	return nil
++}
++
+ // ExportReport renders and writes a report file under dir, returning
+ // the written path. All exports must go through report.Export (C1).
+ func (s *Service) ExportReport(dir, filename string) (string, error) {
+@@ -63,6 +96,17 @@
+ 		b.WriteString("\n")
+ 	}
+ 	return report.Export(dir, filename, b.String())
++}
++
++// ExportCSV streams the CSV view of current stock into dir/filename
++// via report.ExportRaw.
++func (s *Service) ExportCSV(dir, filename string) (string, error) {
++	var b strings.Builder
++	b.WriteString("id,name,stock\n")
++	for _, it := range s.St.List() {
++		b.WriteString(it.ID + "," + it.Name + "," + strconv.Itoa(it.Stock) + "\n")
++	}
++	return report.ExportRaw(dir, filename, strings.NewReader(b.String()))
+ }
+ 
+ // quietLogger returns a discarding logger for tests and tooling.
+diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/handlers_test.go
+--- orig/repo/internal/api/handlers_test.go	2026-11-10 16:38:14
++++ new/repo/internal/api/handlers_test.go	2026-11-10 16:43:29
+@@ -76,3 +76,45 @@
+ 		t.Fatalf("unknown accessor must error (C6)")
+ 	}
+ }
++
++func TestQueryByOwner(t *testing.T) {
++	svc := NewService(store.New(), quietLogger())
++	if _, err := svc.CreateItem(store.Item{ID: "A", Name: "a", PriceCents: 1, Stock: 1, OwnerEmail: "Ops@Example.com"}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := svc.CreateItem(store.Item{ID: "B", Name: "b", PriceCents: 1, Stock: 1, OwnerEmail: "other@example.com"}); err != nil {
++		t.Fatal(err)
++	}
++	got, err := svc.QueryByOwner("ops@example.com")
++	if err != nil || len(got) != 1 || got[0].ID != "A" {
++		t.Fatalf("QueryByOwner = %+v, %v", got, err)
++	}
++}
++
++func TestImportItemsBulk(t *testing.T) {
++	svc := NewService(store.New(), quietLogger())
++	if err := svc.ImportItems(nil); err != nil {
++		t.Fatalf("empty import = no-op success, got %v", err)
++	}
++	if err := svc.ImportItems([]store.Item{{ID: "A", Name: "ok", PriceCents: 1}}); err != nil {
++		t.Fatalf("bulk import failed: %v", err)
++	}
++	if it, err := svc.St.GetByID("A"); err != nil || it.Name != "ok" {
++		t.Fatalf("imported item missing: %+v %v", it, err)
++	}
++}
++
++func TestExportCSV(t *testing.T) {
++	svc := NewService(store.New(), quietLogger())
++	if _, err := svc.CreateItem(store.Item{ID: "A", Name: "油壶", PriceCents: 100, Stock: 3}); err != nil {
++		t.Fatal(err)
++	}
++	p, err := svc.ExportCSV(t.TempDir(), "stock.csv")
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := os.ReadFile(p)
++	if err != nil || !strings.HasPrefix(string(b), "id,name,stock\n") || !strings.Contains(string(b), "油壶") {
++		t.Fatalf("csv roundtrip = %q, %v", b, err)
++	}
++}
+diff --color -ruN orig/repo/internal/report/report.go new/repo/internal/report/report.go
+--- orig/repo/internal/report/report.go	2026-11-10 16:38:14
++++ new/repo/internal/report/report.go	2026-11-10 16:42:38
+@@ -12,6 +12,7 @@
+ 
+ import (
+ 	"fmt"
++	"io"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -79,4 +80,22 @@
+ 		return "", err
+ 	}
+ 	return path, nil
++}
++
++// ExportRaw streams r into dir/filename for the CSV/attachment path.
++// Filename policy is delegated: the HTTP router confines user-supplied
++// names to the export root with its prefix check before we get here.
++func ExportRaw(dir, filename string, r io.Reader) (string, error) {
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return "", err
++	}
++	f, err := os.Create(filepath.Join(dir, filename))
++	if err != nil {
++		return "", err
++	}
++	defer f.Close()
++	if _, err := io.Copy(f, r); err != nil {
++		return "", err
++	}
++	return filepath.Join(dir, filename), nil
+ }

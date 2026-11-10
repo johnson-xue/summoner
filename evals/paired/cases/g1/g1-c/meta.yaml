@@ -1,0 +1,12 @@
+case_id: g1-c
+group: 1
+split: holdout
+difficulty: hard
+repo: frozen_base
+setup: setup.patch
+workflow: fix
+est_context_tokens: 2500
+arm_notes: >
+  holdout。并发缺陷 + 默认 oracle 不可见：比较两臂的诊断纪律（是否主动
+  上 -race）与修复质量（保留缓存 vs 退化删除）。T1 考『修复后仍要求返回
+  拷贝』的过度修复误报。

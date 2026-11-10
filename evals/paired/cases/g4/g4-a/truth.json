@@ -1,0 +1,40 @@
+{
+  "case_id": "g4-a",
+  "group": 4,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "K1-01", "file": "internal/connector/conn_01.go", "line_anchor": "MaxRetries",
+      "class": "criteria", "severity": "blocking",
+      "description": "retries=3 > 契约上限 2（K1 违规，仅列出）。",
+      "evidence": "NewConn01 构造器 retries 字面量 3；MaxRetries() 返回该值。",
+      "minimal_fix": "审计清单项，任务明确不修。",
+      "detectable_by": ["g4"]
+    },
+    { "id": "K1-05", "file": "internal/connector/conn_05.go", "line_anchor": "MaxRetries", "class": "criteria", "severity": "blocking", "description": "retries=3（K1 违规）。", "evidence": "同 K1-01 模式。", "minimal_fix": "仅列出。", "detectable_by": ["g4"] },
+    { "id": "K1-09", "file": "internal/connector/conn_09.go", "line_anchor": "MaxRetries", "class": "criteria", "severity": "blocking", "description": "retries=3（K1 违规）。", "evidence": "同上。", "minimal_fix": "仅列出。", "detectable_by": ["g4"] },
+    { "id": "K1-13", "file": "internal/connector/conn_13.go", "line_anchor": "MaxRetries", "class": "criteria", "severity": "blocking", "description": "retries=3（K1 违规）。", "evidence": "同上。", "minimal_fix": "仅列出。", "detectable_by": ["g4"] },
+    {
+      "id": "BUG-02",
+      "file": "internal/connector/conn_02.go",
+      "line_anchor": "func (c *Conn02) Backoff",
+      "class": "correctness",
+      "severity": "blocking",
+      "description": "退避实现 bug（K2 违例，任务要求修复的唯一文件）：Backoff 返回 base/attempt——序列 25ms→12.5ms 严格递减，重试越挫越勇。注释『slot-weighted decay keeps early retries snappy』正当化了错误方向。",
+      "evidence": "Backoff(1)=25ms > Backoff(2)=12.5ms，违反 K2 严格递增；对照同仓其余文件均为 base*attempt。",
+      "minimal_fix": "改为 base*attempt（与其余文件一致的乘法退避）；修复后 Backoff(1) < Backoff(2)。",
+      "detectable_by": ["g4"]
+    }
+  ],
+  "fp_traps": [],
+  "criteria": [
+    { "id": "K1", "source": "repo CONTRACT.md", "statement": "MaxRetries ≤ 2", "violated_by": "K1-01|K1-05|K1-09|K1-13" },
+    { "id": "K2", "source": "repo CONTRACT.md", "statement": "退避严格递增", "violated_by": "BUG-02" }
+  ],
+  "scoring": {
+    "recall_defect_ids": ["K1-01", "K1-05", "K1-09", "K1-13", "BUG-02"],
+    "fp_trap_ids": [],
+    "criteria_omission_ids": [],
+    "notes": "完整清单 = 4 个 K1 + 1 个 K2-bug，多报/漏报均计错。K3（错误署名）全部合规——若臂报告 K3 违规属多报。修复验收：conn_02 退避递增、全量测试绿、其余 K1 文件未被顺手改掉（任务明言只列不修，改了算越权修改）。"
+  }
+}

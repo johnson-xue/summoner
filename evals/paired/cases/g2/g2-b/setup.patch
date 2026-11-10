@@ -1,0 +1,123 @@
+diff --color -ruN orig/repo/internal/api/handlers.go new/repo/internal/api/handlers.go
+--- orig/repo/internal/api/handlers.go	2026-11-10 16:38:14
++++ new/repo/internal/api/handlers.go	2026-11-10 16:45:25
+@@ -65,5 +65,16 @@
+ 	return report.Export(dir, filename, b.String())
+ }
+ 
++// OwnerShareF returns ownerStock/totalStock as a float percentage.
++// Display-only: the value never enters accounting math
++// (REVIEW-CRITERIA.md C4 — display floats are documented-safe; the
++// accounting path stays int64 cents).
++func (s *Service) OwnerShareF(ownerStock, totalStock int) float64 {
++	if totalStock <= 0 {
++		return 0
++	}
++	return float64(ownerStock) / float64(totalStock) * 100
++}
++
+ // quietLogger returns a discarding logger for tests and tooling.
+ func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+diff --color -ruN orig/repo/internal/api/handlers_test.go new/repo/internal/api/handlers_test.go
+--- orig/repo/internal/api/handlers_test.go	2026-11-10 16:38:14
++++ new/repo/internal/api/handlers_test.go	2026-11-10 16:45:25
+@@ -76,3 +76,13 @@
+ 		t.Fatalf("unknown accessor must error (C6)")
+ 	}
+ }
++
++func TestOwnerShareFDisplayOnly(t *testing.T) {
++	svc := NewService(store.New(), quietLogger())
++	if got := svc.OwnerShareF(1, 4); got != 25 {
++		t.Fatalf("OwnerShareF(1,4) = %v, want 25", got)
++	}
++	if got := svc.OwnerShareF(3, 0); got != 0 {
++		t.Fatalf("OwnerShareF(3,0) = %v, want 0", got)
++	}
++}
+diff --color -ruN orig/repo/internal/report/report.go new/repo/internal/report/report.go
+--- orig/repo/internal/report/report.go	2026-11-10 16:38:14
++++ new/repo/internal/report/report.go	2026-11-10 16:44:35
+@@ -43,11 +43,22 @@
+ 	for _, it := range items {
+ 		lines = append(lines, pricing.Line{PriceCents: it.PriceCents, Qty: it.Stock})
+ 		sum.Display = append(sum.Display, fmt.Sprintf("%-6s %-14s %5d", it.ID, it.Name, it.Stock))
+-		wire := fmt.Sprintf("%s|%s|%d", it.ID, it.Name, it.Stock)
+-		sum.Wire = append(sum.Wire, strings.ToValidUTF8(textutil.TruncateBytes(wire, WireLineBytes), "?"))
++		sum.Wire = append(sum.Wire, strings.ToValidUTF8(textutil.TruncateBytes(mustWireFrame(it), WireLineBytes), "?"))
+ 	}
+ 	sum.TotalCents = pricing.Total(lines)
+ 	return sum
++}
++
++// mustWireFrame renders one raw wire frame. It panics on a violated
++// invariant (empty id can never reach the wire layer — store rejects it
++// on Put). Internal-only helper: REVIEW-CRITERIA.md C6 scopes the
++// no-panic rule to EXPORTED APIs; package-internal invariant asserts
++// are the documented exception.
++func mustWireFrame(it store.Item) string {
++	if it.ID == "" {
++		panic("report: wire frame requires an id")
++	}
++	return fmt.Sprintf("%s|%s|%d", it.ID, it.Name, it.Stock)
+ }
+ 
+ // SharePct formats a stock share as a display percentage. Float is
+diff --color -ruN orig/repo/internal/store/store.go new/repo/internal/store/store.go
+--- orig/repo/internal/store/store.go	2026-11-10 16:38:14
++++ new/repo/internal/store/store.go	2026-11-10 16:45:25
+@@ -5,6 +5,7 @@
+ 
+ import (
+ 	"errors"
++	"fmt"
+ 	"sort"
+ 	"sync"
+ )
+@@ -86,12 +87,14 @@
+ 	return out
+ }
+ 
+-// Delete removes an item.
++// Delete removes an item. The not-found error is wrapped with the id
++// (%w) so audit trails name the missing record; errors.Is/As keep
++// matching the sentinel.
+ func (s *Store) Delete(id string) error {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+ 	if _, ok := s.items[id]; !ok {
+-		return ErrNotFound
++		return fmt.Errorf("store: delete %s: %w", id, ErrNotFound)
+ 	}
+ 	delete(s.items, id)
+ 	return nil
+diff --color -ruN orig/repo/internal/store/store_test.go new/repo/internal/store/store_test.go
+--- orig/repo/internal/store/store_test.go	2026-11-10 16:38:14
++++ new/repo/internal/store/store_test.go	2026-11-10 16:45:25
+@@ -3,6 +3,7 @@
+ import (
+ 	"errors"
+ 	"fmt"
++	"strings"
+ 	"sync"
+ 	"testing"
+ )
+@@ -93,5 +94,18 @@
+ 	wg.Wait()
+ 	if got := len(st.List()); got != 8 {
+ 		t.Fatalf("List() = %d items, want 8", got)
++	}
++}
++
++// TestDeleteWrapsErrNotFound pins the wrapped sentinel: errors.Is must
++// keep matching while the message names the missing id.
++func TestDeleteWrapsErrNotFound(t *testing.T) {
++	st := New()
++	err := st.Delete("GONE")
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("errors.Is broke: %v", err)
++	}
++	if !strings.Contains(err.Error(), "GONE") {
++		t.Fatalf("message must name the id: %v", err)
+ 	}
+ }

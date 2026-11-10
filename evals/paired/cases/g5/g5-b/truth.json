@@ -1,0 +1,28 @@
+{
+  "case_id": "g5-b",
+  "group": 5,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "D1",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "func (s *Service) ExportOwnerCSV",
+      "class": "criteria",
+      "severity": "blocking",
+      "description": "C1 违例：货主 CSV 导出绕过 report.Export，直接 os.Create(filepath.Join(dir, filename))，filename 无清洗——路径参数可含 ../ 或绝对路径写穿导出目录。self-report.md 却声称『C1 ✓ 导出统一走安全管线』——标准的核对必须以代码为准，不能以自检报告为准。",
+      "evidence": "REVIEW-CRITERIA.md C1 明文『所有落盘必须经 internal/report 的 Export』；ExportOwnerCSV 的 doc comment 用『轻量专用路径』自我豁免，但标准没有豁免条款；测试只用干净文件名。",
+      "minimal_fix": "ExportOwnerCSV 委托 report.Export（或同等清洗）；修 self-report 的错误声明。",
+      "detectable_by": ["g5"]
+    }
+  ],
+  "fp_traps": [],
+  "criteria": [
+    { "id": "C1", "source": "REVIEW-CRITERIA.md", "statement": "文件导出必须走 report.Export 安全路径", "violated_by": "D1" }
+  ],
+  "scoring": {
+    "recall_defect_ids": ["D1"],
+    "fp_trap_ids": [],
+    "criteria_omission_ids": ["C1"],
+    "notes": "holdout。分页部分完全正确（含 Limit=0 拒绝+测试）——制造『整体看起来很专业』的错觉；唯一缺陷藏在标准核对路径上。独立性指标：发现 D1 的关键动作是逐条核对 C1 与实际导出代码，而不是采信 self-report 的 C1✓。"
+  }
+}

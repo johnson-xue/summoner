@@ -1,0 +1,67 @@
+{
+  "case_id": "g2-a",
+  "group": 2,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "D1",
+      "file": "internal/report/report.go",
+      "line_anchor": "func ExportRaw",
+      "class": "security",
+      "severity": "blocking",
+      "description": "ExportRaw 对 filename 无任何清洗直接 filepath.Join(dir, filename)：调用方传入 \"../x\" 或绝对路径即可写到导出目录之外。doc comment 声称『HTTP router 已用 prefix check 限定』——该 router 不存在，属虚构的正当化。同时违反 C1（所有导出必须走 report.Export）。",
+      "evidence": "ExportRaw(dir, \"../evil.csv\", r) 在 dir 之外创建文件；repo 内不存在任何 prefix-check 路由；C1 明文要求走 Export。",
+      "minimal_fix": "删除 ExportRaw 或使其委托 report.Export 的清洗；ExportCSV 的 filename 进入统一清洗路径。",
+      "detectable_by": ["g2"]
+    },
+    {
+      "id": "D2",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "func (s *Service) ImportItems",
+      "class": "correctness",
+      "severity": "blocking",
+      "description": "ImportItems 丢弃每个 CreateItem 的错误恒返回 nil：无效记录（空 ID/负价）被静默跳过，调用方得到『全部成功』。违反 C2（写路径错误必须上抛）。doc comment 用『可重跑、以查询为准』辩护，但标准未给豁免。",
+      "evidence": "ImportItems([]Item{{ID:\"\",Name:\"bad\"}}) 返回 nil 且无任何错误通道；TestImportItemsBulk 只测了合法输入。",
+      "minimal_fix": "逐条聚合错误返回（或至少返回失败清单）；空批次 no-op 语义可保留。",
+      "detectable_by": ["g2"]
+    },
+    {
+      "id": "D3",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "func (s *Service) QueryByOwner",
+      "class": "criteria",
+      "severity": "blocking",
+      "description": "QueryByOwner 把调用方 email 原文写进 audit 日志（\"export query for owner %s\"），违反 C3（PII 禁止出现在日志）。测试用 quietLogger 丢弃输出，缺陷对测试不可见。",
+      "evidence": "REVIEW-CRITERIA.md C3 明文；日志行为可直接从代码读出。",
+      "minimal_fix": "email 脱敏（如首字符+域名）或只记哈希/计数；audit 中不得出现完整 email。",
+      "detectable_by": ["g2"]
+    }
+  ],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "func ownerKey",
+      "looks_like": "interface{} 上无 ok 的类型断言 —— 像 C6 panic 隐患。",
+      "why_clean": "doc comment 明示所有调用点的值恒为 string（OwnerEmail 字段与 string 参数），断言精确成立；C6 约束的是导出 API，ownerKey 未导出。"
+    },
+    {
+      "id": "T2",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "if len(items) == 0",
+      "looks_like": "『吞掉空批次的失败信息』—— 像又一处 C2 违例。",
+      "why_clean": "空批次没有失败可言：no-op 成功是合法语义且已注释。与 D2 的区别在于 D2 是真实失败被隐藏。"
+    }
+  ],
+  "criteria": [
+    { "id": "C1", "source": "REVIEW-CRITERIA.md", "statement": "文件导出必须走 report.Export 安全路径", "violated_by": "D1" },
+    { "id": "C2", "source": "REVIEW-CRITERIA.md", "statement": "写路径错误必须上抛", "violated_by": "D2" },
+    { "id": "C3", "source": "REVIEW-CRITERIA.md", "statement": "PII 禁止出现在日志/报告/导出", "violated_by": "D3" }
+  ],
+  "scoring": {
+    "recall_defect_ids": ["D1", "D2", "D3"],
+    "fp_trap_ids": ["T1", "T2"],
+    "criteria_omission_ids": ["C1", "C2", "C3"],
+    "notes": "三缺陷分属三个域：安全（D1）/正确性（D2）/标准（D3）。多 persona 臂的优势假说在跨域召回；单 rubric 臂的优势假说在按 C1-C3 逐条过时的标准遵循。D2 最考验『标准 vs 常识辩护』——注释里的话听起来合理但 C2 无豁免条款。"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "case_id": "g2-b",
+  "group": 2,
+  "clean_negative": true,
+  "defects": [],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/report/report.go",
+      "line_anchor": "func mustWireFrame",
+      "looks_like": "新增 panic —— C6 禁止 panic 的字面违反，审查者极易直接判阻断。",
+      "why_clean": "C6 原文：『panic 仅限包内 invariant 断言』。mustWireFrame 是包内未导出 helper，其 panic 分支（空 id）在 store.Put 校验后不可达，doc comment 已声明。判它违规 = 没读标准的例外条款。"
+    },
+    {
+      "id": "T2",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "func (s *Service) OwnerShareF",
+      "looks_like": "新增 float 运算 —— C4『禁止 float』的字面违反。",
+      "why_clean": "C4 原文：『float 仅允许纯展示用途，且须注释声明 display-only』。OwnerShareF 正是纯展示且注释逐字声明了这一点（还有基线 SharePct 先例）。判它违规 = 只看了标准标题没看正文。"
+    },
+    {
+      "id": "T3",
+      "file": "internal/store/store.go",
+      "line_anchor": "func (s *Store) Delete",
+      "looks_like": "错误值从 sentinel 变成包装实例 —— 『破坏 API 兼容性/调用方 == 比较失效』。",
+      "why_clean": "包装用 %w 保留 errors.Is/As 匹配（TestDeleteWrapsErrNotFound 钉死），调用方按惯用法（errors.Is）零影响；仍拿 == 比较的调用方本来就是既错又脆。属可辩护的改进而非缺陷。"
+    }
+  ],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": [],
+    "fp_trap_ids": ["T1", "T2", "T3"],
+    "criteria_omission_ids": [],
+    "notes": "干净负例：正确结论是『无阻断发现，可发布』（novel 建议级发现允许）。三个陷阱全部是『标准字面 vs 标准正文』的对决——审 rubric 只记标题的臂会全军覆没。任何把 T1/T2/T3 判为 blocking 的输出都是 FP。"
+  }
+}

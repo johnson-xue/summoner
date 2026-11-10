@@ -1,0 +1,36 @@
+{
+  "case_id": "g1-b",
+  "group": 1,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "D1",
+      "file": "internal/store/store.go",
+      "line_anchor": "func (s *Store) BatchDelete",
+      "class": "correctness",
+      "severity": "blocking",
+      "description": "BatchDelete 吞掉全部错误恒返回 nil（best-effort 语义未按约定）：违反基线契约 fail-fast + *BatchError 部分状态上报，也直接违反 REVIEW-CRITERIA.md C2（写路径错误必须上抛）。调用方无法感知失败、无法界定重试范围。",
+      "evidence": "BatchDelete([]string{\"A\",\"MISSING\",\"C\"}) 返回 nil；按契约应返回 *BatchError{Done:[A], Failed:MISSING}，且 C 必须未被删除。被俘获的 TestBatchDeleteBestEffort 反向断言了错误行为。",
+      "minimal_fix": "恢复 fail-fast + *BatchError（Done/Failed/Err）；恢复对应测试的 fail-fast 断言。若产品确实要 best-effort 语义，必须以显式新 API 提供，不得静默改掉既有契约。",
+      "detectable_by": ["g1"]
+    }
+  ],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/store/store.go",
+      "line_anchor": "type BatchError",
+      "looks_like": "行为改掉后 BatchError 结构体成为死代码 —— 审查者容易把它列为阻断缺陷。",
+      "why_clean": "补丁注释明确保留它是为了旧调用方反序列化兼容（wire-compat），修复 D1 后它重新投入使用；『死代码应删』至多是建议级，不构成阻断缺陷。"
+    }
+  ],
+  "criteria": [
+    { "id": "C2", "source": "REVIEW-CRITERIA.md", "statement": "写路径错误必须上抛；吞错后返回成功视为阻断缺陷", "violated_by": "D1" }
+  ],
+  "scoring": {
+    "recall_defect_ids": ["D1"],
+    "fp_trap_ids": ["T1"],
+    "criteria_omission_ids": ["C2"],
+    "notes": "判据：修复后 BatchDelete 恢复 fail-fast 语义且测试同步恢复；若臂只修实现不修被俘获测试（TestBatchDeleteBestEffort 仍断言假成功），视为修复不完整。"
+  }
+}

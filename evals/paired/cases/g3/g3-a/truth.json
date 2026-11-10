@@ -1,0 +1,37 @@
+{
+  "case_id": "g3-a",
+  "group": 3,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "R1",
+      "file": "internal/api/dispatch.go",
+      "line_anchor": "var storeMethodAliases",
+      "class": "rename-ref",
+      "severity": "blocking",
+      "description": "按名字反射解析的别名表（\"item\"/\"lookup\" → \"GetByID\"）：编译器与文本检索都可能漏掉。漏改后 TestInvokeAccessor 失败（reflect 找不到方法）。",
+      "evidence": "改名后运行 go test ./internal/api/：InvokeAccessor 报 'points at missing store method'。",
+      "minimal_fix": "别名值同步改为 \"Fetch\"；文档注释无需变（约定本身不变）。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R2",
+      "file": "internal/store/reflect_smoke_test.go",
+      "line_anchor": "for _, name := range []string",
+      "class": "rename-ref",
+      "severity": "blocking",
+      "description": "公共方法冒烟测试的名字清单是字符串数据：漏改后 TestPublicMethodSmoke 失败。",
+      "evidence": "改名后运行 go test ./internal/store/：'store method \"GetByID\" missing'。",
+      "minimal_fix": "清单项改为 \"Fetch\"。",
+      "detectable_by": ["g3"]
+    }
+  ],
+  "fp_traps": [],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": ["R1", "R2"],
+    "fp_trap_ids": [],
+    "criteria_omission_ids": [],
+    "notes": "组③测量的是执行策略而非缺陷发现：覆盖（R1/R2 是否一次到位）、质量（终态 build+test 全绿）、协调量（分片臂的跨片同步事件数）、时长。文本调用点（编译器可查）不计入缺陷，属基础工作。"
+  }
+}

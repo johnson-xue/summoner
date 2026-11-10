@@ -1,0 +1,11 @@
+case_id: g5-b
+group: 5
+split: holdout
+difficulty: hard
+repo: frozen_base
+setup: setup.patch
+workflow: review
+est_context_tokens: 3000
+arm_notes: >
+  holdout。『标准核对 vs 自检报告采信』的直接对决：代码里 90% 是高质量
+  实现，唯一缺陷恰在 self-report 声称已通过的那条标准（C1）上。

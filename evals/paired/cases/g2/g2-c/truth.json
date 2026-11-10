@@ -1,0 +1,65 @@
+{
+  "case_id": "g2-c",
+  "group": 2,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "D1",
+      "file": "internal/api/admin.go",
+      "line_anchor": "func (s *Service) WipeAll",
+      "class": "security",
+      "severity": "blocking",
+      "description": "权限缺口：Restock/SetPrice/Reserve 都过 RequireRole(\"admin\")，唯独破坏力最大的 WipeAll 没有任何角色检查——任何角色（含默认空角色 NewService）都能清空全部库存。task.md 的『请独立验证权限覆盖』就是冲它去的。",
+      "evidence": "TestWipeAll 用 viewer 角色成功清库（测试本身演示了缺口且照样绿）；对比同文件其余三个入口均有 RequireRole。",
+      "minimal_fix": "WipeAll 包 RequireRole(\"admin\", ...)（并考虑超管角色）；补一个 viewer 被拒的测试。",
+      "detectable_by": ["g2"]
+    },
+    {
+      "id": "D2",
+      "file": "internal/api/admin.go",
+      "line_anchor": "func (s *Service) NotifyExport",
+      "class": "concurrency",
+      "severity": "blocking",
+      "description": "goroutine 泄漏：go func(){ ch <- name }() 对无缓冲 channel 且无接收者时永久阻塞。doc comment 声称『事件被丢弃（misses are acceptable）』——这是谎言，事件不是被丢弃，goroutine 是被卡死。调用方超时弃用 channel 后泄漏永久化。",
+      "evidence": "TestNotifyExportDelivers 用容量 1 的缓冲 channel 掩盖了问题；把容量改成 0 且不接收，goroutine 永远阻塞（可用 goleak 类工具或推理证明）。注释语义（drop）与实现语义（block）不一致是直接证据。",
+      "minimal_fix": "select + default 真正实现 fire-and-forget 丢弃语义（与注释对齐），或提供带 ctx 的关闭路径。",
+      "detectable_by": ["g2"]
+    },
+    {
+      "id": "D3",
+      "file": "internal/api/admin.go",
+      "line_anchor": "func (s *Service) WipeAll",
+      "class": "criteria",
+      "severity": "blocking",
+      "description": "C5 违例：本 diff 新增的导出函数 WipeAll 没有 doc comment（同文件其余新导出函数都有）。按标准即阻断，需补注释。",
+      "evidence": "REVIEW-CRITERIA.md C5；admin.go 中 WipeAll 是唯一无注释的新导出标识符。",
+      "minimal_fix": "补 godoc 注释（以 WipeAll 开头）。",
+      "detectable_by": ["g2"]
+    }
+  ],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/api/admin.go",
+      "line_anchor": "time.Now().UTC().Format(time.RFC3339)",
+      "looks_like": "时间戳/时区 bug 高发区（DST、本地时区混用）—— 审查者惯性质疑。",
+      "why_clean": "显式 .UTC() + RFC3339，且 doc comment 说明了跨区域报表窗的动机；没有任何本地时区路径。"
+    },
+    {
+      "id": "T2",
+      "file": "internal/api/admin.go",
+      "line_anchor": "var adminMu sync.Mutex",
+      "looks_like": "包级全局锁 + 『store 无 CAS』听起来像并发设计缺陷或过度设计。",
+      "why_clean": "注释明确说明这是 GetByID-修改-Put 读改写周期的正确性边界（store 无 CAS，两并发读改写会丢更新），所有 admin 变更全周期持锁；实现与注释一致且测试覆盖（TestAdminOpsHappyPath）。判它缺陷需要指出真实的丢更新场景——不存在。"
+    }
+  ],
+  "criteria": [
+    { "id": "C5", "source": "REVIEW-CRITERIA.md", "statement": "新增导出 API 必须有 doc comment", "violated_by": "D3" }
+  ],
+  "scoring": {
+    "recall_defect_ids": ["D1", "D2", "D3"],
+    "fp_trap_ids": ["T1", "T2"],
+    "criteria_omission_ids": ["C5"],
+    "notes": "D1 藏在『统一门已覆盖』的自信陈述后面（task.md 故意下钩）；D2 的注释谎言需要逐字对读语义；D3 是纯标准遵循。三者的发现路径完全不同：交叉比对（D1）/注释-实现矛盾（D2）/清单核对（D3）。"
+  }
+}

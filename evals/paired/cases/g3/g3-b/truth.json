@@ -1,0 +1,59 @@
+{
+  "case_id": "g3-b",
+  "group": 3,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "R1",
+      "file": "internal/api/dispatch.go",
+      "line_anchor": "var storeMethodAliases",
+      "class": "rename-ref",
+      "severity": "blocking",
+      "description": "同 g3-a R1：反射别名表（\"item\"/\"lookup\" → \"GetByID\"）。",
+      "evidence": "漏改后 TestInvokeAccessor 失败。",
+      "minimal_fix": "别名值改为 \"Fetch\"。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R2",
+      "file": "internal/store/reflect_smoke_test.go",
+      "line_anchor": "for _, name := range []string",
+      "class": "rename-ref",
+      "severity": "blocking",
+      "description": "同 g3-a R2：冒烟测试名字清单。",
+      "evidence": "漏改后 TestPublicMethodSmoke 失败。",
+      "minimal_fix": "清单项改为 \"Fetch\"。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R3",
+      "file": "CHANGELOG.md",
+      "line_anchor": "## Unreleased",
+      "class": "docs",
+      "severity": "blocking",
+      "description": "任务明文要求的破坏性变更记录：Unreleased 节必须含 GetByID→Fetch 条目（旧名→新名 + 影响面/迁移说明）。漏记 = 任务完成度缺口。",
+      "evidence": "任务条款 2；CHANGELOG.md 模板注释『破坏性 API 改名必须记入本节』。",
+      "minimal_fix": "补条目，含旧名/新名与调用方迁移指引。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R4",
+      "file": "README.md",
+      "line_anchor": "## 行为契约",
+      "class": "docs",
+      "severity": "major",
+      "description": "任务条款 3：仓库文档提到旧名处一并更新。README 行为契约节以 `store.List` 为例列出契约（未直接写 GetByID），需核对；包级 doc comment 中提到 GetByID 的（store.go ErrNotFound 注释等）属于代码注释，随 R1/R2 一并处理。",
+      "evidence": "grep -rn GetByID 全仓无残留（不含 CHANGELOG 的迁移说明条目）。",
+      "minimal_fix": "全仓旧名清零（CHANGELOG 历史记录条目除外）。",
+      "detectable_by": ["g3"]
+    }
+  ],
+  "fp_traps": [],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": ["R1", "R2", "R3"],
+    "fp_trap_ids": [],
+    "criteria_omission_ids": [],
+    "notes": "holdout。R3/R4 是任务条款完成度（非代码缺陷），分片臂最容易漏的恰是这类『不属任何代码分片』的条款——这是组③协调量测量的核心场景。R4 降级为 major：单独漏掉不阻断发布但算完成度缺口。"
+  }
+}

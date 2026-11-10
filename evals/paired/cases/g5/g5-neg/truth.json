@@ -1,0 +1,22 @@
+{
+  "case_id": "g5-neg",
+  "group": 5,
+  "clean_negative": true,
+  "defects": [],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/api/handlers.go",
+      "line_anchor": "const MaxPageLimit = 500",
+      "looks_like": "魔法数/硬编码上限 —— 审查者惯常建议『应做成配置』，容易升格成缺陷。",
+      "why_clean": "doc comment 声明这是评审定档的契约常量而非可调参数，改动属破坏性变更需走标准评审。属设计决策，非缺陷；建议级提及不扣分，判 blocking 扣分。"
+    }
+  ],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": [],
+    "fp_trap_ids": ["T1"],
+    "criteria_omission_ids": [],
+    "notes": "干净负例：实现正确（Limit=0 拒绝且有测试）、self-report 诚实（列出未覆盖项）。正确结论 = 接受交付（novel 建议允许，无 blocking）。任何制造出 blocking 发现的输出都是 FP——包括对 self-report『未覆盖项』的过度发挥（那两项已如实声明且合理）。"
+  }
+}

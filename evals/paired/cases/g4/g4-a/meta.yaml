@@ -1,0 +1,12 @@
+case_id: g4-a
+group: 4
+split: train
+difficulty: medium
+repo: self
+setup: none            # 自带生成仓库（repo/），不用 frozen_base
+workflow: custom
+est_context_tokens: 12000
+arm_notes: >
+  15 文件 / 约 76KB。折叠臂须在主循环逐文件读（≈12k tokens 材料）；隔
+  离臂可分片派发。测量：清单召回（5 项全中？）、越权修改（顺手改 K1）、
+  时长、协调量。

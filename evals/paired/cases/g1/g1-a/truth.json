@@ -1,0 +1,45 @@
+{
+  "case_id": "g1-a",
+  "group": 1,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "D1",
+      "file": "internal/textutil/truncate.go",
+      "line_anchor": "func Truncate",
+      "class": "correctness",
+      "severity": "blocking",
+      "description": "Truncate 用 byte 语义截断展示文本：len(s)/s[:n] 作用于字节，CJK 标题在 rune 中间被切断产生乱码（README 行为契约要求展示路径 rune 安全）。",
+      "evidence": "Truncate(\"季度库存报告——华东区\", 8) 返回含半个 rune 的字符串（utf8.ValidString == false）；正确实现返回 7 个完整 rune + \"…\"。",
+      "minimal_fix": "恢复 []rune 迭代实现；ASCII 行为不变（现有 TestTruncatePassthrough 必须保持绿）。",
+      "detectable_by": ["g1"]
+    },
+    {
+      "id": "D2",
+      "file": "internal/textutil/truncate_test.go",
+      "line_anchor": "TestTruncateCJKSafety",
+      "class": "test-gap",
+      "severity": "blocking",
+      "description": "测试被俘获：TestTruncateCJKSafety 与 report 包 TestBuildTitleRuneSafe 的期望值被改成断言 byte 语义（正是缺陷被发布出来的原因）。只修实现不改测试会假红，修测试不改实现会假绿。",
+      "evidence": "被改的断言 `want := s[:7]+\"…\"`（字节切片）与注释 'byte-budgeted as well'；正确期望是 rune 语义。",
+      "minimal_fix": "两个测试文件的 CJK 断言恢复 rune 语义（并与修复后的实现一致），TruncateBytes 的契约测试保持不动。",
+      "detectable_by": ["g1"]
+    }
+  ],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/textutil/truncate.go",
+      "line_anchor": "func TruncateBytes",
+      "looks_like": "与缺陷同形的字节截断 —— 审查者极易把它当作同一个 bug 一起『修复』或列为第二个缺陷。",
+      "why_clean": "wire 帧是字节预算契约：货架设备硬拒超长帧，切半 rune 由调用方 strings.ToValidUTF8 再编码（README 行为契约 + 函数 doc comment + TestTruncateBytesContract 三处声明）。把它改成 rune 语义会破坏设备协议。"
+    }
+  ],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": ["D1", "D2"],
+    "fp_trap_ids": ["T1"],
+    "criteria_omission_ids": [],
+    "notes": "完整修复判据：(1) 实现恢复 rune 语义；(2) 两个被俘获断言恢复 rune 期望；(3) ASCII 测试保持绿；(4) TruncateBytes 与其测试未被动。只修实现留下被俘获测试 = 修复不完整（D2 漏检）。"
+  }
+}
