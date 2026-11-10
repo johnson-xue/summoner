@@ -102,7 +102,7 @@ func acceptPhase(t *testing.T, r *shared.RunState, phaseID string) {
 	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed(%s): %v", cp.ID, err)
 	}
-	if err := r.RecordDecision(cp.ID, shared.DecisionContinue); err != nil {
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision(%s): %v", cp.ID, err)
 	}
 }
@@ -344,7 +344,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r2.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r2.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r2.RecordDecision(cp.ID, shared.DecisionDone); err != nil {
+	if err := r2.RecordDecision(cp.ID, shared.DecisionDone, ""); err != nil {
 		t.Fatalf("RecordDecision(DONE): %v", err)
 	}
 	if code, _ = callGate(t, toolPayload(t, "Edit", editInput())); code != 0 {
@@ -367,7 +367,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r3.MarkDisplayed(cpC.ID, shared.CheckpointContentDigest(cpC, r3.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r3.RecordDecision(cpC.ID, shared.DecisionSkip); err != nil {
+	if err := r3.RecordDecision(cpC.ID, shared.DecisionSkip, ""); err != nil {
 		t.Fatalf("RecordDecision(SKIP): %v", err)
 	}
 	if err := r3.OpenPhase("diagnosis"); err != nil {
@@ -380,7 +380,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r3.MarkDisplayed(cpD.ID, shared.CheckpointContentDigest(cpD, r3.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r3.RecordDecision(cpD.ID, shared.DecisionRecall); err != nil {
+	if err := r3.RecordDecision(cpD.ID, shared.DecisionRecall, ""); err != nil {
 		t.Fatalf("RecordDecision(RECALL): %v", err)
 	}
 	code, stderr = callGate(t, toolPayload(t, "Edit", editInput()))
@@ -702,7 +702,7 @@ func TestAskUserMissingNonce(t *testing.T) {
 	if err := cur.MarkDisplayed(cpNow.ID, shared.CheckpointContentDigest(*cpNow, cur.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := cur.RecordDecision(cpNow.ID, shared.DecisionContinue); err != nil {
+	if err := cur.RecordDecision(cpNow.ID, shared.DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision: %v", err)
 	}
 	code, _ = callGate(t, toolPayload(t, "AskUserQuestion", askInput("any question at all")))
@@ -1043,7 +1043,7 @@ func TestNextPhaseAfterRecall(t *testing.T) {
 	if err := r.MarkDisplayed(cpD.ID, shared.CheckpointContentDigest(cpD, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r.RecordDecision(cpD.ID, shared.DecisionRecall); err != nil {
+	if err := r.RecordDecision(cpD.ID, shared.DecisionRecall, ""); err != nil {
 		t.Fatalf("RecordDecision(RECALL): %v", err)
 	}
 
@@ -1055,7 +1055,7 @@ func TestNextPhaseAfterRecall(t *testing.T) {
 	if err := r.MarkDisplayed(cpC.ID, shared.CheckpointContentDigest(cpC, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r.RecordDecision(cpC.ID, shared.DecisionContinue); err != nil {
+	if err := r.RecordDecision(cpC.ID, shared.DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision(CONTINUE): %v", err)
 	}
 
@@ -1084,7 +1084,7 @@ func TestSkippedPhaseSequencing(t *testing.T) {
 	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r.RecordDecision(cp.ID, shared.DecisionSkip); err != nil {
+	if err := r.RecordDecision(cp.ID, shared.DecisionSkip, ""); err != nil {
 		t.Fatalf("RecordDecision(SKIP): %v", err)
 	}
 
@@ -1114,7 +1114,7 @@ func TestPostGameWriteWithoutDiagnosis(t *testing.T) {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
 	// Emergency stop: minimal exit journal must still be writable.
-	if err := r.RecordDecision(cp.ID, shared.DecisionStop); err != nil {
+	if err := r.RecordDecision(cp.ID, shared.DecisionStop, ""); err != nil {
 		t.Fatalf("RecordDecision(STOP): %v", err)
 	}
 	if r.Status != shared.StatusPostGamePending {

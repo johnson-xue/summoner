@@ -717,8 +717,30 @@ func (r *RunState) restoreRecoveryPrior() {
 // displayed render (B1), and the decision legal for the checkpoint kind.
 // REVIEW_ON_DEMAND records a persisted review obligation instead of
 // authorizing work (B2).
-func (r *RunState) RecordDecision(checkpointID string, d Decision) error {
+//
+// toolUseID binds the decision to the platform AskUserQuestion call that
+// carried it (spec §7): a replayed callback with the same id is an idempotent
+// no-op (nil, nothing re-recorded — checked BEFORE the status gate, since the
+// original decision may have already moved the run off WAIT_USER); a
+// different id on an already-decided checkpoint is an error — a second
+// callback never overwrites a recorded decision. Direct (non-platform)
+// callers may pass "" — replays of "" are idempotent the same way.
+func (r *RunState) RecordDecision(checkpointID string, d Decision, toolUseID string) error {
 	return r.commit(func(s *RunState) error {
+		// Replay idempotency first: it must not depend on the current status.
+		for i := range s.Checkpoints {
+			cp := &s.Checkpoints[i]
+			if cp.ID != checkpointID || !cp.Decided {
+				continue
+			}
+			if cp.DecisionToolUseID == toolUseID {
+				if cp.Decision == d {
+					return nil // same callback replayed: idempotent no-op
+				}
+				return fmt.Errorf("RecordDecision: checkpoint %s already decided %s via %q — a conflicting replay (%s) is rejected", checkpointID, cp.Decision, cp.DecisionToolUseID, d)
+			}
+			return fmt.Errorf("RecordDecision: checkpoint %s already decided via tool_use %q — callback %q cannot overwrite it", checkpointID, cp.DecisionToolUseID, toolUseID)
+		}
 		if err := s.requireStatus(StatusWaitUser, "RecordDecision"); err != nil {
 			return err
 		}
@@ -762,6 +784,7 @@ func (r *RunState) RecordDecision(checkpointID string, d Decision) error {
 		cp.Decided = true
 		cp.Decision = d
 		cp.DecidedAt = nowUTC()
+		cp.DecisionToolUseID = toolUseID
 		switch d {
 		case DecisionContinue:
 			if cp.Kind == CheckpointRecovery {

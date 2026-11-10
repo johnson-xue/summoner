@@ -246,6 +246,11 @@ type CheckpointState struct {
 	Superseded       bool              `json:"superseded,omitempty"`
 	Decision         Decision          `json:"decision,omitempty"`
 	DecidedAt        string            `json:"decided_at,omitempty"`
+	// DecisionToolUseID binds the decision to the platform AskUserQuestion
+	// call whose injected tool_response carried it (spec §7 平台关联键): the
+	// replay-idempotency key of RecordDecision — a replayed callback with the
+	// same id is a no-op, a different id never overwrites (task 4).
+	DecisionToolUseID string `json:"decision_tool_use_id,omitempty"`
 }
 
 // ReviewObligation is the persisted [v] (REVIEW_ON_DEMAND) obligation

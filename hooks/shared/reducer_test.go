@@ -62,7 +62,7 @@ func decideCurrent(t *testing.T, r *RunState, d Decision) {
 	if cp == nil {
 		t.Fatal("decideCurrent: no open checkpoint")
 	}
-	if err := r.RecordDecision(cp.ID, d); err != nil {
+	if err := r.RecordDecision(cp.ID, d, ""); err != nil {
 		t.Fatalf("RecordDecision(%s, %s): %v", cp.ID, d, err)
 	}
 }
@@ -128,12 +128,12 @@ func TestIllegalTransitions(t *testing.T) {
 	}
 
 	// ACCEPT_REQUIREMENT_CHANGE with no change open (checkpoint not displayed yet either).
-	if err := r.RecordDecision(cp1.ID, DecisionAcceptRequirementChange); err == nil {
+	if err := r.RecordDecision(cp1.ID, DecisionAcceptRequirementChange, ""); err == nil {
 		t.Error("ACCEPT_REQUIREMENT_CHANGE outside CHANGE_OPEN: want error, got nil")
 	}
 
 	displayCurrent(t, r)
-	if err := r.RecordDecision(cp1.ID, Decision("BOGUS")); err == nil {
+	if err := r.RecordDecision(cp1.ID, Decision("BOGUS"), ""); err == nil {
 		t.Error("unknown decision value: want error, got nil")
 	}
 	decideCurrent(t, r, DecisionContinue)
@@ -172,7 +172,7 @@ func TestIllegalTransitions(t *testing.T) {
 		t.Fatalf("ApplyRequirementDelta: %v", err)
 	}
 	displayCurrent(t, r)
-	if err := r.RecordDecision(r.CurrentCheckpoint().ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(r.CurrentCheckpoint().ID, DecisionContinue, ""); err == nil {
 		t.Error("CONTINUE at change-confirm checkpoint: want error, got nil")
 	}
 	decideCurrent(t, r, DecisionAcceptRequirementChange)
@@ -186,7 +186,7 @@ func TestIllegalTransitions(t *testing.T) {
 		"OpenPhase":             func() error { return r.OpenPhase("p9") },
 		"SubmitPhase":           func() error { _, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p9"}); return err },
 		"MarkDisplayed":         func() error { return r.MarkDisplayed("cp-999", "digest") },
-		"RecordDecision":        func() error { return r.RecordDecision("cp-999", DecisionContinue) },
+		"RecordDecision":        func() error { return r.RecordDecision("cp-999", DecisionContinue, "") },
 		"RequestReview":         func() error { _, err := r.RequestReview(testEnvelope()); return err },
 		"RecordReviewResult":    func() error { return r.RecordReviewResult(ReviewResult{ReviewID: "rev-1"}) },
 		"OpenRequirementChange": func() error { return r.OpenRequirementChange("late change") },
@@ -231,7 +231,7 @@ func TestDecisionRequiresDisplayed(t *testing.T) {
 	}
 
 	// Deciding before the checkpoint was displayed.
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err == nil {
 		t.Error("RecordDecision before MarkDisplayed: want error, got nil")
 	}
 
@@ -249,11 +249,54 @@ func TestDecisionRequiresDisplayed(t *testing.T) {
 	}
 
 	displayCurrent(t, r)
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision after display: %v", err)
 	}
 	if r.Status != StatusActive {
 		t.Errorf("status = %s, want ACTIVE", r.Status)
+	}
+}
+
+// TestRecordDecisionIdempotentReplay pins the decision-replay idempotency
+// (task 4): the decision binds the platform AskUserQuestion tool_use_id, so a
+// replayed callback with the same id is an idempotent no-op (nil, nothing
+// re-recorded — even after the run left WAIT_USER), while a different id, or
+// a conflicting decision on the same id, is an error that never overwrites
+// the recorded decision.
+func TestRecordDecisionIdempotentReplay(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	cp := openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+
+	if err := r.RecordDecision(cp.ID, DecisionContinue, "toolu-1"); err != nil {
+		t.Fatalf("first RecordDecision: %v", err)
+	}
+	if r.Status != StatusActive {
+		t.Fatalf("status = %s, want ACTIVE", r.Status)
+	}
+
+	// Same callback replayed: idempotent no-op despite the non-WAIT_USER status.
+	if err := r.RecordDecision(cp.ID, DecisionContinue, "toolu-1"); err != nil {
+		t.Fatalf("replayed RecordDecision: want idempotent nil, got %v", err)
+	}
+	// A different callback cannot overwrite the decision.
+	if err := r.RecordDecision(cp.ID, DecisionSkip, "toolu-2"); err == nil {
+		t.Fatal("different tool_use_id on a decided checkpoint: want error, got nil")
+	}
+	// A conflicting decision riding the same tool_use_id is a contradiction.
+	if err := r.RecordDecision(cp.ID, DecisionSkip, "toolu-1"); err == nil {
+		t.Fatal("same tool_use_id with a different decision: want error, got nil")
+	}
+
+	if cp := r.Checkpoints[0]; !cp.Decided || cp.Decision != DecisionContinue || cp.DecisionToolUseID != "toolu-1" {
+		t.Fatalf("checkpoint = %+v, want the original CONTINUE bound to toolu-1 (never overwritten)", cp)
+	}
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if cp := disk.Checkpoints[0]; cp.Decision != DecisionContinue || cp.DecisionToolUseID != "toolu-1" {
+		t.Fatalf("disk checkpoint = %+v, want CONTINUE / toolu-1", cp)
 	}
 }
 
@@ -436,7 +479,7 @@ func TestBudgetCounting(t *testing.T) {
 	if err := r.MarkDisplayed(cp.ID, CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision: %v", err)
 	}
 	if err := r.OpenPhase("p2"); err != nil {
@@ -540,7 +583,7 @@ func TestRequirementChangeLoop(t *testing.T) {
 
 	// Single-point confirmation restores the saved position and returns to ACTIVE.
 	displayCurrent(t, r)
-	if err := r.RecordDecision(cp.ID, DecisionAcceptRequirementChange); err != nil {
+	if err := r.RecordDecision(cp.ID, DecisionAcceptRequirementChange, ""); err != nil {
 		t.Fatalf("RecordDecision(ACCEPT_REQUIREMENT_CHANGE): %v", err)
 	}
 	if r.Change != nil {
@@ -862,7 +905,7 @@ func TestM2RequirementChangeFromCheckpointSupersedesAndRerenders(t *testing.T) {
 	if r.CurrentCheckpoint() != nil {
 		t.Fatal("a superseded checkpoint must not be CurrentCheckpoint")
 	}
-	if err := r.RecordDecision(cp1.ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(cp1.ID, DecisionContinue, ""); err == nil {
 		t.Fatal("decision on a superseded checkpoint: want error, got nil")
 	}
 
@@ -878,7 +921,7 @@ func TestM2RequirementChangeFromCheckpointSupersedesAndRerenders(t *testing.T) {
 		t.Fatalf("RequirementsVersion = %d, want 2", r.RequirementsVersion)
 	}
 	displayCurrent(t, r)
-	if err := r.RecordDecision(confirm.ID, DecisionAcceptRequirementChange); err != nil {
+	if err := r.RecordDecision(confirm.ID, DecisionAcceptRequirementChange, ""); err != nil {
 		t.Fatalf("RecordDecision(ACCEPT_REQUIREMENT_CHANGE): %v", err)
 	}
 
@@ -1169,7 +1212,7 @@ func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
 
 	// Note edited after the display.
 	cp.Note = "amended after display"
-	err := r.RecordDecision(cp.ID, DecisionContinue)
+	err := r.RecordDecision(cp.ID, DecisionContinue, "")
 	if err == nil || !strings.Contains(err.Error(), "changed since display") {
 		t.Fatalf("note edited after display: err = %v, want content-changed rejection", err)
 	}
@@ -1177,14 +1220,14 @@ func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
 
 	// Criteria added after the display.
 	cp.CriteriaIDs = append(cp.CriteriaIDs, "c3")
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err == nil {
 		t.Fatal("criteria edited after display: want error, got nil")
 	}
 	cp.CriteriaIDs = cp.CriteriaIDs[:len(cp.CriteriaIDs)-1]
 
 	// Requirements version bumped after the display.
 	r.RequirementsVersion++
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err == nil {
 		t.Fatal("requirements version bump after display: want error, got nil")
 	}
 	r.RequirementsVersion--
@@ -1192,7 +1235,7 @@ func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
 	// Phase binding drifted after the display (review round 1, F3).
 	origPhase := cp.PhaseID
 	cp.PhaseID = "p-other"
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err == nil {
 		t.Fatal("phase drift after display: want error, got nil")
 	}
 	cp.PhaseID = origPhase
@@ -1200,13 +1243,13 @@ func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
 	// Artifact version drifted after the display (review round 1, F3).
 	origArtifact := cp.ArtifactVersions["p1.md"]
 	cp.ArtifactVersions["p1.md"] = "tampered"
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err == nil {
 		t.Fatal("artifact-version drift after display: want error, got nil")
 	}
 	cp.ArtifactVersions["p1.md"] = origArtifact
 
 	// Untouched content still decides.
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err != nil {
 		t.Fatalf("unchanged checkpoint decision: %v", err)
 	}
 	if r.Status != StatusActive {
@@ -1222,7 +1265,7 @@ func TestB2ReviewOnDemandObligation(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	cp := openAndSubmit(t, r, "p1", "c1")
 	displayCurrent(t, r)
-	if err := r.RecordDecision(cp.ID, DecisionReviewOnDemand); err != nil {
+	if err := r.RecordDecision(cp.ID, DecisionReviewOnDemand, ""); err != nil {
 		t.Fatalf("RecordDecision(REVIEW_ON_DEMAND): %v", err)
 	}
 	if r.Status != StatusReviewPending {
@@ -1297,11 +1340,11 @@ func TestB3RecoveryCheckpointOnFailedOrIndeterminate(t *testing.T) {
 		// Only CONTINUE / RECALL / STOP are legal at a recovery checkpoint.
 		displayCurrent(t, r)
 		for _, d := range []Decision{DecisionSkip, DecisionDone, DecisionReviewOnDemand, DecisionAcceptRequirementChange} {
-			if err := r.RecordDecision(cp.ID, d); err == nil {
+			if err := r.RecordDecision(cp.ID, d, ""); err == nil {
 				t.Fatalf("branch %s: %s at a recovery checkpoint: want error, got nil", branch, d)
 			}
 		}
-		if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+		if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err != nil {
 			t.Fatalf("branch %s: CONTINUE at recovery checkpoint: %v", branch, err)
 		}
 		if r.Status != StatusActive {
@@ -1587,7 +1630,7 @@ func TestM10StaleClearedOnReaccept(t *testing.T) {
 	if err := r.MarkDisplayed(cp.ID, CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
-	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+	if err := r.RecordDecision(cp.ID, DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision(p1 redo): %v", err)
 	}
 	if containsID(r.Stale, "c1") {

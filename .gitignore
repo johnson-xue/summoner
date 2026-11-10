@@ -11,6 +11,7 @@ hooks/bin/*
 !hooks/bin/pretooluse-gate
 !hooks/bin/stop
 !hooks/bin/validate-manifest
+!hooks/bin/posttooluse
 !hooks/bin/*-darwin-arm64
 !hooks/bin/*-darwin-amd64
 !hooks/bin/*-linux-amd64

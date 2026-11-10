@@ -44,6 +44,10 @@ const (
 	EventCheckpointOpened    = "checkpoint.opened"
 	EventCheckpointDisplayed = "checkpoint.displayed"
 	EventCheckpointDecided   = "checkpoint.decided"
+	// EventCheckpointDecisionRejected records a decision ATTEMPT that failed
+	// validation (spec §7: 非平台形状/错 checkpoint/超时自动续答/非法选择) —
+	// the answer is never recorded, and the rejection is not a hook error.
+	EventCheckpointDecisionRejected = "checkpoint.decision_rejected"
 
 	EventRecallApplied = "recall.applied"
 
@@ -90,7 +94,7 @@ const (
 var allEventTypes = []string{
 	EventWorkflowStarted, EventWorkflowEnded, EventWorkflowAborted,
 	EventPhaseStarted, EventPhaseClosed, EventPhaseSubmittedRejected,
-	EventCheckpointOpened, EventCheckpointDisplayed, EventCheckpointDecided,
+	EventCheckpointOpened, EventCheckpointDisplayed, EventCheckpointDecided, EventCheckpointDecisionRejected,
 	EventRecallApplied,
 	EventChangeOpened, EventChangeDeltaApplied, EventChangeResumed,
 	EventToolStarted, EventToolResult, EventToolFailed, EventToolOutcomeUnknown, EventToolResolved,
