@@ -692,6 +692,38 @@ func TestIsJournalPathFixedPath(t *testing.T) {
 	}
 }
 
+// TestPostGameNilLedgerFallbackKindUnknown (F5): a nil ledger at observation
+// time means the process died between the terminal decision and its
+// conclusion — the fallback must stamp the honest "unknown", never an
+// unobserved "normal", and a later StartPostGame carrying the real kind
+// overwrites it.
+func TestPostGameNilLedgerFallbackKindUnknown(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	firstDisplayedCheckpoint(t, r)
+	lim := BudgetLimits{}
+	if err := r.RecordDecisionWithBudget(r.CurrentCheckpoint().ID, DecisionDone, "tu-done", &BudgetSettlement{ToolUseID: "tu-done", Confirm: &lim}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the death window: POST_GAME_PENDING with NO ledger.
+	r.PostGame = nil
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RecordPostGameAnswer("q1", "tu-pg-1"); err != nil {
+		t.Fatal(err)
+	}
+	if r.PostGame.Kind != "unknown" {
+		t.Fatalf("nil-ledger fallback kind = %q, want \"unknown\" (the true kind is unknowable)", r.PostGame.Kind)
+	}
+	// A later real StartPostGame still wins.
+	if err := r.StartPostGame("emergency_minimal"); err != nil {
+		t.Fatal(err)
+	}
+	if r.PostGame.Kind != "emergency_minimal" {
+		t.Fatalf("StartPostGame over unknown = %q, want emergency_minimal", r.PostGame.Kind)
+	}
+}
+
 // contentDigestOf hashes a file's bytes (the observation digest form).
 func contentDigestOf(t *testing.T, path string) string {
 	t.Helper()

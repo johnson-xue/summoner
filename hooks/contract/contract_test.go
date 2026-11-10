@@ -2014,9 +2014,11 @@ func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
 		t.Fatalf("the exhaustion checkpoint must carry the extension offer (delta = current limit): %+v", cp)
 	}
 
-	// Extend + decision in ONE call: limits raise (2+2), the submit spent one
-	// more (3/4) — work permitted again, and the next phase opens under the
-	// raised budget.
+	// Extend + decision in ONE call: limits raise (2+2). Counter arithmetic
+	// (fix-round F2): the two diagnosis work calls (2) plus ONE exempt
+	// mid-phase status render (3) — the phase-submit itself NEVER ticks
+	// (CountToolCall is a no-op once SubmitPhase closed the phase) — so the
+	// counter reads 3/4 and work is permitted again under the raised budget.
 	renderAndDecideSettle(t, runID, "tu-ask-2", cp, 0, func(labels []string) string {
 		return firstLabelWithKeyword(labels, "continue")
 	}, "", "extend")
@@ -2026,6 +2028,11 @@ func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
 	}
 	if run.Limits.PhaseToolCalls != 4 || len(run.BudgetExtensions) != 1 || run.Status != shared.StatusActive {
 		t.Fatalf("after extend+continue: limits %+v extensions %d status %s, want 4/1/ACTIVE", run.Limits, len(run.BudgetExtensions), run.Status)
+	}
+	// F2 pin: the counter is 3 (2 work calls + 1 exempt mid-phase status
+	// render) — the exempt phase-submit contributed NOTHING.
+	if run.Counters.PhaseToolCalls != 3 {
+		t.Fatalf("counter after extend = %d, want 3 (the exempt submit never ticks)", run.Counters.PhaseToolCalls)
 	}
 	if code, _, stderr := runBinary(t, "pretooluse-gate",
 		gatePayload(t, "Skill", "tu-skill-2", map[string]interface{}{"skill": "example-skill"}), nil); code != 0 {

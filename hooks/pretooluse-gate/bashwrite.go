@@ -156,12 +156,17 @@ func classifySegment(words []string) bool {
 
 // isStatusInvocation reports whether a Bash command is EXACTLY the canonical
 // read-only summoner-status render (T18 budget escape): every segment
-// resolves to the summoner-status binary with no operands beyond the
-// canonical herestring payload — `"<plugin>/hooks/bin/summoner-status" <<< '{}'`
-// (references/checkpoint-protocol.md) — or the bare verb. Any other token (a
-// flag, an argument, a redirect, a second command) fails the exemption and the
-// command is judged by the ordinary write-class and budget rules. Note the
-// canonical form is already read-class by construction: `<<<` carries no '>'.
+// resolves to the summoner-status binary — the BARE spelling or an explicit
+// plugin-bin path ending `/hooks/bin/summoner-status` (the documented
+// `${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` invocation, whatever
+// CLAUDE_PLUGIN_ROOT resolves to; commands/status.md is the other source of
+// the spelling) — with no operands beyond the canonical herestring payload
+// (`"<plugin>/hooks/bin/summoner-status" <<< '{}'`,
+// references/checkpoint-protocol.md). Any other token (a flag, an argument,
+// a redirect, a second command, another directory prefix) fails the
+// exemption and the command is judged by the ordinary write-class and budget
+// rules. Note the canonical form is already read-class by construction:
+// `<<<` carries no '>'.
 func isStatusInvocation(command string) bool {
 	if command == "" {
 		return false
@@ -178,7 +183,7 @@ func isStatusInvocation(command string) bool {
 		segs++
 		words := tokenize(seg)
 		verbIdx, verb := resolveVerb(words)
-		if verbIdx < 0 || verb != "summoner-status" {
+		if verbIdx < 0 || verb != "summoner-status" || !isStatusVerbToken(words[verbIdx]) {
 			return false
 		}
 		rest := words[verbIdx+1:]
@@ -194,11 +199,32 @@ func isStatusInvocation(command string) bool {
 	return segs > 0
 }
 
+// isStatusVerbToken reports whether one verb token is an ACCEPTED spelling
+// of the summoner-status binary (F1): the bare `summoner-status`, or an
+// explicit plugin-bin path ending `/hooks/bin/summoner-status`. Any other
+// directory prefix (`/usr/local/bin/summoner-status`, `./summoner-status`,
+// `some/dir/summoner-status`) is a DIFFERENT binary as far as this gate
+// knows and never earns the budget exemption.
+func isStatusVerbToken(tok string) bool {
+	if tok == "summoner-status" {
+		return true
+	}
+	return strings.HasSuffix(tok, "/hooks/bin/summoner-status")
+}
+
 // isJSONObjectLiteral reports whether one shell token is a JSON object
 // literal (`{}`, `{...}`). It is a shape check for the status herestring
-// payload only — never a JSON parser.
+// payload only — never a JSON parser. A token containing `<` or `>` is
+// REJECTED (F1): a JSON object literal never needs either, and such a
+// "payload" is really a redirect — the reviewer's
+// `summoner-status <<< {a:>pwned}` probe created a file while staying
+// budget-exempt. Rejected here means the invocation loses the exemption and
+// falls back to ordinary write-class judgment, which denies at exhaustion.
 func isJSONObjectLiteral(tok string) bool {
-	return len(tok) >= 2 && strings.HasPrefix(tok, "{") && strings.HasSuffix(tok, "}")
+	if len(tok) < 2 || !strings.HasPrefix(tok, "{") || !strings.HasSuffix(tok, "}") {
+		return false
+	}
+	return !strings.ContainsAny(tok, "<>")
 }
 
 // resolveVerb finds the real verb of a tokenized segment: it skips leading

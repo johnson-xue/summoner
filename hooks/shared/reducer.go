@@ -2010,7 +2010,9 @@ func (r *RunState) StartPostGame(kind string) error {
 		}
 		if s.PostGame == nil {
 			s.PostGame = &PostGame{Kind: kind, StartedAt: nowUTC()}
-		} else if s.PostGame.Kind == "" {
+		} else if s.PostGame.Kind == "" || s.PostGame.Kind == "unknown" {
+			// An "unknown" ledger (F5 process-death fallback) takes the
+			// real kind when a later StartPostGame carries one.
 			s.PostGame.Kind = kind
 		}
 		return nil
@@ -2039,7 +2041,13 @@ func (r *RunState) RecordPostGameAnswer(marker, toolUseID string) (recorded bool
 			return err
 		}
 		if s.PostGame == nil {
-			s.PostGame = &PostGame{Kind: "normal", StartedAt: nowUTC()}
+			// F5 (fix round 1): a nil ledger here means the process died
+			// between the terminal decision and its conclusion — the true
+			// kind (normal vs emergency_minimal) is unknowable. Nothing
+			// switches on Kind (status render + trace payloads only), so an
+			// explicit "unknown" is honest where "normal" asserted a
+			// normalcy nobody observed.
+			s.PostGame = &PostGame{Kind: "unknown", StartedAt: nowUTC()}
 		}
 		if s.PostGame.Answers == nil {
 			s.PostGame.Answers = map[string]string{}
@@ -2071,7 +2079,9 @@ func (r *RunState) RecordPostGameJournal(digest, toolUseID string) error {
 			return err
 		}
 		if s.PostGame == nil {
-			s.PostGame = &PostGame{Kind: "normal", StartedAt: nowUTC()}
+			// F5: same process-death window as RecordPostGameAnswer — stamp
+			// "unknown", never an unobserved "normal".
+			s.PostGame = &PostGame{Kind: "unknown", StartedAt: nowUTC()}
 		}
 		s.PostGame.Journal = &JournalRecord{
 			Path:      JournalPath(s.RunID),

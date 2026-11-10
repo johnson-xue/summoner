@@ -126,7 +126,14 @@ func decide(in *gateInput, run *shared.RunState) decision {
 // receive the user's answer; everything else waits for the extension):
 //
 //   - summoner:phase-submit — the exhausted phase closes into its checkpoint,
-//     where the extension question rides (exhaust → submit → render → answer);
+//     where the extension question rides (exhaust → submit → render → answer).
+//     Budget arithmetic note (fix-round F2): the exempt submit itself never
+//     ticks CountToolCall — it runs AFTER SubmitPhase closed the phase, and
+//     CountToolCall is a no-op with no open phase (per-phase budget), so at
+//     the exhaustion checkpoint the counter is exactly L and one extension
+//     (L → 2L) unblocks at every L. The counter only runs past the limit via
+//     the change loop (mid-phase exempt calls tick), where each user-approved
+//     extension adds a full L again and repeated extensions always unblock;
 //   - AskUserQuestion while WAIT_USER (the nonce-gated decision channel;
 //     review I5 keeps ordinary ACTIVE questions budget-gated) and while
 //     POST_GAME_PENDING (the questionnaire is owed regardless of budget);

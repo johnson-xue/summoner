@@ -16,9 +16,9 @@ func TestIsStatusInvocation(t *testing.T) {
 	canonical := `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}'`
 	yes := []string{
 		canonical,
+		`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{"session_id":"s"}'`, // commands/status.md spelling
 		"/abs/path/hooks/bin/summoner-status <<< '{\"session_id\":\"s\"}'",
 		"summoner-status",
-		"/usr/local/bin/summoner-status",
 		`env summoner-status <<< '{}'`,
 		`command summoner-status`,
 	}
@@ -28,6 +28,18 @@ func TestIsStatusInvocation(t *testing.T) {
 		}
 	}
 	no := []string{
+		// F1 reviewer repro: the payload carries '>' — a redirect in
+		// disguise, which the old {…} shape check accepted and the budget
+		// exemption then let EXECUTE at exhaustion (probe created `pwned}`).
+		`summoner-status <<< {a:>pwned}`,
+		`summoner-status <<< {a:<pwned}`,  // redirect symmetry twin
+		`summoner-status <<< {a:>>pwned}`, // doubled redirect twin
+		`summoner-status <<< {a: 1<x}`,    // input-redirect twin
+		// F1 verb-spelling tightening: any directory prefix OTHER than the
+		// plugin-bin path is a different binary, never budget-exempt.
+		`some/dir/summoner-status <<< '{}'`,
+		`/usr/local/bin/summoner-status`,
+		`./summoner-status`,
 		`summoner-status --help`,
 		`summoner-status --format json`,
 		`summoner-status <<< '{}' > /tmp/out`,     // redirect: not the read-only shape
@@ -45,6 +57,40 @@ func TestIsStatusInvocation(t *testing.T) {
 	// Belt: the canonical form must also be read-class (no '>' anywhere in it).
 	if isWriteClassCommand(canonical) {
 		t.Error("the canonical status invocation must stay read-class")
+	}
+}
+
+// TestF1WritingPayloadFallsBackToJudgment pins the reviewer's repro
+// END-TO-END: `summoner-status <<< {a:>pwned}` is no longer budget-exempt
+// AND is write-class, so at exhaustion it takes the ordinary budget denial
+// (the write never executes).
+func TestF1WritingPayloadFallsBackToJudgment(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{PhaseToolCalls: 1})
+	acceptPhase(t, r, "context")
+	acceptPhase(t, r, "diagnosis")
+	if err := r.OpenPhase("reproduce"); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := callGate(t, toolPayload(t, "Read", readInput())); code != 0 {
+		t.Fatal("first read within budget must pass")
+	}
+	// The '>' payload is genuinely write-class; the '<' payload is read-class
+	// in the write-class model (input redirect reads) — BOTH lose the budget
+	// exemption and take the ordinary budget denial at exhaustion.
+	if !isWriteClassCommand(`summoner-status <<< {a:>pwned}`) {
+		t.Error("isWriteClassCommand(>' payload) = false, want true (redirect payload)")
+	}
+	for _, cmd := range []string{
+		`summoner-status <<< {a:>pwned}`,
+		`summoner-status <<< {a:<pwned}`,
+	} {
+		code, stderr := callGate(t, toolPayload(t, "Bash", bashInput(cmd)))
+		wantExit2(t, code, stderr, "余量为零")
+	}
+	// The canonical read-only invocation still passes at the same state.
+	if code, _ := callGate(t, toolPayload(t, "Bash", bashInput(`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}'`))); code != 0 {
+		t.Fatal("the canonical status invocation must stay runnable at exhaustion")
 	}
 }
 

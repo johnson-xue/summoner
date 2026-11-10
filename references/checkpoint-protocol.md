@@ -242,13 +242,15 @@ combined callback):
 - **Exhaustion surface (fail-open for the human, closed for the work)** — at
   zero headroom every tool call is denied EXCEPT: `summoner:phase-submit`
   (the exhausted phase must reach its checkpoint), the exact read-only
-  status invocation (`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<<
-  '{…}'` — any flag, redirect, or pipe is judged normally), the checkpoint
-  ask itself, `summoner:change` (replan), and read-class OUTCOME_UNKNOWN
-  probes. POST_GAME_PENDING runs may additionally ask their questionnaire
-  and write ONLY the fixed journal path. Never try to work around an
-  exhausted budget — present the checkpoint and let the user extend, replan,
-  or stop.
+  status invocation — accepted verb spellings are the bare `summoner-status`
+  and explicit plugin-bin paths ending `/hooks/bin/summoner-status`; the
+  payload is `{}` or a JSON object literal with NO `<`/`>` in it (any flag,
+  redirect-carrying payload, other directory prefix, redirect, or pipe is
+  judged normally) — the checkpoint ask itself, `summoner:change` (replan),
+  and read-class OUTCOME_UNKNOWN probes. POST_GAME_PENDING runs may
+  additionally ask their questionnaire and write ONLY the fixed journal
+  path. Never try to work around an exhausted budget — present the
+  checkpoint and let the user extend, replan, or stop.
 - **Malformed rides** — a budget question with foreign labels, three
   options, a carried nonce, or no persisted ask fails the whole call (gate
   exit 2 / `decision_rejected`), the decision included. A budget ANSWER that
