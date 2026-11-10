@@ -1,3 +1,5 @@
+# Must FAIL (CI router-contract matrix). v2 rejects this whole shape as legacy:
+# chain→phase reference checking is gone with the topology itself.
 version: "1"
 project:
   name: fixture-project

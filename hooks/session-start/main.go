@@ -56,11 +56,10 @@ Summoner %s. Workflows: read %s/skills/summoner/SKILL.md
 </SUMMONER-HOOK>`, status, pluginRoot)
 	}
 
-	// Uninitialized: the actionable next step IS the pointer — the setup
-	// script. The workflow skill is irrelevant until a manifest exists
-	// (auto-setup-summoner takes over from this warning).
+	// No project capabilities: built-in defaults still enter the SAME reducer.
+	// Setup is optional and explicit; the pointer does not start a second flow.
 	return fmt.Sprintf(`<SUMMONER-HOOK>
-Summoner not initialized (no summoner.yaml) — say "setup summoner" or run %s/scripts/summoner-setup.sh
+Summoner not initialized (no summoner.yaml): 未配置项目专属能力. Built-in defaults use the same reducer. Setup: %s/scripts/summoner-setup.sh
 </SUMMONER-HOOK>`, pluginRoot)
 }
 

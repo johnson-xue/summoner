@@ -1,37 +1,20 @@
 #!/bin/bash
-# validate-manifest.sh — 调用 Go 版 validate-manifest 校验 summoner.yaml
-# Usage: validate-manifest.sh <path-to-summoner.yaml>
-# Go 版用 yaml.v3 结构化解析 + chain→phase 引用校验; 无 Go 二进制时降级 grep fallback。
-
-set -e
-
-MANIFEST="${1:-summoner.yaml}"
+# validate-manifest.sh — Fail-closed launcher for the v2 Go validator.
+# All arguments are forwarded, including --skills-dir and --project-name.
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GO_BIN="${SCRIPT_DIR}/../hooks/bin/validate-manifest"
-
-if [ ! -f "$MANIFEST" ]; then
-    echo "ERROR: $MANIFEST not found" >&2
-    exit 1
+BIN_DIR="$SCRIPT_DIR/../hooks/bin"
+SUFFIX=""
+case "$(uname -s)-$(uname -m)" in
+    Darwin-x86_64) SUFFIX=darwin-amd64 ;;
+    Darwin-arm64) SUFFIX=darwin-arm64 ;;
+    Linux-x86_64) SUFFIX=linux-amd64 ;;
+esac
+if [ -n "$SUFFIX" ] && [ -x "$BIN_DIR/validate-manifest-$SUFFIX" ]; then
+    exec "$BIN_DIR/validate-manifest-$SUFFIX" "$@"
 fi
-
-# 优先用 Go 二进制（结构化解析 + chain 引用校验）
-if [ -x "$GO_BIN" ]; then
-    "$GO_BIN" "$MANIFEST"
-    exit $?
+if [ -x "$BIN_DIR/validate-manifest" ]; then
+    exec "$BIN_DIR/validate-manifest" "$@"
 fi
-
-# 无 Go 二进制时降级到 grep fallback（向后兼容, 无 chain 校验）
-echo "  (Go validate-manifest 未构建, 降级 grep fallback — 无 chain→phase 校验)" >&2
-ERRORS=0
-for field in version project phases; do
-    if ! grep -qE "^${field}:" "$MANIFEST"; then
-        echo "ERROR: missing required field '$field'" >&2
-        ERRORS=$((ERRORS + 1))
-    fi
-done
-if [ "$ERRORS" -eq 0 ]; then
-    echo "✓ $MANIFEST is valid (grep fallback, no chain check)"
-    exit 0
-fi
-echo "✗ $MANIFEST has $ERRORS error(s)" >&2
+printf '%s\n' 'ERROR: v2 validate-manifest binary unavailable; reinstall the plugin or run make build in hooks/. No fallback validation is allowed.' >&2
 exit 1

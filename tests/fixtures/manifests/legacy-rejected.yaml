@@ -1,0 +1,17 @@
+# Historical v1 input: rejection is intentional; no compatibility execution.
+version: "1"
+project:
+  name: fixture-project
+phases:
+  debug:
+    skill: none
+workflows:
+  fix:
+    chain: [debug, reproduce, fix, verify, review]
+    checkpoints: after_each
+  ship:
+    fan_out:
+      - persona: code-reviewer
+      - persona: test-engineer
+    merge: review
+    checkpoints: after_merge

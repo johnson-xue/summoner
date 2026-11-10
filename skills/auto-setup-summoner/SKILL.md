@@ -1,256 +1,89 @@
 ---
 name: auto-setup-summoner
-description: Automatically guide user to initialize Summoner when summoner.yaml is missing
+description: Configure a v2 Summoner capability map when the user explicitly requests setup or asks how to resolve a missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration.
 when_to_use:
-  - User tries to use /summoner:* command but summoner.yaml not found
-  - SessionStart hook detects missing config and user asks about the warning
-  - User asks "how to fix summoner warning" or "summoner not initialized"
+  - User asks to setup or initialize Summoner for this project
+  - User asks about the missing summoner.yaml warning or says Summoner is not initialized
 allowed-tools:
   - Bash
   - Read
 ---
 
-# Auto Setup Summoner Skill
+# Requested Summoner Setup
 
-Automatically detect if Summoner is not initialized and guide user through setup.
+A missing `summoner.yaml` means **未配置项目专属能力**, not “Summoner cannot run.”
+Disclosed built-in inline capabilities use the **same reducer** and checkpoint
+protocol. See `references/no-manifest-flow.md`. Do not introduce a second
+execution chain, an initialization precondition in commands, or a silent
+fallback for a present but invalid manifest.
 
-## When This Triggers
+## Inspect before writing
 
-This skill is invoked automatically when:
-1. SessionStart hook detects no summoner.yaml
-2. User attempts /summoner:* command in an uninitialized project
-3. User asks about Summoner warnings
+1. Locate the actual installed plugin root from `CLAUDE_PLUGIN_ROOT` or the
+   plugin location supplied by the session. Do not assume a manual clone path
+   or guess a cached version.
+2. Read an existing manifest first. Validate with
+   `${CLAUDE_PLUGIN_ROOT}/scripts/validate-manifest.sh summoner.yaml`.
+   Only string `version: "2"` is accepted. A v1 file needs explicit migration
+   according to `references/manifest-spec.md`; changing its version alone is
+   insufficient.
+3. Distinguish missing capabilities from missing memory. Memory belongs at
+   `${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}`, not inside a plugin version's
+   cache. Use the validated `project.name` as its namespace.
 
-## Behavior
+## Offer the smallest appropriate action
 
-### Detection
-Check if summoner.yaml exists in current directory:
-```bash
-if [ ! -f "summoner.yaml" ]; then
-    # Not initialized
-    echo "Summoner is not initialized for this project."
-else
-    # Initialized
-    echo "Summoner is already initialized."
-fi
-```
+- **No manifest:** explain that built-in defaults remain usable, and offer
+  quick setup, interactive capability selection, or leaving the project
+  unconfigured. Do not create files just because SessionStart emitted a warning.
+- **Existing valid v2:** preserve it; setup can initialize/repair missing memory
+  without overwriting its project capabilities.
+- **Invalid/v1 manifest:** stop and explain the migration error. Preserve custom
+  bindings and obtain explicit consent before replacement. `--force` replaces
+  the whole manifest; it does not migrate or merge legacy workflows.
 
-### Auto-Guide Flow
+Setup consent does not advance a running workflow. Keep the same run state and
+any pending checkpoint; only its bound AskUserQuestion decision can advance it.
+All diagnosis, evidence and post-game obligations remain in effect.
 
-**Step 1: Detect State**
-```bash
-# plugin root = the cache install containing scripts/ + memory/ (NOT the
-# abandoned ~/.claude/plugins/summoner manual clone)
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/summoner-marketplace/summoner/*/ 2>/dev/null | sort -V | tail -1)}"
+## Run only after the user chooses setup
 
-if [ ! -f "summoner.yaml" ]; then
-    STATE="not_initialized"
-elif [ ! -f "${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}/$(grep 'name:' summoner.yaml | head -1 | awk '{print $2}' | tr -d '"').db" ]; then
-    STATE="partial"
-else
-    STATE="ready"
-fi
-```
-
-**Step 2: Present Options Based on State**
-
-**Case A: Not Initialized (no summoner.yaml)**
-```
-🔮 Summoner Setup Required
-
-I notice Summoner isn't set up for this project yet. Would you like me to initialize it now?
-
-This will:
-  ✓ Create summoner.yaml with skill mappings
-  ✓ Initialize Memory database
-  ✓ Take ~10 seconds
-
-[Options]
-  1. Yes, use quick defaults (recommended)
-  2. Yes, let me choose skills for each phase
-  3. No, I'll do it manually later
-
-Say "1", "2", or "3"
-```
-
-**Case B: Partial Setup (summoner.yaml exists but Memory DB missing)**
-```
-🔮 Summoner Setup Incomplete
-
-I found summoner.yaml but the Memory database isn't initialized.
-
-Would you like me to complete the setup? (takes ~3 seconds)
-
-Say "yes" to proceed.
-```
-
-**Case C: Already Setup**
-```
-✅ Summoner is ready!
-
-You can use:
-  /summoner:fix "bug description"
-  /summoner:new "feature request"
-  /summoner:debug "error message"
-```
-
-**Step 3: Execute Based on User Choice**
-
-**User says "1" or "yes" (quick mode):**
-```bash
-"$PLUGIN_ROOT/scripts/summoner-setup.sh" --quick
-
-if [ $? -eq 0 ]; then
-    echo "✅ Setup complete!"
-    echo ""
-    echo "⚠️  **Important:** Restart Claude Code to activate hooks."
-    echo ""
-    echo "After restart, try: /summoner:fix \"your bug\""
-else
-    echo "❌ Setup failed. Check error messages above."
-fi
-```
-
-**User says "2" (interactive mode):**
-```bash
-"$PLUGIN_ROOT/scripts/summoner-setup.sh"
-# (Script will ask for mode selection)
-```
-
-**User says "3" or "no":**
-```
-No problem! When you're ready, run:
-  summoner-setup.sh
-
-Or just say "setup summoner" anytime.
-```
-
-## Integration with Commands
-
-Modify `/summoner:*` commands to check initialization first:
-
-```markdown
-# In commands/fix.md (and other commands)
-
-## Pre-flight Check
-
-Before executing workflow, verify Summoner is initialized:
+Run from the project directory. Quick mode is genuinely non-interactive:
 
 ```bash
-if [ ! -f "summoner.yaml" ]; then
-    echo "⚠️  Summoner is not initialized for this project."
-    echo ""
-    echo "Would you like to set it up now? (takes ~10 seconds)"
-    echo ""
-    echo "Say 'yes' to initialize with defaults, or 'no' to skip."
-    
-    # Wait for user response
-    # If yes: run summoner-setup.sh --quick
-    # If no: explain manual setup and exit
-    exit 1
-fi
+"${CLAUDE_PLUGIN_ROOT}/scripts/summoner-setup.sh" --quick --project sample-project
 ```
 
-If initialized, proceed with workflow normally.
-```
+Use the user's chosen portable project namespace, not the literal example.
+Without `--project`, quick mode uses a safe directory-name default. For an
+interactive terminal, run `scripts/summoner-setup.sh` without `--quick`; init
+modes 1/2/3 mean choose skills / quick defaults / manual names. Do not hang an
+unattended tool call on interactive prompts: offer the terminal command or
+collect the desired inputs first.
 
-## Error Recovery
+The three setup entry points share one v2 emitter. It validates a temporary
+candidate before atomic rename. Any failure leaves the existing manifest
+unchanged. There is no v1 emission, merge, grep-validator fallback or dry-run
+flag. `scripts/validate-manifest.sh` forwards `--skills-dir` when local skill
+existence checks are desired; plugin-qualified names still resolve at runtime.
 
-If setup fails mid-process:
+## Explain the resulting configuration honestly
 
-```bash
-# Check what's missing
-if [ ! -f "summoner.yaml" ]; then
-    echo "❌ summoner.yaml creation failed"
-    echo "Try running: summoner-init.sh 2"
-elif [ ! -f "$PLUGIN_ROOT/memory/$PROJECT.db" ]; then
-    echo "❌ Memory DB initialization failed"
-    echo "Try running: init-memory-db.sh $PROJECT"
-else
-    echo "✅ Setup looks complete"
-    echo "If you still see warnings, try restarting Claude Code"
-fi
-```
+- `phases` maps capabilities to inline providers. Each has one default and
+  optional explicitly named alternates, not job-role handoffs.
+- `phases.review.verification_spec` adds criteria, registered check ids, readable
+  scope and a rubric pointer. It is not a review skill or a fixed reviewer team.
+- `check_registry` uses the shipped CheckDef fields and verified definition
+  digests. Mechanical envelope references freeze `check_id@digest`.
+- Tool scope never grants permissions. Suggested budgets require user
+  confirmation at the first checkpoint; setup does not activate limits.
+- Project checks may honestly be `BLOCKED` when the required sandbox is absent.
+  A successfully written manifest is not proof of runtime isolation.
+- Restart is needed only if the plugin/hooks themselves were installed or
+  changed, not merely because a manifest was created. Reload capabilities in
+  the existing run without resetting accepted criteria or bypassing its gate.
 
-## User Experience Flow
-
-### Scenario 1: User tries /summoner:fix before setup
-
-```
-User: /summoner:fix "nil pointer at line 123"
-
-AI: 🔮 Summoner Setup Required
-
-    I notice Summoner isn't set up for this project yet.
-    Would you like me to initialize it now? (takes ~10 seconds)
-    
-    Say "yes" to proceed with quick defaults.
-
-User: yes
-
-AI: [Running summoner-setup.sh --quick...]
-    
-    ✅ Setup complete!
-    
-    ⚠️  **Important:** Please restart Claude Code to activate hooks.
-    
-    After restart, I'll be able to run /summoner:fix for you!
-
-User: [restarts Claude Code]
-
-User: /summoner:fix "nil pointer at line 123"
-
-AI: [Executes fix workflow normally...]
-```
-
-### Scenario 2: User sees warning at session start
-
-```
-[SessionStart hook output (M-C1 one-liner form):]
-Summoner not initialized (no summoner.yaml) — say "setup summoner" or run <plugin-root>/scripts/summoner-setup.sh
-
-User: setup summoner
-
-AI: [Detects request, invokes this skill]
-    
-    🔮 Summoner Setup
-    
-    This will create summoner.yaml and initialize Memory database.
-    
-    Choose mode:
-      1. Quick defaults (recommended)
-      2. Choose skills per phase
-    
-    Say "1" or "2"
-
-User: 1
-
-AI: [Runs setup...]
-    ✅ Complete! Restart Claude Code to activate.
-```
-
-### Scenario 3: Proactive suggestion
-
-```
-User: I want to add a new feature
-
-AI: I can help with that!
-    
-    I notice you have Summoner installed. Would you like to use
-    the structured /summoner:new workflow? It guides you through:
-      • Requirements definition
-      • Task breakdown
-      • Implementation
-      • Testing
-      • Code review
-    
-    However, Summoner needs to be initialized first (takes ~10 seconds).
-    
-    Say "yes" to set up Summoner, or "no" to proceed without it.
-```
-
-## Related
-
-- `scripts/summoner-setup.sh` - The setup script this skill invokes
-- `hooks/session-start/main.go` - Detection and warning
-- `skills/summoner/SKILL.md` - Main Summoner skill
+If manifest validation succeeds but memory initialization fails, report the
+separate failure and rerun `scripts/init-memory-db.sh` with the validated
+namespace after addressing the cause. Do not delete a database or regenerate
+custom capabilities as an automatic repair.
