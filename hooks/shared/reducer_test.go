@@ -648,3 +648,156 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Error("BLOCKED result must not carry a quality verdict")
 	}
 }
+
+// --- fix round 1: review crash recovery, failure routing, change gating ------
+
+// TestRequestReviewResendSameEnvelope pins spec §3 崩溃恢复: while a review is
+// PREPARED/RUNNING (run REVIEW_PENDING after a crash + reconnect), re-sending
+// the SAME envelope must succeed idempotently — no duplicate review record.
+func TestRequestReviewResendSameEnvelope(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+
+	id, err := r.RequestReview(testEnvelope())
+	if err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if id != "rev-1" || r.Status != StatusReviewPending || len(r.Reviews) != 1 {
+		t.Fatalf("id=%s status=%s reviews=%d", id, r.Status, len(r.Reviews))
+	}
+
+	// Crash + reconnect: same envelope re-sent while REVIEW_PENDING.
+	again, err := r.RequestReview(testEnvelope())
+	if err != nil {
+		t.Fatalf("same-envelope re-send while REVIEW_PENDING: %v", err)
+	}
+	if again != id || len(r.Reviews) != 1 || r.Status != StatusReviewPending {
+		t.Errorf("re-send: again=%s reviews=%d status=%s, want idempotent no-op", again, len(r.Reviews), r.Status)
+	}
+
+	// Same id with a tampered envelope is refused.
+	tampered := testEnvelope()
+	tampered.ArtifactSet[0].Digest = "tampered"
+	if _, err := r.RequestReview(tampered); err == nil {
+		t.Error("same id with different envelope: want error, got nil")
+	}
+
+	// A new review id while one is in flight is refused.
+	fresh := testEnvelope()
+	fresh.ReviewID = "rev-2"
+	if _, err := r.RequestReview(fresh); err == nil {
+		t.Error("new review id while one is in flight: want error, got nil")
+	}
+
+	// After conclusion the id cannot be reused.
+	if err := r.MarkReviewRunning("rev-1"); err != nil {
+		t.Fatalf("MarkReviewRunning: %v", err)
+	}
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: "COMPLETED", Verdict: "PASS"}); err != nil {
+		t.Fatalf("RecordReviewResult: %v", err)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if _, err := r.RequestReview(testEnvelope()); err == nil {
+		t.Error("concluded review id re-request: want error, got nil")
+	}
+}
+
+// TestReviewFailureRoutesToCheckpoint pins spec §3 review.failed semantics: a
+// protocol-error result must not brick the run in REVIEW_PENDING — it routes
+// to a checkpoint a human can still decide.
+func TestReviewFailureRoutesToCheckpoint(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if _, err := r.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if err := r.MarkReviewRunning("rev-1"); err != nil {
+		t.Fatalf("MarkReviewRunning: %v", err)
+	}
+
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: "WEIRD", Verdict: "PASS"}); err == nil {
+		t.Fatal("invalid run_status: want protocol error, got nil")
+	}
+	if r.Status != StatusWaitUser {
+		t.Errorf("status after review.failed = %s, want WAIT_USER (routed to checkpoint)", r.Status)
+	}
+	if len(r.Reviews) != 1 || r.Reviews[0].Status != ReviewFailed {
+		t.Errorf("reviews = %+v, want the review marked FAILED", r.Reviews)
+	}
+	cp := r.CurrentCheckpoint()
+	if cp == nil || cp.Kind != CheckpointReviewResult {
+		t.Fatalf("want an open REVIEW_RESULT checkpoint after failure, got %+v", cp)
+	}
+
+	// The run stays operable: the failure checkpoint is display-bound and
+	// decidable like any other.
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if r.Status != StatusActive {
+		t.Errorf("status after deciding the failure checkpoint = %s, want ACTIVE", r.Status)
+	}
+}
+
+// TestRequirementChangeFromCheckpoint pins the controller ruling: a change may
+// open at a pending checkpoint (WAIT_USER entry); ResumeAfterChange refuses
+// whenever any checkpoint awaits decision — acceptance only via
+// RecordDecision(ACCEPT_REQUIREMENT_CHANGE).
+func TestRequirementChangeFromCheckpoint(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+
+	r.DevPosition = DevPosition{CurrentTask: "mid-phase", PendingVerifications: []string{"v1"}}
+	if err := r.OpenRequirementChange("adjust at checkpoint"); err != nil {
+		t.Fatalf("OpenRequirementChange from WAIT_USER: %v", err)
+	}
+	if r.Change == nil || r.Change.PriorStatus != StatusWaitUser {
+		t.Fatalf("change = %+v, want PriorStatus WAIT_USER recorded", r.Change)
+	}
+	if r.Change.SavedPosition.CurrentTask != "mid-phase" {
+		t.Errorf("frozen position = %+v", r.Change.SavedPosition)
+	}
+	if r.Status != StatusWaitUser || r.CurrentCheckpoint() == nil {
+		t.Error("the pending checkpoint must remain owed while the change is open")
+	}
+
+	// Direct resume is refused while that checkpoint awaits decision.
+	if err := r.ResumeAfterChange(); err == nil {
+		t.Error("ResumeAfterChange with pending checkpoint: want error, got nil")
+	}
+
+	// The user decides the pending checkpoint; the change stays open.
+	decideCurrent(t, r, DecisionContinue)
+	if r.Status != StatusActive || r.Change == nil {
+		t.Fatalf("after deciding p1: status=%s change=%v, want ACTIVE with change open", r.Status, r.Change)
+	}
+	// Now direct resume works and restores the frozen position.
+	if err := r.ResumeAfterChange(); err != nil {
+		t.Fatalf("ResumeAfterChange after checkpoint decided: %v", err)
+	}
+	if r.Change != nil || r.Status != StatusActive || r.DevPosition.CurrentTask != "mid-phase" {
+		t.Errorf("resume: change=%v status=%s pos=%+v", r.Change, r.Status, r.DevPosition)
+	}
+
+	// A pending CHANGE_CONFIRM checkpoint also refuses direct resume:
+	// acceptance only via RecordDecision(ACCEPT_REQUIREMENT_CHANGE).
+	if err := r.OpenRequirementChange("second change"); err != nil {
+		t.Fatalf("OpenRequirementChange: %v", err)
+	}
+	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "n", Affected: []string{"c1"}}); err != nil {
+		t.Fatalf("ApplyRequirementDelta: %v", err)
+	}
+	if err := r.ResumeAfterChange(); err == nil {
+		t.Error("ResumeAfterChange with pending confirm checkpoint: want error, got nil")
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionAcceptRequirementChange)
+	if r.Change != nil || r.Status != StatusActive {
+		t.Errorf("after ACCEPT: change=%v status=%s", r.Change, r.Status)
+	}
+}

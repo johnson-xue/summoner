@@ -196,11 +196,12 @@ type DevPosition struct {
 	PendingVerifications []string `json:"pending_verifications,omitempty"`
 }
 
-// ChangeContext is the CHANGE_OPEN sub-state of ACTIVE: why the change opened
-// and the frozen development position restored on resume.
+// ChangeContext is the CHANGE_OPEN sub-state: why the change opened, the
+// status that preceded it, and the frozen development position to restore.
 type ChangeContext struct {
 	Note          string      `json:"note,omitempty"`
 	OpenedAt      string      `json:"opened_at,omitempty"`
+	PriorStatus   RunStatus   `json:"prior_status,omitempty"`
 	SavedPosition DevPosition `json:"saved_position"`
 }
 
@@ -812,11 +813,13 @@ func copyDevPosition(p DevPosition) DevPosition {
 }
 
 // OpenRequirementChange freezes the current DevPosition and enters the
-// CHANGE_OPEN sub-state of ACTIVE. While open, SubmitPhase is refused (no
+// CHANGE_OPEN sub-state. Legal from ACTIVE (mid-phase change) and from
+// WAIT_USER (spec §1 增补: 检查点也可显式进入) — a checkpoint-entered change
+// keeps that checkpoint owed. While open, SubmitPhase is refused (no
 // submitting from a half-changed baseline).
 func (r *RunState) OpenRequirementChange(note string) error {
-	if err := r.requireStatus(StatusActive, "OpenRequirementChange"); err != nil {
-		return err
+	if r.Status != StatusActive && r.Status != StatusWaitUser {
+		return fmt.Errorf("OpenRequirementChange: illegal status %s (want ACTIVE or WAIT_USER)", r.Status)
 	}
 	if r.Change != nil {
 		return errors.New("OpenRequirementChange: a change is already open")
@@ -824,6 +827,7 @@ func (r *RunState) OpenRequirementChange(note string) error {
 	r.Change = &ChangeContext{
 		Note:          note,
 		OpenedAt:      nowUTC(),
+		PriorStatus:   r.Status,
 		SavedPosition: copyDevPosition(r.DevPosition),
 	}
 	return r.Save()
@@ -874,25 +878,23 @@ func (r *RunState) ApplyRequirementDelta(delta RequirementDelta) (ImpactReport, 
 }
 
 // resumeAfterChange restores the frozen DevPosition and clears CHANGE_OPEN.
-// A still-pending change-confirm checkpoint is closed as accepted. Status
-// returns to ACTIVE only when no checkpoint remains owed.
+// It refuses whenever any checkpoint awaits decision: a pending confirm
+// checkpoint may only be accepted through RecordDecision(ACCEPT_REQUIREMENT_
+// CHANGE) — the reducer never fabricates a user decision. Because the refusal
+// guarantees no checkpoint is owed at resume time, the landing status is
+// ACTIVE; a WAIT_USER-entered change stays at WAIT_USER through its still-
+// pending checkpoint (resuming it stays refused until that checkpoint is
+// decided), and Change.PriorStatus records what preceded CHANGE_OPEN.
 func (r *RunState) resumeAfterChange() error {
 	if r.Change == nil {
 		return errors.New("no requirement change open")
 	}
 	if cp := r.CurrentCheckpoint(); cp != nil {
-		if cp.Kind != CheckpointChangeConfirm {
-			return fmt.Errorf("checkpoint %s (%s) is still owed", cp.ID, cp.Kind)
-		}
-		cp.Decided = true
-		cp.Decision = DecisionAcceptRequirementChange
-		cp.DecidedAt = nowUTC()
+		return fmt.Errorf("requirement change cannot resume: checkpoint %s (%s) awaits decision — acceptance only via RecordDecision(ACCEPT_REQUIREMENT_CHANGE)", cp.ID, cp.Kind)
 	}
 	r.DevPosition = r.Change.SavedPosition
 	r.Change = nil
-	if r.CurrentCheckpoint() == nil && r.Status == StatusWaitUser {
-		r.Status = StatusActive
-	}
+	r.Status = StatusActive
 	return nil
 }
 
@@ -931,13 +933,13 @@ func (r *RunState) findReview(reviewID string) *ReviewRecord {
 
 // RequestReview registers a review envelope (basic shape checks here; the
 // strict allow-list validation lives in envelope.go, Task 7) and moves the
-// run to REVIEW_PENDING. Re-requesting the same id with the same envelope is
-// idempotent (crash recovery); a different envelope or a concluded review is
-// refused, and only one review may be in flight at a time.
+// run to REVIEW_PENDING. While a review is PREPARED/RUNNING, the only legal
+// request is re-sending that review's exact envelope (spec §3 崩溃恢复:
+// crash + reconnect must not duplicate the review or rerun the producer —
+// re-spawning the reviewer consumes remaining delegation budget, accounted
+// by the caller). A different envelope or a concluded review id is refused,
+// and a NEW review id requires ACTIVE with nothing in flight.
 func (r *RunState) RequestReview(env Envelope) (string, error) {
-	if err := r.requireStatus(StatusActive, "RequestReview"); err != nil {
-		return "", err
-	}
 	if env.SchemaVersion == "" {
 		return "", errors.New("RequestReview: envelope schema_version is required")
 	}
@@ -957,7 +959,10 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 		if rv.EnvelopeDigest != envelopeDigest(env) {
 			return "", fmt.Errorf("RequestReview: review %s already registered with a different envelope", env.ReviewID)
 		}
-		return rv.ReviewID, nil // same envelope: idempotent
+		return rv.ReviewID, nil // same envelope: idempotent re-send
+	}
+	if err := r.requireStatus(StatusActive, "RequestReview"); err != nil {
+		return "", err
 	}
 	for i := range r.Reviews {
 		if r.Reviews[i].Status == ReviewPrepared || r.Reviews[i].Status == ReviewRunning {
@@ -997,8 +1002,9 @@ func (r *RunState) MarkReviewRunning(reviewID string) error {
 
 // RecordReviewResult concludes the in-flight review and opens a review-result
 // checkpoint (PASS still leaves the run WAIT_USER — spec §3). Enum violations
-// are protocol errors: the review is marked FAILED and an error returned.
-// NEEDS-FIX consumes run rework budget; BLOCKED does not.
+// are protocol errors: the review is marked FAILED, the failure routes to a
+// REVIEW_RESULT checkpoint so the run stays recoverable, and an error is
+// returned. NEEDS-FIX consumes run rework budget; BLOCKED does not.
 func (r *RunState) RecordReviewResult(res ReviewResult) error {
 	if err := r.requireStatus(StatusReviewPending, "RecordReviewResult"); err != nil {
 		return err
@@ -1026,10 +1032,17 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 	if problem != "" {
 		rv.Status = ReviewFailed
 		rv.ConcludedAt = nowUTC()
+		// A protocol error must not brick the run: route it to a checkpoint
+		// a human can still decide (spec §3 review.failed 语义).
+		cp, err := r.addCheckpoint(CheckpointReviewResult, "", "FAILED "+problem, nil, nil)
+		if err != nil {
+			return err
+		}
+		r.Status = StatusWaitUser
 		if err := r.Save(); err != nil {
 			return fmt.Errorf("RecordReviewResult: %s (review %s marked FAILED; save failed: %v)", problem, res.ReviewID, err)
 		}
-		return fmt.Errorf("RecordReviewResult: %s — review %s marked FAILED", problem, res.ReviewID)
+		return fmt.Errorf("RecordReviewResult: %s — review %s marked FAILED, routed to checkpoint %s", problem, res.ReviewID, cp.ID)
 	}
 
 	now := nowUTC()
