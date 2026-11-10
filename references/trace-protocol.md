@@ -69,9 +69,9 @@ The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 | `tool.outcome_unknown` | `{"tool_use_id", "detected_by": "session-start|stop"}` — side effect happened, result never landed |
 | `tool.resolved` | `{"tool_use_id", "outcome": "accepted|failed|indeterminate", "probe_tool_use_id"}` — one-shot; the probe must be a recorded read-class call |
 | `check.result` | `{"check_id", "trust": "framework|project", "status": "pass|fail|blocked", "digest", "tier"?, "reason"?, "exit"?}` — BLOCKED is a refusal to claim, never a quality verdict |
-| `review.prepared` | `{"review_id", "artifact_digest"?, "criteria"?, "scope"?}` — envelope summary; re-dispatch after a crash re-sends the SAME envelope |
+| `review.prepared` | `{"review_id"}` — the runtime emission is thin (the envelope itself lives in run state); `artifact_digest`/`criteria`/`scope` are scorer-recognized optional enrichments. Re-dispatch after a crash re-sends the SAME envelope |
 | `review.started` | `{"review_id"}` — reviewer dispatched |
-| `review.verdict` | `{"review_id", "run_status": "COMPLETED|BLOCKED", "verdict"?, "criterion_verdicts"?, "evidence_tool_call_ids"?, "artifact_digest"?}` — a PASS must carry non-empty evidence ids (auditable non-rubber-stamp) |
+| `review.verdict` | `{"review_id", "run_status": "COMPLETED\|BLOCKED", "verdict"?, "evidence_tool_call_ids"?}` — the runtime emission; the reconciled evidence list is MIRRORED into the payload (T12 fix-back), so COMPLETED+PASS always carries a non-empty list (auditable non-rubber-stamp), while NEEDS-FIX/BLOCKED carry it only when the reviewer claimed ids. `criterion_verdicts`/`artifact_digest` are scorer-recognized optional enrichments the runtime does not currently emit |
 | `review.failed` / `review.blocked` / `review.superseded` | `{"review_id", "reason"?}` — protocol-error / honest-block / superseded conclusions |
 | `delegation.started` / `delegation.completed` / `delegation.failed` | `{"agent_type", "fork"?, "review_id"?, "transcript_path"?}` — reviewer delegations are non-fork `agent_type` `summoner:reviewer` |
 | `parallel.opened` / `parallel.joined` | approved batch boundaries |

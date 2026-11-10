@@ -36,6 +36,7 @@ SCORERS=(schema-check review-evidence-check user-gate-check recovery-check post-
 EXPECTED="
 valid-full-run.jsonl|PASS|PASS|PASS|NA|PASS
 valid-review-reuse.jsonl|NA|PASS|PASS|NA|NA
+valid-review-evidence-real.jsonl|NA|PASS|PASS|NA|NA
 valid-recall.jsonl|NA|NA|NA|PASS|NA
 valid-postgame-emergency.jsonl|NA|NA|PASS|NA|PASS
 valid-change-loop.jsonl|NA|NA|PASS|NA|NA

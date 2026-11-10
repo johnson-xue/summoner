@@ -333,6 +333,13 @@ func TestSubagentStopBackfillsReview(t *testing.T) {
 			if verdicts[0].Payload["review_id"] != "rev-1" || verdicts[0].Payload["run_status"] != shared.ReviewRunCompleted {
 				t.Fatalf("review.verdict payload = %v, want rev-1 / COMPLETED", verdicts[0].Payload)
 			}
+			// T12 fix-back: the reconciled evidence list is MIRRORED into the
+			// verdict payload — the trace, not just the transcript join, must
+			// carry what the PASS is backed by (auditability contract: a
+			// COMPLETED+PASS verdict always traces a non-empty list).
+			if ids, ok := verdicts[0].Payload["evidence_tool_call_ids"].([]interface{}); !ok || len(ids) != 1 || ids[0] != "toolu-rev-1" {
+				t.Fatalf("review.verdict evidence_tool_call_ids = %#v, want [toolu-rev-1]", verdicts[0].Payload["evidence_tool_call_ids"])
+			}
 		})
 	}
 

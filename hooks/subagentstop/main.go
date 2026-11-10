@@ -253,6 +253,18 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 	if res.Verdict != "" {
 		payload["verdict"] = res.Verdict
 	}
+	// Evidence mirror (T12 fix-back): the SAME reconciled list the reducer
+	// records (res.EvidenceToolCallIDs) is mirrored into the trace so the
+	// verdict is auditable trace-side — the review-evidence scorer joins
+	// these ids against tool.started records inside the review window.
+	// Pinned rule: COMPLETED+PASS always carries a non-empty list (the
+	// reducer's ValidateEvidence rubber-stamp guard rejects PASS with no
+	// claimed ids before this event traces); NEEDS-FIX/BLOCKED carry the
+	// list only when the reviewer claimed ids (a defect report or a reason
+	// code is not an exoneration — evidence is optional, never fabricated).
+	if len(res.EvidenceToolCallIDs) > 0 {
+		payload["evidence_tool_call_ids"] = res.EvidenceToolCallIDs
+	}
 	if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
 		Type:    shared.EventReviewVerdict,
 		Source:  subagentStopSource,

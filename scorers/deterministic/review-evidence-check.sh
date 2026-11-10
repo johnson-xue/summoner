@@ -13,8 +13,10 @@
 #     already-concluded review)
 #   - rubber-stamp: a COMPLETED+PASS verdict carries non-empty
 #     evidence_tool_call_ids (盖章审查 = PASS with empty evidence); claimed
-#     ids must be real tool_use records inside the review window (mirror of
-#     shared.ReconcileEvidence semantics)
+#     ids — on PASS or NEEDS-FIX alike — must be real tool_use records
+#     inside the review window (mirror of shared.ReconcileEvidence
+#     semantics; the runtime mirrors the reconciled list into the verdict
+#     payload, so real-shape traces are auditable trace-side)
 #   - per-criterion completeness: when the envelope side is traced
 #     (review.prepared criteria + verdict criterion_verdicts), the verdict
 #     covers exactly the prepared set
@@ -149,8 +151,13 @@ for seq, pl in verdicts:
             fail(f"review {rid}: PASS verdict with empty "
                  "evidence_tool_call_ids — rubber-stamp review (盖章审查: "
                  "未检查/无工具/不能判 ≠ PASS)")
-        # evidence join: each claimed id is a real tool_use record in the
-        # review window (mirror of shared.ReconcileEvidence)
+    else:
+        # NEEDS-FIX: a defect report, not an exoneration — evidence ids are
+        # optional (empty/absent is legal), but ids CLAIMED must still join
+        ev_ids = pl.get("evidence_tool_call_ids")
+    # evidence join: each claimed id is a real tool_use record in the
+    # review window (mirror of shared.ReconcileEvidence)
+    if isinstance(ev_ids, list) and ev_ids:
         window_ids = {e.get("tool_use_id") for _, e in window
                       if e.get("type") == "tool.started"}
         for evid in ev_ids:
@@ -158,6 +165,9 @@ for seq, pl in verdicts:
                 fail(f"review {rid}: evidence id {evid!r} is not a recorded "
                      f"tool call inside the review window (prepared #"
                      f"{prep_seq} → verdict #{seq}) — forged evidence id")
+    elif verdict == "NEEDS-FIX":
+        notes.append(f"{rid}: NEEDS-FIX claims no evidence ids (a defect "
+                     "report needs no exoneration)")
     # per-criterion completeness (enforced when the envelope side is traced)
     criteria = prep_pl.get("criteria")
     cverdicts = pl.get("criterion_verdicts")
@@ -212,7 +222,8 @@ for digest, entries in reuse.items():
     notes.append(f"digest {digest[:12]}…: same-version reuse ×{len(entries)} "
                  "(matching content triple — legitimate)")
 
-detail = "; ".join(notes) if notes else "no reviews claimed"
+detail = "; ".join(notes) if notes else \
+    f"{len(prepared)} review(s) concluded with reviewer identity and evidence joins"
 print(f"PASS — every recorded review is concluded with reviewer identity, "
       f"running-review evidence and joined evidence ids ({detail})")
 sys.exit(0)
