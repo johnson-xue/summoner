@@ -107,8 +107,8 @@ func (t ToolInput) EffectiveSkill() string {
 
 // Output represents a hook response.
 type Output struct {
-	AdditionalContext    string              `json:"additionalContext,omitempty"`
-	HookSpecificOutput   *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	AdditionalContext  string              `json:"additionalContext,omitempty"`
+	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
 // HookSpecificOutput is the Claude Code-specific hook output wrapper.

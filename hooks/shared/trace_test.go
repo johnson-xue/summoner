@@ -64,6 +64,11 @@ func TestEventMarshalAllowList(t *testing.T) {
 	useTraceDir(t)
 	const run = "run-tr-1"
 
+	// Pinned size: adding a type is a schema change — do it consciously.
+	if len(allEventTypes) != 34 {
+		t.Fatalf("event allow-list must carry exactly 34 types (hooks.disabled included), got %d", len(allEventTypes))
+	}
+
 	err := AppendEvent(run, "sess-1", TraceEvent{Type: "bogus.event", Source: "trace_test"})
 	if err == nil {
 		t.Fatal("AppendEvent accepted unknown event type bogus.event")

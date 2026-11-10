@@ -801,3 +801,54 @@ func TestRequirementChangeFromCheckpoint(t *testing.T) {
 		t.Errorf("after ACCEPT: change=%v status=%s", r.Change, r.Status)
 	}
 }
+
+// --- session run resolution (Task 3 ruling 5) ----------------------------------
+
+// TestSessionRuns: the gate resolves "the session's live runs" through this
+// helper — every run file under the session dir, deterministically ordered,
+// with unparseable state failing closed instead of shrinking the set.
+func TestSessionRuns(t *testing.T) {
+	prev := runStateDirOverride
+	runStateDirOverride = t.TempDir()
+	t.Cleanup(func() { runStateDirOverride = prev })
+
+	if _, err := StartRun("run-b", "sess-1", "fix", BudgetLimits{}); err != nil {
+		t.Fatalf("StartRun(run-b): %v", err)
+	}
+	if _, err := StartRun("run-a", "sess-1", "new", BudgetLimits{}); err != nil {
+		t.Fatalf("StartRun(run-a): %v", err)
+	}
+	if _, err := StartRun("run-z", "sess-2", "fix", BudgetLimits{}); err != nil {
+		t.Fatalf("StartRun(run-z): %v", err)
+	}
+
+	runs, err := SessionRuns("sess-1")
+	if err != nil {
+		t.Fatalf("SessionRuns(sess-1): %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs for sess-1, want 2", len(runs))
+	}
+	if runs[0].RunID != "run-a" || runs[1].RunID != "run-b" {
+		t.Fatalf("SessionRuns must order deterministically by run id, got %s, %s", runs[0].RunID, runs[1].RunID)
+	}
+
+	if runs, err := SessionRuns("sess-none"); err != nil || len(runs) != 0 {
+		t.Fatalf("SessionRuns(sess-none) = %v, %v; want empty, nil", runs, err)
+	}
+	if _, err := SessionRuns("../evil"); err == nil {
+		t.Fatal("SessionRuns must reject unsafe session ids")
+	}
+
+	// A corrupt run file must fail closed, never silently reduce the live set.
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "run-c.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt run: %v", err)
+	}
+	if _, err := SessionRuns("sess-1"); err == nil {
+		t.Fatal("SessionRuns accepted an unparseable run file — must fail closed")
+	}
+}

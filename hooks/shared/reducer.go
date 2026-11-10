@@ -443,6 +443,39 @@ func LoadRun(runID string) (*RunState, error) {
 	return &r, nil
 }
 
+// SessionRuns loads every run state recorded for one session, ordered by run
+// id for deterministic resolution. The PreToolUse gate resolves "the session's
+// live runs" through this helper. An unreadable or unparseable run file is an
+// error (fail-closed): corrupted state must never silently shrink the set of
+// runs a gate could enforce.
+func SessionRuns(sessionID string) ([]*RunState, error) {
+	if !validID(sessionID) {
+		return nil, fmt.Errorf("session runs: invalid session id %q", sessionID)
+	}
+	root, err := runStateRoot()
+	if err != nil {
+		return nil, err
+	}
+	matches, err := filepath.Glob(filepath.Join(root, ProjectKey(), sessionID, "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+	runs := make([]*RunState, 0, len(matches))
+	for _, m := range matches {
+		b, err := os.ReadFile(m)
+		if err != nil {
+			return nil, err
+		}
+		var r RunState
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, fmt.Errorf("session runs: %s is unparseable: %w", m, err)
+		}
+		runs = append(runs, &r)
+	}
+	return runs, nil
+}
+
 // --- run lifecycle ----------------------------------------------------------
 
 // StartRun creates and persists a new run in ACTIVE. Budget limits are

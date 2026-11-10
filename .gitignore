@@ -8,7 +8,7 @@ memory/_index.json
 hooks/bin/*
 !hooks/bin/.gitkeep
 !hooks/bin/session-start
-!hooks/bin/pretooluse-skill
+!hooks/bin/pretooluse-gate
 !hooks/bin/stop
 !hooks/bin/validate-manifest
 !hooks/bin/*-darwin-arm64

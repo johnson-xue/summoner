@@ -77,6 +77,12 @@ const (
 
 	EventPostGameStarted   = "post_game.started"
 	EventPostGameCompleted = "post_game.completed"
+
+	// EventHooksDisabled records the SUMMONER_HOOKS_DISABLE escape hatch being
+	// used while a run was live (spec §5 hook 自身故障: the hatch must exist
+	// as the un-brick path, but using it on a live run is a recorded contract
+	// violation, never a silent bypass).
+	EventHooksDisabled = "hooks.disabled"
 )
 
 // allEventTypes is the single allow-list every AppendEvent is checked against;
@@ -94,6 +100,7 @@ var allEventTypes = []string{
 	EventParallelOpened, EventParallelJoined,
 	EventAgentTelemetry,
 	EventPostGameStarted, EventPostGameCompleted,
+	EventHooksDisabled,
 }
 
 func eventAllowed(typ string) bool {
