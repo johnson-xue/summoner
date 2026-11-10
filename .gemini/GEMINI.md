@@ -12,10 +12,10 @@ Available via slash commands in `.gemini/commands/`:
 
 | Command | Pipeline |
 |---------|----------|
-| `/summoner:fix` | diagnose→reproduce→fix→verify→review |
-| `/summoner:new` | define→plan→implement→test→review |
-| `/summoner:ship` | fan-out(1-3 personas)→merge→decision |
-| `/summoner:debug` | diagnose only |
+| `/summoner:fix` | context→diagnosis→reproduce→fix→regression→review |
+| `/summoner:new` | context→requirements→plan→implement→verify→review |
+| `/summoner:ship` | single reviewer (full rubric)→merge report→go/no-go |
+| `/summoner:debug` | context→diagnosis (no code changes) |
 | `/summoner:ops` | ops skill (delegated) |
 | `/summoner:review` | code review standalone |
 | `/summoner:release` | version-plan→changelog→release-execution |

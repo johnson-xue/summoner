@@ -9,7 +9,7 @@ Summoner plugin (locate the plugin dir: the one containing both scripts/ and
 memory/):
 
   1. <plugin-root>/skills/summoner/SKILL.md     — routing hub + checkpoint contract
-  2. <plugin-root>/commands/summoner-status.md  — this command's exact steps
+  2. <plugin-root>/commands/status.md              — this command's exact steps
 
 The command runs <plugin-root>/hooks/bin/summoner-status (read-only) and pastes
 its output verbatim; checkpoint renders and decisions follow the canonical

@@ -313,6 +313,15 @@ else
       fail ".gemini/GEMINI.md table missing /summoner:$name"; P4=1
     fi
   done
+  # stale-pipeline tripwire (T8 fix round 1): the GEMINI table is a routing
+  # summary whose pipeline cells went stale once before (frozen paraphrases
+  # outlived the canonical commands). Reject the known pre-single-loop
+  # signatures; the canonical phase routes live in commands/*.md only.
+  STALE_PIPE=$(grep -nE "diagnose→reproduce|define→plan|fan-out" .gemini/GEMINI.md || true)
+  if [[ -n "$STALE_PIPE" ]]; then
+    fail ".gemini/GEMINI.md carries a stale pipeline paraphrase (align with commands/*.md): ${STALE_PIPE}"
+    P4=1
+  fi
   [[ $P4 -eq 0 ]] && ok "gemini surface: $GEM_COUNT pointer-form tomls + complete GEMINI.md table"
 fi
 

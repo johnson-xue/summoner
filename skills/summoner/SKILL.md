@@ -40,8 +40,11 @@ straight there; pure Q&A → answer directly.
 1. **Run start** — the user submits a `/summoner:<workflow>` prompt. The
    UserPromptSubmit hook records the run (the ONLY run starter); you do
    nothing to start it. One live run per session — a second is never created.
-   Budgets surface at the first checkpoint (unlimited until the user sets
-   them at a run's checkpoints).
+   Budget limits are fixed at run start and today always start unlimited
+   (all-zero); the status render exposes counters and limits, and a runtime
+   channel for confirming or changing them is not wired yet — when a budget
+   reads exhausted, only the user can add budget or replan (at the
+   checkpoint the exhaustion is presented at).
 2. **Phase work** — phases open per the fixed framework sequence
    (`fix`: context→diagnosis→reproduce→fix→regression→review; `new`:
    context→requirements→plan→implement→verify→review; `debug`:

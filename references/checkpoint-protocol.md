@@ -124,14 +124,17 @@ wrong/misses/should/redo (EN). When in doubt, re-ask — never advance.
 
 ## CHANGE_CONFIRM checkpoint (requirement-change close)
 
-A requirement change (CHANGE_OPEN) closes through ONE confirm checkpoint. Its
-render carries the impact assessment: what changed (delta), requirements
-version bump, newly-stale criteria, preserved results — and the menu is
-exactly `accept: 接受变更并恢复开发` / `stop: 停止——保留状态退出`. Choosing
-`accept:` restores the frozen development position and resumes in place — no
-phase-by-phase reopen, no re-ask of untouched phases. If the change was
-entered from a checkpoint, that checkpoint was superseded and its re-rendered
-successor asks the interrupted question again after the confirm.
+A requirement change (CHANGE_OPEN) closes through ONE confirm checkpoint.
+Today's render carries the delta note (the checkpoint's `note:` — what
+changed) and the status view's unmet-criteria list (newly-stale ids); the
+fuller impact presentation — requirements-version bump, preserved results,
+frozen development position — is wired with the change-loop task and will
+join this render then. The menu is exactly `accept: 接受变更并恢复开发` /
+`stop: 停止——保留状态退出`. Choosing `accept:` restores the frozen
+development position and resumes in place — no phase-by-phase reopen, no
+re-ask of untouched phases. If the change was entered from a checkpoint, that
+checkpoint was superseded and its re-rendered successor asks the interrupted
+question again after the confirm.
 
 ## RECOVERY checkpoint
 

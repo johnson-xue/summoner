@@ -35,5 +35,8 @@ Read-only viewer. It never starts, advances, or mutates a run — rendering only
    the viewer refuses to guess, and so must you.
 
 Exit 2 from the binary means unreadable input only; any state problem is
-printed in the output itself. Nothing here advances the run: decisions go
-through AskUserQuestion at a rendered checkpoint, never through this command.
+printed in the output itself. The viewer still renders under
+`SUMMONER_HOOKS_DISABLE=1` — the hatch disables the enforcement hooks, not
+this diagnostic view (a wedged session must stay inspectable). Nothing here
+advances the run: decisions go through AskUserQuestion at a rendered
+checkpoint, never through this command.

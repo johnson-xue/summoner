@@ -97,7 +97,7 @@
     },
     {
       "name": "summoner:status",
-      "path": "commands/summoner-status.md",
+      "path": "commands/status.md",
       "description": "Read-only status view of the current run — phase route, pending checkpoint, budget, sandbox tier. Renders via hooks/bin/summoner-status; never mutates state. Triggers: '当前进度', 'run status', '检查点状态'"
     }
   ]
