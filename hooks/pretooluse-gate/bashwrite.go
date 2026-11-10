@@ -154,6 +154,53 @@ func classifySegment(words []string) bool {
 	return false
 }
 
+// isStatusInvocation reports whether a Bash command is EXACTLY the canonical
+// read-only summoner-status render (T18 budget escape): every segment
+// resolves to the summoner-status binary with no operands beyond the
+// canonical herestring payload — `"<plugin>/hooks/bin/summoner-status" <<< '{}'`
+// (references/checkpoint-protocol.md) — or the bare verb. Any other token (a
+// flag, an argument, a redirect, a second command) fails the exemption and the
+// command is judged by the ordinary write-class and budget rules. Note the
+// canonical form is already read-class by construction: `<<<` carries no '>'.
+func isStatusInvocation(command string) bool {
+	if command == "" {
+		return false
+	}
+	// Expose command substitution to the segment splitter, as
+	// isWriteClassCommand does — a substituted payload splits into its own
+	// segment and fails the shape check.
+	norm := strings.ReplaceAll(command, "$(", "; ")
+	norm = strings.ReplaceAll(norm, "`", "; ")
+	segs := 0
+	for _, seg := range strings.FieldsFunc(norm, func(r rune) bool {
+		return r == ';' || r == '|' || r == '&' || r == '\n' || r == '\r'
+	}) {
+		segs++
+		words := tokenize(seg)
+		verbIdx, verb := resolveVerb(words)
+		if verbIdx < 0 || verb != "summoner-status" {
+			return false
+		}
+		rest := words[verbIdx+1:]
+		switch {
+		case len(rest) == 0:
+			// bare verb: allowed
+		case len(rest) == 2 && rest[0] == "<<<" && isJSONObjectLiteral(rest[1]):
+			// the canonical herestring form
+		default:
+			return false
+		}
+	}
+	return segs > 0
+}
+
+// isJSONObjectLiteral reports whether one shell token is a JSON object
+// literal (`{}`, `{...}`). It is a shape check for the status herestring
+// payload only — never a JSON parser.
+func isJSONObjectLiteral(tok string) bool {
+	return len(tok) >= 2 && strings.HasPrefix(tok, "{") && strings.HasSuffix(tok, "}")
+}
+
 // resolveVerb finds the real verb of a tokenized segment: it skips leading
 // VAR=value assignments, drops the wrappers `env` (plus its flags and
 // operands), `command` and `nohup`, and reduces absolute paths to their base

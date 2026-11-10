@@ -223,7 +223,16 @@ func appendTrace(run *shared.RunState, in *hookInput, ev shared.TraceEvent, errW
 // tool.result, plus agent.telemetry for Agent completions. An AskUserQuestion
 // elsewhere (ACTIVE Q&A, or WAIT_USER with nothing pending) is an ordinary
 // completion — it advances nothing (ruling 9).
+//
+// T18: a POST_GAME_PENDING run additionally observes its closure material —
+// questionnaire marker answers and journal Write/Edit at the fixed path — and
+// attempts closure when everything is on record.
 func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
+	if run.Status == shared.StatusPostGamePending {
+		if code := observePostGame(run, in, errW); code != 0 {
+			return code
+		}
+	}
 	if in.ToolName == toolAskUserQuestion && run.Status == shared.StatusWaitUser {
 		if cp := run.CurrentCheckpoint(); cp != nil {
 			return recordDecisionAttempt(run, cp, in, errW)
@@ -245,6 +254,114 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 		}, errW); err != nil {
 			return 2
 		}
+	}
+	if run.Status == shared.StatusPostGamePending {
+		return maybeClosePostGame(run, in, errW)
+	}
+	return 0
+}
+
+// --- T18: post-game observations + closure ----------------------------------------
+
+// observePostGame records the closure observations of a POST_GAME_PENDING run
+// (spec §6: 问卷+journal 持久化后才 CLOSED):
+//
+//   - questionnaire markers: a question whose text carries a pinned "[pg:qN]"
+//     token AND the run id, answered by an actual non-timeout platform answer
+//     (an afk-resolved dialog observes nothing). The marker's answer content
+//     is journal material, not a decision — any chosen option or typed
+//     response counts as the answer.
+//   - journal Write/Edit at the run's FIXED path (.summoner/journal/
+//     <run_id>.md): the digest is captured from the file AFTER the tool
+//     executed, so the record always binds real content.
+//
+// Observations are idempotent per marker / per tool_use_id inside the reducer;
+// a later observed journal version overwrites the record (the LATEST observed
+// governs closure).
+func observePostGame(run *shared.RunState, in *hookInput, errW io.Writer) int {
+	if in.ToolName == toolAskUserQuestion {
+		resp, ok := in.ToolResponse.(map[string]interface{})
+		if !ok {
+			return 0 // not an answer object — nothing to observe here
+		}
+		if _, afk := resp[fieldAFKTimeout]; afk {
+			return 0 // auto-resolved dialog: never a questionnaire answer
+		}
+		answers, _ := resp[fieldAnswers].(map[string]interface{})
+		typed, _ := resp[fieldResponse].(string)
+		qs, _ := in.ToolInput[fieldQuestions].([]interface{})
+		for _, raw := range qs {
+			m, _ := raw.(map[string]interface{})
+			text, _ := m[fieldQuestion].(string)
+			if text == "" || !strings.Contains(text, run.RunID) {
+				continue // the questionnaire binds to THIS run
+			}
+			for _, marker := range shared.PostGameMarkers() {
+				if !strings.Contains(text, shared.PostGameMarkerToken(marker)) {
+					continue
+				}
+				if ans, _ := answers[text].(string); ans == "" && typed == "" {
+					continue // unanswered: not an observation
+				}
+				if _, err := run.RecordPostGameAnswer(marker, in.ToolUseID); err != nil {
+					fmt.Fprintf(errW, "summoner posttooluse: recording questionnaire answer %s failed — fail-closed: %v\n", marker, err)
+					return 2
+				}
+			}
+		}
+		return 0
+	}
+	if in.ToolName == "Write" || in.ToolName == "Edit" {
+		filePath, _ := in.ToolInput["file_path"].(string)
+		if shared.IsJournalPath(filePath, run.RunID) {
+			b, err := os.ReadFile(shared.JournalPath(run.RunID))
+			if err != nil {
+				fmt.Fprintf(errW, "summoner posttooluse: journal unreadable after the write — fail-closed: %v\n", err)
+				return 2
+			}
+			sum := sha256.Sum256(b)
+			if err := run.RecordPostGameJournal(hex.EncodeToString(sum[:]), in.ToolUseID); err != nil {
+				fmt.Fprintf(errW, "summoner posttooluse: recording the journal observation failed — fail-closed: %v\n", err)
+				return 2
+			}
+		}
+	}
+	return 0
+}
+
+// maybeClosePostGame completes the post-game when every observation is on
+// record (T18: CompletePostGame is the SOLE CLOSED writer — spec §6). It
+// re-reads the journal file inside the reducer and requires it to match the
+// LATEST observed digest, so closure never freezes content nobody observed;
+// a run id's terminal pair (post_game.completed + workflow.ended) is appended
+// exactly once — CLOSED runs never reach this hook again (liveRuns filters
+// them), so no later edit reopens anything or appends a second workflow.ended.
+func maybeClosePostGame(run *shared.RunState, in *hookInput, errW io.Writer) int {
+	if !run.PostGameReady() {
+		return 0
+	}
+	if err := run.CompletePostGame(); err != nil {
+		// Not a hook failure: an observation is missing or the journal drifted
+		// from the observed digest. Surface it, keep the run
+		// POST_GAME_PENDING — the questionnaire or journal must complete first.
+		fmt.Fprintf(errW, "summoner posttooluse: post-game cannot close yet — %v\n", err)
+		return 0
+	}
+	kind := ""
+	if run.PostGame != nil {
+		kind = run.PostGame.Kind
+	}
+	if err := appendTrace(run, in, shared.TraceEvent{
+		Type:    shared.EventPostGameCompleted,
+		Payload: map[string]interface{}{"kind": kind},
+	}, errW); err != nil {
+		return 2
+	}
+	if err := appendTrace(run, in, shared.TraceEvent{
+		Type:    shared.EventWorkflowEnded,
+		Payload: map[string]interface{}{"status": string(shared.StatusClosed)},
+	}, errW); err != nil {
+		return 2
 	}
 	return 0
 }

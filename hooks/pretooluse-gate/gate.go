@@ -89,16 +89,14 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	skill := stringField(in.ToolInput, "skill")
 	isSubmit := in.ToolName == "Skill" && skill == skillPhaseSubmit
 
-	// Budget first (ruling 9), with one deliberate exception: the
-	// control-plane verbs that carry an exhausted run to its checkpoint,
-	// where the user adds budget or replans (spec §5 预算与终止), stay
-	// usable — summoner:phase-submit always, and AskUserQuestion only
-	// while WAIT_USER (the nonce-gated decision channel; review I5:
-	// ordinary ACTIVE questions are budget-gated like everything else).
-	if !(isSubmit || (in.ToolName == "AskUserQuestion" && run.Status == shared.StatusWaitUser)) {
+	// Budget first (ruling 9), minus the human-control escapes (T18, spec §5
+	// 预算与终止: only the user can add budget or replan — the control-plane
+	// surfaces that carry an exhausted run to its checkpoint and the user's
+	// answer back stay usable; everything else waits for the extension).
+	if !budgetControlExempt(in, run, isSubmit) {
 		if exhausted, why := run.BudgetExhausted(); exhausted {
 			return deny(fmt.Sprintf(
-				"Summoner gate: %s — remaining budget is zero (余量为零). Only the user can add budget or replan: submit the phase via summoner:phase-submit so the checkpoint can present the exhausted budget.",
+				"Summoner gate: %s — remaining budget is zero (余量为零). Only the user can add budget or replan: submit the phase via summoner:phase-submit so the checkpoint can present the extension question.",
 				why))
 		}
 	}
@@ -121,6 +119,46 @@ func decide(in *gateInput, run *shared.RunState) decision {
 		// Unknown/unmodeled tools (Read, Grep, …) are observed, not gated.
 		return allow(nil)
 	}
+}
+
+// budgetControlExempt names the HUMAN-CONTROL budget escapes (T18, spec §5
+// 预算与终止 — an exhausted run must still be able to reach its checkpoint and
+// receive the user's answer; everything else waits for the extension):
+//
+//   - summoner:phase-submit — the exhausted phase closes into its checkpoint,
+//     where the extension question rides (exhaust → submit → render → answer);
+//   - AskUserQuestion while WAIT_USER (the nonce-gated decision channel;
+//     review I5 keeps ordinary ACTIVE questions budget-gated) and while
+//     POST_GAME_PENDING (the questionnaire is owed regardless of budget);
+//   - summoner:change — the user-driven replan surface ("only the user can
+//     add budget or replan" names it);
+//   - the EXACT read-only summoner-status invocation — the render that shows
+//     the exhausted budget and the extension offer must stay runnable;
+//   - Write/Edit of the run's FIXED post-game journal path while
+//     POST_GAME_PENDING — closure observations are owed regardless of budget;
+//   - read-class Bash while OUTCOME_UNKNOWN — recovery probes must be able to
+//     resolve the episode (write-class probes stay budget-gated).
+func budgetControlExempt(in *gateInput, run *shared.RunState, isSubmit bool) bool {
+	if isSubmit {
+		return true
+	}
+	switch {
+	case in.ToolName == "AskUserQuestion" &&
+		(run.Status == shared.StatusWaitUser || run.Status == shared.StatusPostGamePending):
+		return true
+	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillChange:
+		return true
+	case in.ToolName == "Bash" && isStatusInvocation(stringField(in.ToolInput, "command")):
+		return true
+	case (in.ToolName == "Write" || in.ToolName == "Edit") &&
+		run.Status == shared.StatusPostGamePending &&
+		shared.IsJournalPath(stringField(in.ToolInput, "file_path"), run.RunID):
+		return true
+	case in.ToolName == "Bash" && run.Status == shared.StatusOutcomeUnknown &&
+		!isWriteClassCommand(stringField(in.ToolInput, "command")):
+		return true
+	}
+	return false
 }
 
 // decideSkill — ruling 6 (phase-submit + framework verbs) and ruling 3
@@ -589,6 +627,13 @@ func decideAskUser(in *gateInput, run *shared.RunState) decision {
 				"Summoner gate: the decision question's options must equal one persisted menu page of checkpoint %s exactly (the offered set matches no page) — copy the current page's labels verbatim from the render's paging note; more:/back: navigation is nonce-free content feedback, not an option.",
 				cp.ID))
 		}
+	}
+	// T18: budget/extend ride-along questions must equal the checkpoint's
+	// persisted pointer-label pairs exactly (labels are pointers to displayed
+	// numbers, never carriers of them) — validated at the door like the
+	// decision page; PostToolUse re-verifies before recording.
+	if _, problem := shared.ParseBudgetRideAlongs(cp, qs); problem != "" {
+		return deny("Summoner gate: " + problem)
 	}
 	return allow(nil)
 }

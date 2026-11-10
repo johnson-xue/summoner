@@ -219,6 +219,7 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	fmt.Fprintf(&b, "awaiting: %s\n", awaitingLine(run))
 	fmt.Fprintf(&b, "default recall: %s\n", defaultRecallLine(run))
 	fmt.Fprintf(&b, "budget: %s\n", budgetLine(run))
+	b.WriteString(postGameLines(run))
 	fmt.Fprintf(&b, "sandbox: %s\n", sandbox)
 	if cp := run.CurrentCheckpoint(); cp != nil {
 		b.WriteString(checkpointBlock(run, *cp))
@@ -431,11 +432,70 @@ func budgetLine(run *shared.RunState) string {
 		}
 		return fmt.Sprintf("%d/%d", c, l)
 	}
-	return fmt.Sprintf("phase_tool_calls %s · failed_checks %s · run_rework %s · delegations %s",
+	// T18: the settlement state is part of the budget view — 未确认 names the
+	// run whose first checkpoint still owes the budget answer (the post-hoc
+	// rule rejects a budget-less CONTINUE there); extensions count the
+	// applied extension receipts.
+	state := "未确认（首检查点待确认）"
+	if run.BudgetConfirmed {
+		state = "已确认"
+	}
+	if n := len(run.BudgetExtensions); n > 0 {
+		state += fmt.Sprintf(" · extended ×%d", n)
+	}
+	return fmt.Sprintf("phase_tool_calls %s · failed_checks %s · run_rework %s · delegations %s · %s",
 		lim(run.Limits.PhaseToolCalls, run.Counters.PhaseToolCalls),
 		lim(run.Limits.FailedChecks, run.Counters.FailedChecks),
 		lim(run.Limits.RunRework, run.Counters.RunRework),
-		lim(run.Limits.Delegations, run.Counters.Delegations))
+		lim(run.Limits.Delegations, run.Counters.Delegations),
+		state)
+}
+
+// budgetLimitsLine is the one-line form of a BudgetLimits value (proposal
+// display): zero axes read 不限 (unlimited — the framework default offer).
+func budgetLimitsLine(l shared.BudgetLimits) string {
+	axis := func(name string, v int) string {
+		if v <= 0 {
+			return name + " 不限"
+		}
+		return fmt.Sprintf("%s %d", name, v)
+	}
+	return strings.Join([]string{
+		axis("phase_tool_calls", l.PhaseToolCalls),
+		axis("failed_checks", l.FailedChecks),
+		axis("run_rework", l.RunRework),
+		axis("delegations", l.Delegations),
+	}, " · ")
+}
+
+// postGameLines renders the POST_GAME_PENDING closure view (T18, spec §6):
+// which pinned questionnaire markers are still owed, the fixed journal path,
+// and what closure requires. The questionnaire questions carry the pinned
+// "[pg:qN]" tokens + run id; the journal writes to the fixed path; CLOSED
+// comes only after both persist.
+func postGameLines(run *shared.RunState) string {
+	if run.Status != shared.StatusPostGamePending {
+		return ""
+	}
+	kind := "normal"
+	if run.PostGame != nil && run.PostGame.Kind != "" {
+		kind = run.PostGame.Kind
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "post-game (kind %s — CLOSED only after the questionnaire and journal persist):\n", kind)
+	for _, m := range shared.PostGameMarkers() {
+		state := "owed"
+		if run.PostGame != nil && run.PostGame.Answers[m] != "" {
+			state = "answered"
+		}
+		fmt.Fprintf(&b, "  - %s %s: %s\n", shared.PostGameMarkerToken(m), m, state)
+	}
+	if run.PostGame != nil && run.PostGame.Journal != nil {
+		fmt.Fprintf(&b, "  journal: %s @ %s (observed)\n", shared.JournalPath(run.RunID), shortDigest(run.PostGame.Journal.Digest))
+	} else {
+		fmt.Fprintf(&b, "  journal: %s (not yet written)\n", shared.JournalPath(run.RunID))
+	}
+	return b.String()
 }
 
 // checkpointBlock renders the pending checkpoint (id, nonce, kind, phase,
@@ -494,6 +554,25 @@ func checkpointBlock(run *shared.RunState, cp shared.CheckpointState) string {
 			}
 			b.WriteString("\n")
 		}
+	}
+	// T18: the persisted budget/extension offers — DIGEST-BOUND checkpoint
+	// content (a changed offer after display invalidates the binding). The
+	// ride-along question's options must equal the printed pointer labels
+	// exactly; labels never carry numbers (SetBudgetLimits/ExtendBudget apply
+	// the persisted values).
+	if cp.BudgetAsk != nil {
+		source := cp.BudgetAsk.Proposal.Source
+		if source == "" {
+			source = "framework"
+		}
+		b.WriteString("budget ask (run-start budget — rides the decision call, nonce-free):\n")
+		fmt.Fprintf(&b, "  proposal (%s): %s\n", source, budgetLimitsLine(cp.BudgetAsk.Proposal.Limits))
+		fmt.Fprintf(&b, "  options: %s · %s\n", cp.BudgetAsk.ConfirmLabel, cp.BudgetAsk.UnlimitedLabel)
+	}
+	if cp.ExtendAsk != nil {
+		b.WriteString("extend ask (budget exhausted — add the displayed amount once more):\n")
+		fmt.Fprintf(&b, "  delta: %s\n", budgetLimitsLine(cp.ExtendAsk.Delta))
+		fmt.Fprintf(&b, "  options: %s · %s\n", cp.ExtendAsk.ExtendLabel, cp.ExtendAsk.HoldLabel)
 	}
 	_ = run // checkpoint self-carries everything the block renders
 	return b.String()

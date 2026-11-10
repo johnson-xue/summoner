@@ -94,6 +94,18 @@ const (
 	EventPostGameStarted   = "post_game.started"
 	EventPostGameCompleted = "post_game.completed"
 
+	// EventBudgetConfirmed records the run-start budget settlement observed at
+	// the run's first checkpoint (T18, spec §5 预算与终止: 默认值由用户在运行
+	// 起点确认): the pointer-label answer that set Limits — the persisted
+	// proposal or the unlimited choice. Emitted only when the reducer actually
+	// APPLIES a settlement (replays and already-confirmed no-ops are silent).
+	EventBudgetConfirmed = "budget.confirmed"
+	// EventBudgetExtended records ONE applied budget extension (T18): a fresh
+	// human answer accepting the exhaustion checkpoint's persisted delta.
+	// Re-delivered callbacks are idempotent and silent; only applied
+	// extensions (new BudgetExtension receipts) emit.
+	EventBudgetExtended = "budget.extended"
+
 	// EventHooksDisabled records the SUMMONER_HOOKS_DISABLE escape hatch being
 	// used while a run was live (spec §5 hook 自身故障: the hatch must exist
 	// as the un-brick path, but using it on a live run is a recorded contract
@@ -117,6 +129,7 @@ var allEventTypes = []string{
 	EventParallelOpened, EventParallelJoined,
 	EventAgentTelemetry,
 	EventPostGameStarted, EventPostGameCompleted,
+	EventBudgetConfirmed, EventBudgetExtended,
 	EventHooksDisabled,
 }
 

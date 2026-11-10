@@ -429,8 +429,61 @@ func (r *RunState) addCheckpoint(kind CheckpointKind, phaseID, note string, arti
 		CriteriaIDs:      append([]string(nil), criteria...),
 		MenuPages:        MenuProjection(kind),
 	}
+	// T18: the run's FIRST checkpoint carries the persisted budget ask (the
+	// run-start proposal the user confirms — spec §5 默认值由用户在运行起点确
+	// 认), and any checkpoint opened while the budget is EXHAUSTED carries the
+	// persisted extension offer (余量为零 → 检查点呈现追加额度). Both are
+	// digest-bound content: the render displays them and a later offer change
+	// invalidates the display binding.
+	if len(r.Checkpoints) == 0 && !r.BudgetConfirmed {
+		ask, err := r.newBudgetAsk()
+		if err != nil {
+			return CheckpointState{}, err
+		}
+		cp.BudgetAsk = ask
+	}
+	if exhausted, _ := r.BudgetExhausted(); exhausted {
+		cp.ExtendAsk = r.newExtendAsk()
+	}
 	r.Checkpoints = append(r.Checkpoints, cp)
 	return cp, nil
+}
+
+// newBudgetAsk builds the first-checkpoint budget ask: the manifest's
+// suggested_budgets projection when the project declares one (a corrupt
+// manifest fails CLOSED — the suggestion is consumed as authority here, the
+// loader's standing rule), else the framework default — unlimited, the
+// explicit 不设上限 offer (never article-derived numbers; spec §5).
+func (r *RunState) newBudgetAsk() (*BudgetAsk, error) {
+	ask := &BudgetAsk{
+		Proposal:       BudgetProposal{Limits: BudgetLimits{}, Source: "framework"},
+		ConfirmLabel:   BudgetConfirmLabel,
+		UnlimitedLabel: BudgetUnlimitedLabel,
+	}
+	m, err := LoadRuntimeManifest()
+	if err != nil {
+		return nil, fmt.Errorf("budget proposal: project manifest unreadable: %w", err)
+	}
+	if m != nil && m.SuggestedBudgets != nil {
+		ask.Proposal = BudgetProposal{Limits: *m.SuggestedBudgets, Source: "manifest"}
+	}
+	return ask, nil
+}
+
+// newExtendAsk builds the exhaustion checkpoint's extension offer: per SET
+// axis the current limit again (追加已显示额度 — add the displayed amount once
+// more), unlimited axes stay unlimited (a zero limit is not a cap to raise).
+func (r *RunState) newExtendAsk() *ExtendAsk {
+	return &ExtendAsk{
+		Delta: BudgetLimits{
+			PhaseToolCalls: r.Limits.PhaseToolCalls,
+			FailedChecks:   r.Limits.FailedChecks,
+			RunRework:      r.Limits.RunRework,
+			Delegations:    r.Limits.Delegations,
+		},
+		ExtendLabel: BudgetExtendLabel,
+		HoldLabel:   BudgetHoldLabel,
+	}
 }
 
 func artifactVersionMap(artifacts []ArtifactRef) map[string]string {
@@ -483,7 +536,11 @@ func (r *RunState) removeStale(id string) {
 
 // CheckpointContentDigest is the canonical digest of a checkpoint's current
 // content: id, nonce, kind, phase, requirements version, note, criteria
-// (sorted) and artifact versions (sorted). MarkDisplayed binds exactly this;
+// (sorted), artifact versions (sorted) and — since T18 — the persisted
+// budget/extension OFFERS (the displayed proposal and deltas are bound
+// content; a changed offer after display invalidates the binding, while the
+// APPLIED Limits/Counters are deliberately excluded — approving them must not
+// re-render the checkpoint). MarkDisplayed binds exactly this;
 // RecordDecision re-computes it and refuses any decision whose checkpoint
 // content drifted from what was displayed (task-2.5 B1) — a render of a stale
 // or altered checkpoint can never produce it, so "展示版本错配" fails closed.
@@ -504,7 +561,20 @@ func CheckpointContentDigest(cp CheckpointState, requirementsVersion int) string
 	for _, p := range paths {
 		fmt.Fprintf(h, "artifact=%s@%s\n", p, cp.ArtifactVersions[p])
 	}
+	if cp.BudgetAsk != nil {
+		fmt.Fprintf(h, "budget_ask=%s|%s\n", budgetLimitsKey(cp.BudgetAsk.Proposal.Limits), cp.BudgetAsk.Proposal.Source)
+	}
+	if cp.ExtendAsk != nil {
+		fmt.Fprintf(h, "extend_ask=%s\n", budgetLimitsKey(cp.ExtendAsk.Delta))
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// budgetLimitsKey is the canonical one-line form of a BudgetLimits value in
+// digest-bound checkpoint content.
+func budgetLimitsKey(l BudgetLimits) string {
+	return fmt.Sprintf("phase_tool_calls=%d,failed_checks=%d,run_rework=%d,delegations=%d",
+		l.PhaseToolCalls, l.FailedChecks, l.RunRework, l.Delegations)
 }
 
 // --- phase & checkpoint transitions ----------------------------------------------
@@ -880,130 +950,153 @@ func (r *RunState) restoreRecoveryPrior() {
 // callers may pass "" — replays of "" are idempotent the same way.
 func (r *RunState) RecordDecision(checkpointID string, d Decision, toolUseID string) error {
 	return r.commit(func(s *RunState) error {
-		// Replay idempotency first: it must not depend on the current status.
-		for i := range s.Checkpoints {
-			cp := &s.Checkpoints[i]
-			if cp.ID != checkpointID || !cp.Decided {
-				continue
-			}
-			if cp.DecisionToolUseID == toolUseID {
-				if cp.Decision == d {
-					return nil // same callback replayed: idempotent no-op
-				}
-				return fmt.Errorf("RecordDecision: checkpoint %s already decided %s via %q — a conflicting replay (%s) is rejected", checkpointID, cp.Decision, cp.DecisionToolUseID, d)
-			}
-			return fmt.Errorf("RecordDecision: checkpoint %s already decided via tool_use %q — callback %q cannot overwrite it", checkpointID, cp.DecisionToolUseID, toolUseID)
-		}
-		if err := s.requireStatus(StatusWaitUser, "RecordDecision"); err != nil {
-			return err
-		}
-		// A superseded checkpoint is dead: the re-rendered successor decides.
-		for i := range s.Checkpoints {
-			if s.Checkpoints[i].ID == checkpointID && s.Checkpoints[i].Superseded {
-				return fmt.Errorf("RecordDecision: checkpoint %s was superseded by a requirement change — decide its re-rendered successor instead", checkpointID)
-			}
-		}
-		cp := s.CurrentCheckpoint()
-		if cp == nil || cp.ID != checkpointID {
-			return fmt.Errorf("RecordDecision: %q is not the open checkpoint", checkpointID)
-		}
-		if !cp.Displayed || cp.DisplayDigest == "" {
-			return fmt.Errorf("RecordDecision: checkpoint %s was never displayed — decision rejected", checkpointID)
-		}
-		// B1 display binding: the decision binds the displayed content. If
-		// anything changed since (note, criteria, phase, requirements
-		// version), the render is stale — a new display pass is required.
-		if CheckpointContentDigest(*cp, s.RequirementsVersion) != cp.DisplayDigest {
-			return fmt.Errorf("RecordDecision: checkpoint %s content changed since display — re-render required", checkpointID)
-		}
-		if err := validDecision(d); err != nil {
-			return err
-		}
-		if err := legalDecisionForKind(cp.Kind, d); err != nil {
-			return fmt.Errorf("RecordDecision: %s", err)
-		}
-		// m4 (fix round): a [v] with NOTHING frozen would park the run in an
-		// unrecoverable REVIEW_PENDING — obligation recorded, no open
-		// checkpoint, phase-submit/change/review-submit all refused, and the
-		// vacuous envelope can never cite anything. Refuse the [v] itself; the
-		// checkpoint stays open for continue:/skip: and the [v] becomes legal
-		// as soon as an acceptance freezes the view.
-		if d == DecisionReviewOnDemand && len(s.AcceptanceView().Requirements) == 0 {
-			return fmt.Errorf("RecordDecision: REVIEW_ON_DEMAND refused — the frozen acceptance view is empty (nothing accepted yet, so no review can be scoped and the envelope channel has nothing to cite); continue: or skip: this checkpoint first — [v] is legal once an acceptance freezes the view")
-		}
-		// Pre-validate every effect before mutating anything.
-		recallIdx := -1
-		if d == DecisionRecall {
-			var err error
-			if recallIdx, err = s.planRecall(cp); err != nil {
+		return s.applyDecision(checkpointID, d, toolUseID)
+	})
+}
+
+// RecordDecisionWithBudget applies a decision AND its same-callback budget
+// settlement (T18 controller clarification 3) in ONE commit: the settlement
+// and the decision persist atomically — a validation failure or a failed Save
+// leaves NEITHER applied (state authority never half-applies one human
+// callback). settle == nil degrades to RecordDecision exactly.
+func (r *RunState) RecordDecisionWithBudget(checkpointID string, d Decision, toolUseID string, settle *BudgetSettlement) error {
+	return r.commit(func(s *RunState) error {
+		if settle != nil {
+			if _, err := s.applyBudgetSettlement(settle); err != nil {
 				return err
 			}
 		}
-		if d == DecisionAcceptRequirementChange && s.Change == nil {
-			return fmt.Errorf("RecordDecision: no requirement change open for checkpoint %s", checkpointID)
-		}
+		return s.applyDecision(checkpointID, d, toolUseID)
+	})
+}
 
-		cp.Decided = true
-		cp.Decision = d
-		cp.DecidedAt = nowUTC()
-		cp.DecisionToolUseID = toolUseID
-		switch d {
-		case DecisionContinue:
-			if cp.Kind == CheckpointRecovery {
-				// Accept the status quo; restore the episode prior (B3).
-				s.restoreRecoveryPrior()
-			} else {
-				s.decidePhase(cp, true)
-				s.Status = StatusActive
+// applyDecision is the decision core shared by RecordDecision and
+// RecordDecisionWithBudget — everything the landed RecordDecision validated,
+// unchanged, running against the commit snapshot s.
+func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID string) error {
+	// Replay idempotency first: it must not depend on the current status.
+	for i := range s.Checkpoints {
+		cp := &s.Checkpoints[i]
+		if cp.ID != checkpointID || !cp.Decided {
+			continue
+		}
+		if cp.DecisionToolUseID == toolUseID {
+			if cp.Decision == d {
+				return nil // same callback replayed: idempotent no-op
 			}
-		case DecisionSkip:
-			s.decidePhase(cp, false)
-			s.Status = StatusActive
-		case DecisionDone:
+			return fmt.Errorf("RecordDecision: checkpoint %s already decided %s via %q — a conflicting replay (%s) is rejected", checkpointID, cp.Decision, cp.DecisionToolUseID, d)
+		}
+		return fmt.Errorf("RecordDecision: checkpoint %s already decided via tool_use %q — callback %q cannot overwrite it", checkpointID, cp.DecisionToolUseID, toolUseID)
+	}
+	if err := s.requireStatus(StatusWaitUser, "RecordDecision"); err != nil {
+		return err
+	}
+	// A superseded checkpoint is dead: the re-rendered successor decides.
+	for i := range s.Checkpoints {
+		if s.Checkpoints[i].ID == checkpointID && s.Checkpoints[i].Superseded {
+			return fmt.Errorf("RecordDecision: checkpoint %s was superseded by a requirement change — decide its re-rendered successor instead", checkpointID)
+		}
+	}
+	cp := s.CurrentCheckpoint()
+	if cp == nil || cp.ID != checkpointID {
+		return fmt.Errorf("RecordDecision: %q is not the open checkpoint", checkpointID)
+	}
+	if !cp.Displayed || cp.DisplayDigest == "" {
+		return fmt.Errorf("RecordDecision: checkpoint %s was never displayed — decision rejected", checkpointID)
+	}
+	// B1 display binding: the decision binds the displayed content. If
+	// anything changed since (note, criteria, phase, requirements version,
+	// budget offers), the render is stale — a new display pass is required.
+	if CheckpointContentDigest(*cp, s.RequirementsVersion) != cp.DisplayDigest {
+		return fmt.Errorf("RecordDecision: checkpoint %s content changed since display — re-render required", checkpointID)
+	}
+	if err := validDecision(d); err != nil {
+		return err
+	}
+	if err := legalDecisionForKind(cp.Kind, d); err != nil {
+		return fmt.Errorf("RecordDecision: %s", err)
+	}
+	// m4 (fix round): a [v] with NOTHING frozen would park the run in an
+	// unrecoverable REVIEW_PENDING — obligation recorded, no open
+	// checkpoint, phase-submit/change/review-submit all refused, and the
+	// vacuous envelope can never cite anything. Refuse the [v] itself; the
+	// checkpoint stays open for continue:/skip: and the [v] becomes legal
+	// as soon as an acceptance freezes the view.
+	if d == DecisionReviewOnDemand && len(s.AcceptanceView().Requirements) == 0 {
+		return fmt.Errorf("RecordDecision: REVIEW_ON_DEMAND refused — the frozen acceptance view is empty (nothing accepted yet, so no review can be scoped and the envelope channel has nothing to cite); continue: or skip: this checkpoint first — [v] is legal once an acceptance freezes the view")
+	}
+	// Pre-validate every effect before mutating anything.
+	recallIdx := -1
+	if d == DecisionRecall {
+		var err error
+		if recallIdx, err = s.planRecall(cp); err != nil {
+			return err
+		}
+	}
+	if d == DecisionAcceptRequirementChange && s.Change == nil {
+		return fmt.Errorf("RecordDecision: no requirement change open for checkpoint %s", checkpointID)
+	}
+
+	cp.Decided = true
+	cp.Decision = d
+	cp.DecidedAt = nowUTC()
+	cp.DecisionToolUseID = toolUseID
+	switch d {
+	case DecisionContinue:
+		if cp.Kind == CheckpointRecovery {
+			// Accept the status quo; restore the episode prior (B3).
+			s.restoreRecoveryPrior()
+		} else {
 			s.decidePhase(cp, true)
-			s.Status = StatusPostGamePending // CLOSED only after post-game persists
-		case DecisionRecall:
-			if p := s.phaseForDecision(cp); p != nil && p.Outcome == "" {
-				p.Outcome = "recalled"
-				// F1 (review round 1): when the decision came from a
-				// checkpoint ABOVE the visit's own (review-result / recovery
-				// fallback), the recalled visit's still-PENDING checkpoint
-				// can never be decided — RecordDecision needs WAIT_USER and
-				// every WAIT_USER entry appends a newer checkpoint — so it
-				// would resurface as an orphan in ACTIVE and wedge the change
-				// loop. Supersede it (CurrentCheckpoint skips superseded). A
-				// checkpoint already decided (e.g. [v] then review RECALL),
-				// and the decision checkpoint itself, are left alone.
-				if p.CheckpointID != "" && p.CheckpointID != cp.ID {
-					for i := range s.Checkpoints {
-						if s.Checkpoints[i].ID == p.CheckpointID && !s.Checkpoints[i].Decided {
-							s.Checkpoints[i].Superseded = true
-							break
-						}
+			s.Status = StatusActive
+		}
+	case DecisionSkip:
+		s.decidePhase(cp, false)
+		s.Status = StatusActive
+	case DecisionDone:
+		s.decidePhase(cp, true)
+		s.Status = StatusPostGamePending // CLOSED only after post-game persists
+	case DecisionRecall:
+		if p := s.phaseForDecision(cp); p != nil && p.Outcome == "" {
+			p.Outcome = "recalled"
+			// F1 (review round 1): when the decision came from a
+			// checkpoint ABOVE the visit's own (review-result / recovery
+			// fallback), the recalled visit's still-PENDING checkpoint
+			// can never be decided — RecordDecision needs WAIT_USER and
+			// every WAIT_USER entry appends a newer checkpoint — so it
+			// would resurface as an orphan in ACTIVE and wedge the change
+			// loop. Supersede it (CurrentCheckpoint skips superseded). A
+			// checkpoint already decided (e.g. [v] then review RECALL),
+			// and the decision checkpoint itself, are left alone.
+			if p.CheckpointID != "" && p.CheckpointID != cp.ID {
+				for i := range s.Checkpoints {
+					if s.Checkpoints[i].ID == p.CheckpointID && !s.Checkpoints[i].Decided {
+						s.Checkpoints[i].Superseded = true
+						break
 					}
 				}
 			}
-			s.applyRecallAt(cp, recallIdx)
-			s.RecoveryPrior = "" // a recall supersedes the episode's restore
-		case DecisionReviewOnDemand:
-			// B2: park the run under a persisted obligation — no work may
-			// open until the matching review is requested and concluded.
-			s.ReviewObligation = &ReviewObligation{
-				SourceCheckpointID: cp.ID,
-				PhaseID:            cp.PhaseID,
-				At:                 nowUTC(),
-			}
-			s.Status = StatusReviewPending
-		case DecisionStop:
-			s.Status = StatusPostGamePending // minimal exit journal is the caller's duty
-			s.RecoveryPrior = ""
-		case DecisionAcceptRequirementChange:
-			if err := s.resumeAfterChange(); err != nil { // validated above
-				return err
-			}
 		}
-		return nil
-	})
+		s.applyRecallAt(cp, recallIdx)
+		s.RecoveryPrior = "" // a recall supersedes the episode's restore
+	case DecisionReviewOnDemand:
+		// B2: park the run under a persisted obligation — no work may
+		// open until the matching review is requested and concluded.
+		s.ReviewObligation = &ReviewObligation{
+			SourceCheckpointID: cp.ID,
+			PhaseID:            cp.PhaseID,
+			At:                 nowUTC(),
+		}
+		s.Status = StatusReviewPending
+	case DecisionStop:
+		s.Status = StatusPostGamePending // minimal exit journal is the caller's duty
+		s.RecoveryPrior = ""
+	case DecisionAcceptRequirementChange:
+		if err := s.resumeAfterChange(); err != nil { // validated above
+			return err
+		}
+	}
+	return nil
 }
 
 // --- requirement-change loop (spec §1 增补) ---------------------------------------
@@ -1160,6 +1253,15 @@ func (r *RunState) rerenderCheckpoint() bool {
 		ArtifactVersions: copyArtifactVersions(src.ArtifactVersions),
 		CriteriaIDs:      append([]string(nil), src.CriteriaIDs...),
 		MenuPages:        MenuProjection(src.Kind),
+	}
+	// T18: the superseded checkpoint's budget asks ride onto the re-rendered
+	// successor — the settlement surface must survive the change loop (the
+	// successor is the checkpoint the user actually answers).
+	if src.BudgetAsk != nil && !r.BudgetConfirmed {
+		cp.BudgetAsk = src.BudgetAsk
+	}
+	if src.ExtendAsk != nil {
+		cp.ExtendAsk = src.ExtendAsk
 	}
 	r.Checkpoints = append(r.Checkpoints, cp)
 	for i := len(r.Phases) - 1; i >= 0; i-- {
@@ -1685,4 +1787,393 @@ func (r *RunState) BudgetExhausted() (bool, string) {
 		return true, fmt.Sprintf("delegation budget exhausted (%d/%d)", r.Counters.Delegations, l)
 	}
 	return false, ""
+}
+
+// --- budget settlement (T18: SetBudgetLimits / ExtendBudget) -----------------------
+
+// SetBudgetLimits is the SOLE writer of Limits (T18): it applies the observed
+// first-checkpoint budget confirmation. Legal only in WAIT_USER at the
+// current DISPLAYED checkpoint that carries the persisted BudgetAsk (the
+// budget question rides a display-verified ask, exactly like drops); one
+// settlement per run — already confirmed is an idempotent no-op (the first
+// human answer governs). A replay of the settling call is silent.
+func (r *RunState) SetBudgetLimits(limits BudgetLimits, toolUseID string) (applied bool, err error) {
+	if err := validateBudgetLimits(limits, "SetBudgetLimits"); err != nil {
+		return false, err
+	}
+	err = r.commit(func(s *RunState) error {
+		var serr error
+		applied, serr = s.applyBudgetSettlement(&BudgetSettlement{ToolUseID: toolUseID, Confirm: &limits})
+		return serr
+	})
+	if err != nil {
+		return false, err
+	}
+	return applied, nil
+}
+
+// ExtendBudget is the sole LIMIT RAISER (T18): it applies the CURRENT
+// checkpoint's persisted extension offer — the delta comes from
+// CheckpointState.ExtendAsk, never from the caller (panel OQ3: offered deltas
+// are persisted content, applied as persisted). Legal only in WAIT_USER at
+// the current DISPLAYED exhaustion checkpoint; per-axis the delta adds to the
+// set limit while a zero (unlimited) axis stays unlimited. The receipt is
+// append-only per tool_use_id: a re-delivered callback never extends twice,
+// while a FRESH human answer may extend again.
+func (r *RunState) ExtendBudget(toolUseID string) (extended bool, err error) {
+	err = r.commit(func(s *RunState) error {
+		var serr error
+		extended, serr = s.applyBudgetSettlement(&BudgetSettlement{ToolUseID: toolUseID, Extend: true})
+		return serr
+	})
+	if err != nil {
+		return false, err
+	}
+	return extended, nil
+}
+
+// validateBudgetLimits rejects negative counters-of-limit values (zero is the
+// meaningful "unlimited", negatives are corruption).
+func validateBudgetLimits(l BudgetLimits, op string) error {
+	if l.PhaseToolCalls < 0 || l.FailedChecks < 0 || l.RunRework < 0 || l.Delegations < 0 {
+		return fmt.Errorf("%s: negative budget values are illegal (%s)", op, budgetLimitsKey(l))
+	}
+	return nil
+}
+
+// applyBudgetSettlement applies one settlement against the commit snapshot.
+// Returns whether anything was newly applied (false + nil error = idempotent
+// no-op: a replayed callback, or a confirm after the budget already settled).
+func (s *RunState) applyBudgetSettlement(settle *BudgetSettlement) (bool, error) {
+	if settle == nil || settle.ToolUseID == "" {
+		return false, errors.New("budget settlement requires the answering call's tool_use_id")
+	}
+	applied := false
+	if settle.Confirm != nil {
+		if err := validateBudgetLimits(*settle.Confirm, "SetBudgetLimits"); err != nil {
+			return false, err
+		}
+		if !s.BudgetConfirmed {
+			if err := s.requireStatus(StatusWaitUser, "SetBudgetLimits"); err != nil {
+				return false, err
+			}
+			cp := s.CurrentCheckpoint()
+			if cp == nil {
+				return false, errors.New("SetBudgetLimits: no open checkpoint")
+			}
+			if !cp.Displayed {
+				return false, fmt.Errorf("SetBudgetLimits: checkpoint %s is not displayed (the budget question rides a display-verified ask)", cp.ID)
+			}
+			if cp.BudgetAsk == nil {
+				return false, fmt.Errorf("SetBudgetLimits: checkpoint %s carries no persisted budget ask (settlement belongs to the run's unsettled first checkpoint)", cp.ID)
+			}
+			s.Limits = *settle.Confirm
+			s.BudgetConfirmed = true
+			s.BudgetSettledBy = settle.ToolUseID
+			applied = true
+		}
+		// Already confirmed: the first human answer governs — no-op.
+	}
+	if settle.Extend {
+		for _, x := range s.BudgetExtensions {
+			if x.ToolUseID == settle.ToolUseID {
+				return applied, nil // this call's extension is already on record
+			}
+		}
+		if err := s.requireStatus(StatusWaitUser, "ExtendBudget"); err != nil {
+			return false, err
+		}
+		cp := s.CurrentCheckpoint()
+		if cp == nil {
+			return false, errors.New("ExtendBudget: no open checkpoint")
+		}
+		if !cp.Displayed {
+			return false, fmt.Errorf("ExtendBudget: checkpoint %s is not displayed (the extend question rides a display-verified ask)", cp.ID)
+		}
+		if cp.ExtendAsk == nil {
+			return false, fmt.Errorf("ExtendBudget: checkpoint %s carries no persisted extension offer — extension questions exist only at exhaustion checkpoints", cp.ID)
+		}
+		if err := validateBudgetLimits(cp.ExtendAsk.Delta, "ExtendBudget"); err != nil {
+			return false, err
+		}
+		if cp.ExtendAsk.Delta == (BudgetLimits{}) {
+			return false, errors.New("ExtendBudget: the persisted extension offer is empty (nothing to add)")
+		}
+		// Per axis: add the delta to a SET limit; a zero (unlimited) axis
+		// stays unlimited — an extension never caps an unlimited axis.
+		if d := cp.ExtendAsk.Delta.PhaseToolCalls; d > 0 && s.Limits.PhaseToolCalls > 0 {
+			s.Limits.PhaseToolCalls += d
+		}
+		if d := cp.ExtendAsk.Delta.FailedChecks; d > 0 && s.Limits.FailedChecks > 0 {
+			s.Limits.FailedChecks += d
+		}
+		if d := cp.ExtendAsk.Delta.RunRework; d > 0 && s.Limits.RunRework > 0 {
+			s.Limits.RunRework += d
+		}
+		if d := cp.ExtendAsk.Delta.Delegations; d > 0 && s.Limits.Delegations > 0 {
+			s.Limits.Delegations += d
+		}
+		s.BudgetExtensions = append(s.BudgetExtensions, BudgetExtension{
+			Delta:     cp.ExtendAsk.Delta,
+			ToolUseID: settle.ToolUseID,
+			At:        nowUTC(),
+		})
+		applied = true
+	}
+	return applied, nil
+}
+
+// --- post-game closure (T18: observation ledger + the sole CLOSED writer) -----------
+
+// postGameMarkers are the PINNED questionnaire markers (T18): the required
+// question set of every post-game questionnaire — references/
+// post-game-review.md's per-type questions 1..4 (the trailing 备注 questions
+// are optional by that protocol and pinned no markers of their own). Each
+// marker binds through the "[pg:<id>]" question-text token; observations
+// require actual non-timeout platform answers.
+var postGameMarkers = []string{"q1", "q2", "q3", "q4"}
+
+// PostGameMarkers returns a copy of the pinned questionnaire marker ids.
+func PostGameMarkers() []string {
+	out := make([]string, len(postGameMarkers))
+	copy(out, postGameMarkers)
+	return out
+}
+
+// PostGameMarkerToken returns the pinned question-text token of one marker
+// ("[pg:q1]") — the string a questionnaire question's text must carry for
+// its answer to observe that marker.
+func PostGameMarkerToken(marker string) string { return "[pg:" + marker + "]" }
+
+// journalRootOverride redirects the fixed journal tree into a test directory
+// (hermetic suite, the runStateDirOverride pattern). Empty in production.
+var journalRootOverride string
+
+// JournalPath returns the FIXED post-game journal path of a run (T18):
+// {project}/.summoner/journal/{run_id}.md — run-id keyed, never date-keyed
+// (the controller's binding contract; the old journal/{date}-{workflow} path
+// is retired).
+func JournalPath(runID string) string {
+	root := ProjectDir()
+	if journalRootOverride != "" {
+		root = journalRootOverride
+	}
+	return filepath.Join(root, ".summoner", "journal", runID+".md")
+}
+
+// IsJournalPath reports whether a Write/Edit file_path targets the run's
+// fixed journal path (either the project-relative or absolute spelling).
+func IsJournalPath(p, runID string) bool {
+	if p == "" || !validID(runID) {
+		return false
+	}
+	c := filepath.Clean(p)
+	return c == filepath.Join(".summoner", "journal", runID+".md") || c == JournalPath(runID)
+}
+
+// WriteMinimalExitJournal writes the hooks-owned minimal exit journal of an
+// emergency STOP (T18, spec §6: 紧急 stop = 最小 journal + 补答 — written
+// hook-side IMMEDIATELY, no model turn needed) and returns its content
+// digest. The full questionnaire is still owed; the run stays
+// POST_GAME_PENDING and completes later in the OWNING session.
+func WriteMinimalExitJournal(r *RunState) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "---\nrun_id: %s\nworkflow: %s\nkind: emergency_minimal\nended_at: %s\n---\n\n", r.RunID, r.Workflow, nowUTC())
+	fmt.Fprintf(&b, "# Emergency stop — minimal exit journal (run %s)\n\n", r.RunID)
+	b.WriteString("Stopped by an explicit STOP decision. The post-game questionnaire is still\n")
+	b.WriteString("owed (markers q1..q4) and completes in the run's owning session; CLOSED comes\n")
+	b.WriteString("only after the observations persist.\n")
+	path := JournalPath(r.RunID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	content := []byte(b.String())
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// StartPostGame records the post-game start of a DONE/STOPped run: kind
+// "normal" (DONE) or "emergency_minimal" (STOP + hook-written minimal
+// journal). Idempotent — the first kind recorded governs.
+func (r *RunState) StartPostGame(kind string) error {
+	switch kind {
+	case "normal", "emergency_minimal":
+	default:
+		return fmt.Errorf("StartPostGame: unknown post-game kind %q", kind)
+	}
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusPostGamePending, "StartPostGame"); err != nil {
+			return err
+		}
+		if s.PostGame == nil {
+			s.PostGame = &PostGame{Kind: kind, StartedAt: nowUTC()}
+		} else if s.PostGame.Kind == "" {
+			s.PostGame.Kind = kind
+		}
+		return nil
+	})
+}
+
+// RecordPostGameAnswer records ONE observed questionnaire marker answer
+// (actual platform answer of a question whose text carried the marker token).
+// Idempotent per marker — the FIRST observed answer governs, and the pinned
+// questionnaire is deliberately FOUR questions in ONE call (the platform caps
+// 4 questions/call; exactly the four markers), so one tool_use_id legitimately
+// settles several markers: there is deliberately no one-marker-per-call
+// receipt (unlike drops, the answers never clear, so per-marker idempotency
+// is the whole replay story — a re-delivered callback re-observes the same
+// markers and records nothing).
+func (r *RunState) RecordPostGameAnswer(marker, toolUseID string) (recorded bool, err error) {
+	if !containsID(postGameMarkers, marker) {
+		return false, fmt.Errorf("RecordPostGameAnswer: %q is not a pinned questionnaire marker (%v)", marker, postGameMarkers)
+	}
+	if toolUseID == "" {
+		return false, errors.New("RecordPostGameAnswer: tool_use_id is required (the answer binds to the answering AskUserQuestion call)")
+	}
+	recorded = false
+	err = r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusPostGamePending, "RecordPostGameAnswer"); err != nil {
+			return err
+		}
+		if s.PostGame == nil {
+			s.PostGame = &PostGame{Kind: "normal", StartedAt: nowUTC()}
+		}
+		if s.PostGame.Answers == nil {
+			s.PostGame.Answers = map[string]string{}
+		}
+		if _, seen := s.PostGame.Answers[marker]; seen {
+			return nil // first observed answer governs
+		}
+		s.PostGame.Answers[marker] = toolUseID
+		recorded = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
+}
+
+// RecordPostGameJournal records the observed journal Write/Edit of a
+// POST_GAME_PENDING run: the content digest captured AT OBSERVATION time. A
+// LATER observed write overwrites the record — the latest observed version
+// governs closure (controller clarification 4); once CLOSED the record is
+// final and no later edit reopens anything.
+func (r *RunState) RecordPostGameJournal(digest, toolUseID string) error {
+	if digest == "" {
+		return errors.New("RecordPostGameJournal: digest is required (captured at observation time)")
+	}
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusPostGamePending, "RecordPostGameJournal"); err != nil {
+			return err
+		}
+		if s.PostGame == nil {
+			s.PostGame = &PostGame{Kind: "normal", StartedAt: nowUTC()}
+		}
+		s.PostGame.Journal = &JournalRecord{
+			Path:      JournalPath(s.RunID),
+			Digest:    digest,
+			ToolUseID: toolUseID,
+			At:        nowUTC(),
+		}
+		return nil
+	})
+}
+
+// PostGameReady reports whether the closure preconditions are all observed:
+// every pinned questionnaire marker answered AND a journal write observed.
+// (The journal FILE match is validated at completion, against the latest
+// observed digest — never a detached caller's claim.)
+func (r *RunState) PostGameReady() bool {
+	if r.PostGame == nil {
+		return false
+	}
+	for _, m := range postGameMarkers {
+		if r.PostGame.Answers[m] == "" {
+			return false
+		}
+	}
+	return r.PostGame.Journal != nil
+}
+
+// CompletePostGame is the SOLE CLOSED writer (T18, spec §6 正常结束须问卷+
+// journal 持久化后才 CLOSED; §7 one terminal event pair — no workflow.aborted
+// writer). It validates the reducer's OWN records — every pinned marker
+// observed, a journal record present — then re-reads the journal file and
+// requires it to still match the LATEST observed digest (finalization
+// preserves the observed version). CLOSED is terminal: this method refuses
+// everything else, and nothing reopens a closed run.
+func (r *RunState) CompletePostGame() error {
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusPostGamePending, "CompletePostGame"); err != nil {
+			return err
+		}
+		var missing []string
+		if s.PostGame == nil {
+			missing = postGameMarkers
+		} else {
+			for _, m := range postGameMarkers {
+				if s.PostGame.Answers[m] == "" {
+					missing = append(missing, m)
+				}
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("CompletePostGame: questionnaire markers not yet observed: %v", missing)
+		}
+		if s.PostGame.Journal == nil {
+			return errors.New("CompletePostGame: no journal write observed at the fixed path .summoner/journal/" + s.RunID + ".md")
+		}
+		b, err := os.ReadFile(s.PostGame.Journal.Path)
+		if err != nil {
+			return fmt.Errorf("CompletePostGame: journal unreadable at %s: %w", s.PostGame.Journal.Path, err)
+		}
+		sum := sha256.Sum256(b)
+		if hex.EncodeToString(sum[:]) != s.PostGame.Journal.Digest {
+			return fmt.Errorf("CompletePostGame: journal %s no longer matches the latest observed version — rewrite it so the observation binds the current content", s.PostGame.Journal.Path)
+		}
+		s.Status = StatusClosed
+		if s.PostGame == nil {
+			s.PostGame = &PostGame{}
+		}
+		s.PostGame.CompletedAt = nowUTC()
+		return nil
+	})
+}
+
+// PendingPostGameRuns scans every session of the current project for
+// POST_GAME_PENDING runs — the cross-session, DISPLAY-ONLY surfacing of owed
+// post-games (T18: completion happens in the OWNING session; other sessions
+// merely point). A missing project state dir simply means none.
+func PendingPostGameRuns() ([]*RunState, error) {
+	root, err := runStateRoot()
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := os.ReadDir(filepath.Join(root, ProjectKey()))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []*RunState
+	for _, s := range sessions {
+		if !s.IsDir() {
+			continue
+		}
+		runs, err := SessionRuns(s.Name())
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range runs {
+			if r.Status == StatusPostGamePending {
+				out = append(out, r)
+			}
+		}
+	}
+	return out, nil
 }

@@ -171,6 +171,15 @@ func runHook(stdin io.Reader, errW io.Writer) int {
 		}
 		fmt.Fprintf(errW, "summoner userpromptsubmit: session already has %d live Summoner run(s) (%s) — not starting a second\n",
 			len(live), strings.Join(ids, ", "))
+		// T18: a POST_GAME_PENDING run is closable debt, not dead weight —
+		// name what it owes so the user can finish it in this (owning)
+		// session instead of starting around it.
+		for _, r := range live {
+			if r.Status == shared.StatusPostGamePending {
+				fmt.Fprintf(errW, "summoner userpromptsubmit: run %s is POST_GAME_PENDING — ask its questionnaire ([pg:q1..q4] questions carrying the run id) and write the journal at .summoner/journal/%s.md so it can CLOSE; CLOSED runs stop blocking new ones\n",
+					r.RunID, r.RunID)
+			}
+		}
 		return 0
 	}
 

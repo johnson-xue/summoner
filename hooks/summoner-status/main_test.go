@@ -180,7 +180,7 @@ func TestRenderWaitUser(t *testing.T) {
 		"- crit-stale-1 (stale)",
 		"awaiting: user decision at checkpoint cp-2",
 		"default recall: context (latest accepted prior phase)",
-		"budget: phase_tool_calls 4/40 · failed_checks 0/3 · run_rework 0/2 · delegations 1/5",
+		"budget: phase_tool_calls 4/40 · failed_checks 0/3 · run_rework 0/2 · delegations 1/5 · 未确认（首检查点待确认）",
 		"sandbox: L1（未配置沙箱）",
 		"⚡ SUMMONER CHECKPOINT cp-2 — nonce " + cp.Nonce + " — PHASE",
 		"phase: diagnosis",
@@ -272,8 +272,104 @@ func TestRenderUnlimitedBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, out, _ := callStatus(t, `{"session_id":"sess-1"}`)
-	if !strings.Contains(out, "budget: phase_tool_calls 0/∞ · failed_checks 0/∞ · run_rework 0/∞ · delegations 0/∞") {
+	if !strings.Contains(out, "budget: phase_tool_calls 0/∞ · failed_checks 0/∞ · run_rework 0/∞ · delegations 0/∞ · 未确认（首检查点待确认）") {
 		t.Fatalf("unlimited budget line missing:\n%s", out)
+	}
+}
+
+// TestRenderBudgetAsks pins the T18 checkpoint additions: the run's unsettled
+// first checkpoint renders its budget ask (proposal + the pointer labels),
+// and a checkpoint opened at exhaustion renders the extension offer — the
+// labels the ride-along questions must equal exactly.
+func TestRenderBudgetAsks(t *testing.T) {
+	useStatusEnv(t)
+	r := newRun(t)
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.BudgetAsk == nil {
+		t.Fatal("the first checkpoint must carry the persisted budget ask")
+	}
+	out := renderStatus(r, "L1（未配置沙箱）")
+	for _, want := range []string{
+		"budget ask (run-start budget — rides the decision call, nonce-free):",
+		"proposal (framework): phase_tool_calls 不限 · failed_checks 不限 · run_rework 不限 · delegations 不限",
+		"options: budget: 按已显示预算 · budget: 不设上限",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("budget ask render missing %q:\n%s", want, out)
+		}
+	}
+
+	// Settle a real limit (display-verified), decide, and exhaust the next
+	// phase: its checkpoint carries the extension offer.
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SetBudgetLimits(shared.BudgetLimits{PhaseToolCalls: 1}, "tu-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, "tu-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	r.CountToolCall()
+	cp2, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp2.ExtendAsk == nil {
+		t.Fatal("the exhaustion checkpoint must carry the extension offer")
+	}
+	out = renderStatus(r, "L1（未配置沙箱）")
+	for _, want := range []string{
+		"extend ask (budget exhausted — add the displayed amount once more):",
+		"delta: phase_tool_calls 1 · failed_checks 不限 · run_rework 不限 · delegations 不限",
+		"options: extend: 追加已显示额度 · extend: 不追加",
+		"已确认",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extend ask render missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderPostGamePending pins the closure-debt view: owed/answered markers,
+// the fixed journal path, and the awaiting line.
+func TestRenderPostGamePending(t *testing.T) {
+	useStatusEnv(t)
+	r := newRun(t)
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decide(t, r, cp, shared.DecisionDone)
+	if err := r.StartPostGame("normal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RecordPostGameAnswer("q1", "tu-pg-1"); err != nil {
+		t.Fatal(err)
+	}
+	out := renderStatus(r, "L1（未配置沙箱）")
+	for _, want := range []string{
+		"awaiting: post-game questionnaire",
+		"post-game (kind normal — CLOSED only after the questionnaire and journal persist):",
+		"[pg:q1] q1: answered",
+		"[pg:q2] q2: owed",
+		"journal: ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("post-game render missing %q:\n%s", want, out)
+		}
 	}
 }
 

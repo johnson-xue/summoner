@@ -103,6 +103,15 @@ func openDisplayedCheckpoint(t *testing.T, r *shared.RunState, phaseID string) s
 	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed(%s): %v", cp.ID, err)
 	}
+	// T18: the run's FIRST checkpoint carries the budget ask; the shared
+	// fixture settles it (unlimited) so ordinary decision tests are not
+	// blocked by the post-hoc rule — budget-specific tests build their own
+	// unsettled state.
+	if !r.BudgetConfirmed {
+		if _, err := r.SetBudgetLimits(shared.BudgetLimits{}, "tu-budget-seed"); err != nil {
+			t.Fatalf("SetBudgetLimits(seed): %v", err)
+		}
+	}
 	return cp
 }
 

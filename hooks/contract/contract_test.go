@@ -996,7 +996,10 @@ func TestEndToEndTwoTurnDecisionReviewRoute(t *testing.T) {
 		t.Fatalf("offered-set mismatch: (code, stderr) = (%d, %q), want exit 2 + menu-page pin", code, stderr)
 	}
 
-	// Next-turn ask with the persisted page's exact labels: allowed.
+	// Next-turn ask with the persisted page's exact labels: allowed. T18: the
+	// checkpoint is the run's first and carries the budget ask — the question
+	// rides along nonce-free (the gate admits it untouched; PostToolUse
+	// settles it with the decision in one commit).
 	code, _, stderr = runBinary(t, "pretooluse-gate",
 		askQuestionPayload(t, "tu-ask-1", cp.Nonce, cp.MenuPages[0].Labels), nil)
 	if code != 0 {
@@ -1011,17 +1014,23 @@ func TestEndToEndTwoTurnDecisionReviewRoute(t *testing.T) {
 	for _, l := range cp.MenuPages[0].Labels {
 		opts = append(opts, map[string]interface{}{"label": l, "description": "decision option"})
 	}
+	rides, rideAnswers := budgetRides(cp, "unlimited", "")
+	questions := append([]interface{}{map[string]interface{}{
+		"question": qtext, "header": "Checkpoint", "options": opts, "multiSelect": false,
+	}}, rides...)
+	allAnswers := map[string]interface{}{qtext: answer}
+	for k, v := range rideAnswers {
+		allAnswers[k] = v
+	}
 	code, _, stderr = runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
 		"hook_event_name": "PostToolUse",
 		"session_id":      contractSession,
 		"tool_name":       "AskUserQuestion",
 		"tool_use_id":     "tu-ask-1",
-		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
-			"question": qtext, "header": "Checkpoint", "options": opts, "multiSelect": false,
-		}}},
+		"tool_input":      map[string]interface{}{"questions": questions},
 		"tool_response": map[string]interface{}{
 			"questions": []interface{}{map[string]interface{}{"question": qtext}},
-			"answers":   map[string]interface{}{qtext: answer},
+			"answers":   allAnswers,
 		},
 	}), nil)
 	if code != 0 {
@@ -1061,12 +1070,65 @@ func contractEnvelopeJSON(t *testing.T, runID, reviewID string, ids ...string) s
 	return string(b)
 }
 
+// budgetRides builds the nonce-free budget/extend ride-along questions of a
+// checkpoint's PERSISTED asks (T18), plus the answers-map entries for the
+// requested per-kind choice: budgetChoice "confirm"|"unlimited" (absent = no
+// budget ride), extendChoice "extend"|"hold" (absent = no extend ride). The
+// labels come from the persisted asks — never hand-written.
+func budgetRides(cp *shared.CheckpointState, budgetChoice, extendChoice string) ([]interface{}, map[string]string) {
+	var qs []interface{}
+	answers := map[string]string{}
+	opts := func(a, b string) []interface{} {
+		return []interface{}{
+			map[string]interface{}{"label": a, "description": "budget option"},
+			map[string]interface{}{"label": b, "description": "budget option"},
+		}
+	}
+	if cp.BudgetAsk != nil && budgetChoice != "" {
+		ask := cp.BudgetAsk
+		text := "预算确认 Budget confirmation (run-start): confirm the displayed proposal?"
+		qs = append(qs, map[string]interface{}{
+			"question": text, "header": "Budget", "options": opts(ask.ConfirmLabel, ask.UnlimitedLabel), "multiSelect": false,
+		})
+		switch budgetChoice {
+		case "confirm":
+			answers[text] = ask.ConfirmLabel
+		case "unlimited":
+			answers[text] = ask.UnlimitedLabel
+		}
+	}
+	if cp.ExtendAsk != nil && extendChoice != "" {
+		ask := cp.ExtendAsk
+		text := "预算追加 Budget extension (exhausted): add the displayed amount once more?"
+		qs = append(qs, map[string]interface{}{
+			"question": text, "header": "Extend", "options": opts(ask.ExtendLabel, ask.HoldLabel), "multiSelect": false,
+		})
+		switch extendChoice {
+		case "extend":
+			answers[text] = ask.ExtendLabel
+		case "hold":
+			answers[text] = ask.HoldLabel
+		}
+	}
+	return qs, answers
+}
+
 // renderAndDecide drives the two-turn decision cycle over the REAL binaries
 // for the given already-open checkpoint: Stop binds the pasted render, the
 // gate admits the page-pinned nonce question (pageIdx of the persisted
 // pages; negative = the LAST page, where the review: option lives),
-// PostToolUse records the chosen label. sel picks the offered label.
+// PostToolUse records the chosen label. sel picks the offered label. T18:
+// the persisted budget/extension asks ride along with their DEFAULT answers
+// (unlimited / hold) so the generic cycle settles them; budget-specific
+// tests use renderAndDecideSettle.
 func renderAndDecide(t *testing.T, runID, toolUseID string, cp *shared.CheckpointState, pageIdx int, sel func([]string) string) {
+	t.Helper()
+	renderAndDecideSettle(t, runID, toolUseID, cp, pageIdx, sel, "unlimited", "hold")
+}
+
+// renderAndDecideSettle is renderAndDecide with explicit budget settlement
+// choices (budgetRides' per-kind choice strings).
+func renderAndDecideSettle(t *testing.T, runID, toolUseID string, cp *shared.CheckpointState, pageIdx int, sel func([]string) string, budgetChoice, extendChoice string) {
 	t.Helper()
 	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
@@ -1084,25 +1146,37 @@ func renderAndDecide(t *testing.T, runID, toolUseID string, cp *shared.Checkpoin
 	}
 	page := cp.MenuPages[pageIdx]
 	answer := sel(page.Labels)
-	if code, _, stderr := runBinary(t, "pretooluse-gate",
-		askQuestionPayload(t, toolUseID, cp.Nonce, page.Labels), nil); code != 0 {
-		t.Fatalf("gate ask exit = %d, want 0 (stderr: %q)", code, stderr)
-	}
+	rides, rideAnswers := budgetRides(cp, budgetChoice, extendChoice)
 	qtext := askQuestionText(cp.Nonce)
 	opts := make([]interface{}, 0, len(page.Labels))
 	for _, l := range page.Labels {
 		opts = append(opts, map[string]interface{}{"label": l, "description": "decision option"})
+	}
+	decisionQ := map[string]interface{}{
+		"question": qtext, "header": "Checkpoint", "options": opts, "multiSelect": false,
+	}
+	questions := append([]interface{}{decisionQ}, rides...)
+	// The gate admits the nonce question page-pinned, rides along untouched.
+	if code, _, stderr := runBinary(t, "pretooluse-gate", mustJSON(t, map[string]interface{}{
+		"session_id":  contractSession,
+		"tool_name":   "AskUserQuestion",
+		"tool_use_id": toolUseID,
+		"tool_input":  map[string]interface{}{"questions": questions},
+	}), nil); code != 0 {
+		t.Fatalf("gate ask exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	allAnswers := map[string]interface{}{qtext: answer}
+	for k, v := range rideAnswers {
+		allAnswers[k] = v
 	}
 	if code, _, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
 		"hook_event_name": "PostToolUse",
 		"session_id":      contractSession,
 		"tool_name":       "AskUserQuestion",
 		"tool_use_id":     toolUseID,
-		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
-			"question": qtext, "header": "Checkpoint", "options": opts, "multiSelect": false,
-		}}},
+		"tool_input":      map[string]interface{}{"questions": questions},
 		"tool_response": map[string]interface{}{
-			"answers": map[string]interface{}{qtext: answer},
+			"answers": allAnswers,
 		},
 	}), nil); code != 0 {
 		t.Fatalf("posttooluse decision exit = %d, want 0 (stderr: %q)", code, stderr)
@@ -1745,6 +1819,459 @@ func TestEndToEndDropRideAlongOverBinaries(t *testing.T) {
 	}
 	if run.Status != shared.StatusActive || !run.Checkpoints[1].Decided {
 		t.Fatalf("the decision must record alongside the drop (status %s)", run.Status)
+	}
+	if err := shared.VerifyChain(runID); err != nil {
+		t.Errorf("VerifyChain: %v", err)
+	}
+}
+
+// --- T18: budget lifecycle + post-game closure over the REAL binaries ---------------
+
+// soleRunID resolves the single run state file of the contract env (fatal on
+// any other count — a second live run would fail every hook on ambiguity).
+func soleRunID(t *testing.T) string {
+	t.Helper()
+	files := runStateFiles(t)
+	if len(files) != 1 {
+		t.Fatalf("run state files = %d, want 1", len(files))
+	}
+	return strings.TrimSuffix(filepath.Base(files[0]), ".json")
+}
+
+// writeContractManifest writes a minimal valid v2 manifest (with the given
+// suggested_budgets YAML body) into the temp project dir the contract env
+// points CLAUDE_PROJECT_DIR at — the runtime manifest loader reads it when
+// the run's first checkpoint opens its budget ask.
+func writeContractManifest(t *testing.T, budgetsYAML string) {
+	t.Helper()
+	dir := os.Getenv("CLAUDE_PROJECT_DIR")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte("version: \"2\"\nproject:\n  name: contract-probe\n"+budgetsYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// postGameQuestionnairePayload builds the post-game questionnaire call: one
+// question per pinned marker, each carrying "[pg:qN]" AND the run id in its
+// text; answer names the markers actually answered (the rest stay unanswered).
+func postGameQuestionnairePayload(t *testing.T, runID, toolUseID string, answer map[string]bool) string {
+	t.Helper()
+	var qs []interface{}
+	answers := map[string]interface{}{}
+	for _, m := range shared.PostGameMarkers() {
+		text := fmt.Sprintf("Post-game %s (run %s): how did this go? [pg:%s]", m, runID, m)
+		qs = append(qs, map[string]interface{}{
+			"question": text, "header": "Post-game",
+			"options": []interface{}{
+				map[string]interface{}{"label": "well: 顺利", "description": "went well"},
+				map[string]interface{}{"label": "roughly: 一般", "description": "mixed"},
+			},
+			"multiSelect": false,
+		})
+		if answer[m] {
+			answers[text] = "well: 顺利"
+		}
+	}
+	return mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "AskUserQuestion",
+		"tool_use_id":     toolUseID,
+		"tool_input":      map[string]interface{}{"questions": qs},
+		"tool_response":   map[string]interface{}{"answers": answers},
+	})
+}
+
+// TestEndToEndBudgetCycleExhaustExtend pins the REAL exhaustion cycle (T18):
+// manifest-suggested budget → confirm ride at the first checkpoint (post-hoc
+// twin: a budget-less CONTINUE there records NOTHING) → phase work until the
+// counter hits the limit → everything denied except phase-submit and the
+// EXACT summoner-status invocation → the exhaustion checkpoint carries the
+// extension offer → extend+decision in ONE call → work permitted again.
+func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
+	useContractEnv(t)
+	writeContractManifest(t, "suggested_budgets:\n  phase_tool_calls: 2\n")
+
+	if code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:fix budget cycle"), nil); code != 0 {
+		t.Fatalf("run start exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	runID := soleRunID(t)
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := run.CurrentCheckpoint()
+	if cp == nil || cp.BudgetAsk == nil {
+		t.Fatalf("the first checkpoint must carry the persisted budget ask: %+v", cp)
+	}
+	if cp.BudgetAsk.Proposal.Source != "manifest" || cp.BudgetAsk.Proposal.Limits.PhaseToolCalls != 2 {
+		t.Fatalf("proposal = %+v, want manifest-suggested phase_tool_calls=2", cp.BudgetAsk.Proposal)
+	}
+
+	// Post-hoc twin: display the checkpoint, then CONTINUE without a budget
+	// answer — rejected with NOTHING recorded (no decision, no settlement).
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil); code != 0 {
+		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, _ = shared.LoadRun(runID)
+	cp = run.CurrentCheckpoint()
+	page := cp.MenuPages[0]
+	qtext := askQuestionText(cp.Nonce)
+	pageOpts := make([]interface{}, 0, len(page.Labels))
+	for _, l := range page.Labels {
+		pageOpts = append(pageOpts, map[string]interface{}{"label": l, "description": "decision option"})
+	}
+	if code, _, _ := runBinary(t, "pretooluse-gate",
+		askQuestionPayload(t, "tu-ask-x", cp.Nonce, page.Labels), nil); code != 0 {
+		t.Fatalf("page-pinned ask exit = %d, want 0", code)
+	}
+	if code, _, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "AskUserQuestion",
+		"tool_use_id":     "tu-ask-x",
+		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
+			"question": qtext, "header": "Checkpoint", "options": pageOpts, "multiSelect": false,
+		}}},
+		"tool_response": map[string]interface{}{
+			"answers": map[string]interface{}{qtext: firstLabelWithKeyword(page.Labels, "continue")},
+		},
+	}), nil); code != 0 {
+		t.Fatalf("posttooluse exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Checkpoints[0].Decided || run.BudgetConfirmed {
+		t.Fatalf("the budget-less CONTINUE must record NOTHING (decided=%v confirmed=%v)", run.Checkpoints[0].Decided, run.BudgetConfirmed)
+	}
+	evs := allTraceEvents(t)
+	if n := len(eventsOfType(evs, shared.EventBudgetConfirmed)); n != 0 {
+		t.Fatalf("budget.confirmed events = %d, want 0 before any settlement", n)
+	}
+	rejected := eventsOfType(evs, shared.EventCheckpointDecisionRejected)
+	if len(rejected) != 1 || !strings.Contains(rejected[0].Payload["reason"].(string), "budget answer") {
+		t.Fatalf("decision_rejected events = %+v, want one naming the missing budget answer", rejected)
+	}
+
+	// The real settle: confirm the displayed proposal + CONTINUE in one call.
+	renderAndDecideSettle(t, runID, "tu-ask-1", cp, 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	}, "confirm", "")
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.BudgetConfirmed || run.Limits.PhaseToolCalls != 2 {
+		t.Fatalf("settlement = confirmed %v limits %+v, want confirmed with phase_tool_calls=2", run.BudgetConfirmed, run.Limits)
+	}
+	if run.Status != shared.StatusActive || !run.Checkpoints[0].Decided {
+		t.Fatalf("after settle+continue: status %s decided %v", run.Status, run.Checkpoints[0].Decided)
+	}
+	evs = allTraceEvents(t)
+	if conf := eventsOfType(evs, shared.EventBudgetConfirmed); len(conf) != 1 || conf[0].ToolUseID != "tu-ask-1" {
+		t.Fatalf("budget.confirmed events = %+v, want one bound to tu-ask-1", conf)
+	}
+
+	// Phase work until exhaustion: the skill call opens diagnosis (1/2), one
+	// Bash spends the rest (2/2); the next Bash is denied 余量为零.
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Skill", "tu-skill-1", map[string]interface{}{"skill": "example-skill"}), nil); code != 0 {
+		t.Fatalf("skill open exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Bash", "tu-bash-1", map[string]interface{}{"command": "ls"}), nil); code != 0 {
+		t.Fatalf("bash within budget exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Bash", "tu-bash-2", map[string]interface{}{"command": "ls"}), nil); code != 2 || !strings.Contains(stderr, "余量为零") {
+		t.Fatalf("exhausted bash: (code, stderr) = (%d, %q), want exit 2 + 余量为零", code, stderr)
+	}
+	// The EXACT read-only status invocation stays runnable at exhaustion —
+	// and only the exact shape is exempt.
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Bash", "tu-bash-3", map[string]interface{}{"command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status\" <<< '{}'"}), nil); code != 0 {
+		t.Fatalf("status invocation at exhaustion exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Bash", "tu-bash-4", map[string]interface{}{"command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status\" --help"}), nil); code != 2 {
+		t.Fatalf("non-canonical status invocation must stay budget-gated: (code, stderr) = (%d, %q), want exit 2", code, stderr)
+	}
+
+	// phase-submit is exempt: the exhausted phase closes into its checkpoint,
+	// which carries the persisted extension offer (delta = the set limit).
+	submitPhaseViaGate(t, "tu-ps-2", "diagnosis", nil)
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp = run.CurrentCheckpoint()
+	if cp == nil || cp.ExtendAsk == nil || cp.ExtendAsk.Delta.PhaseToolCalls != 2 {
+		t.Fatalf("the exhaustion checkpoint must carry the extension offer (delta = current limit): %+v", cp)
+	}
+
+	// Extend + decision in ONE call: limits raise (2+2), the submit spent one
+	// more (3/4) — work permitted again, and the next phase opens under the
+	// raised budget.
+	renderAndDecideSettle(t, runID, "tu-ask-2", cp, 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	}, "", "extend")
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Limits.PhaseToolCalls != 4 || len(run.BudgetExtensions) != 1 || run.Status != shared.StatusActive {
+		t.Fatalf("after extend+continue: limits %+v extensions %d status %s, want 4/1/ACTIVE", run.Limits, len(run.BudgetExtensions), run.Status)
+	}
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Skill", "tu-skill-2", map[string]interface{}{"skill": "example-skill"}), nil); code != 0 {
+		t.Fatalf("work after extension (skill open) exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if code, _, stderr := runBinary(t, "pretooluse-gate",
+		gatePayload(t, "Bash", "tu-bash-5", map[string]interface{}{"command": "ls"}), nil); code != 0 {
+		t.Fatalf("work after extension (bash) exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	evs = allTraceEvents(t)
+	if ext := eventsOfType(evs, shared.EventBudgetExtended); len(ext) != 1 || ext[0].ToolUseID != "tu-ask-2" {
+		t.Fatalf("budget.extended events = %+v, want one bound to tu-ask-2", ext)
+	}
+	if err := shared.VerifyChain(runID); err != nil {
+		t.Errorf("VerifyChain: %v", err)
+	}
+}
+
+// TestEndToEndPostGameClosure pins the closure cycle (T18): DONE enters
+// POST_GAME_PENDING (never CLOSED directly); the pinned questionnaire (4
+// marker questions, one call) records through the SAME hook — afk-resolved
+// answers observe nothing; the journal Write at the fixed path records its
+// observation; only then CLOSED — with the terminal pair post_game.completed
+// + workflow.ended exactly once, and a closed run neither observes later
+// edits nor blocks a new run.
+func TestEndToEndPostGameClosure(t *testing.T) {
+	useContractEnv(t)
+	if code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:fix closure cycle"), nil); code != 0 {
+		t.Fatalf("run start exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	runID := soleRunID(t)
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecide(t, runID, "tu-ask-1", run.CurrentCheckpoint(), 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	})
+
+	// DONE at the next checkpoint: POST_GAME_PENDING, post_game.started
+	// (kind normal), NO journal yet, run NOT closed.
+	submitPhaseViaGate(t, "tu-ps-2", "diagnosis", nil)
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecideSettle(t, runID, "tu-ask-2", run.CurrentCheckpoint(), 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "done")
+	}, "", "")
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusPostGamePending || run.PostGame == nil || run.PostGame.Kind != "normal" {
+		t.Fatalf("after DONE: status %s post-game %+v, want POST_GAME_PENDING kind normal", run.Status, run.PostGame)
+	}
+	if _, err := os.Stat(shared.JournalPath(runID)); !os.IsNotExist(err) {
+		t.Fatalf("no journal may exist before the post-game writes it (stat: %v)", err)
+	}
+	if started := eventsOfType(allTraceEvents(t), shared.EventPostGameStarted); len(started) != 1 || started[0].Payload["kind"] != "normal" {
+		t.Fatalf("post_game.started events = %+v, want one kind=normal", started)
+	}
+
+	// The questionnaire asks pass the gate at POST_GAME_PENDING.
+	if code, _, stderr := runBinary(t, "pretooluse-gate", mustJSON(t, map[string]interface{}{
+		"session_id":  contractSession,
+		"tool_name":   "AskUserQuestion",
+		"tool_use_id": "tu-pg-0",
+		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
+			"question": "Post-game q1 (run " + runID + "): warm-up? [pg:q1]", "header": "Post-game",
+			"options": []interface{}{
+				map[string]interface{}{"label": "well: 顺利", "description": "went well"},
+				map[string]interface{}{"label": "roughly: 一般", "description": "mixed"},
+			},
+		}}},
+	}), nil); code != 0 {
+		t.Fatalf("gate questionnaire ask exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// An afk-resolved questionnaire observes NOTHING.
+	afk := strings.Replace(postGameQuestionnairePayload(t, runID, "tu-pg-afk", map[string]bool{"q1": true, "q2": true, "q3": true, "q4": true}),
+		`"answers":`, `"afkTimeoutMs": 30000, "answers":`, 1)
+	if code, _, stderr := runBinary(t, "posttooluse", afk, nil); code != 0 {
+		t.Fatalf("afk questionnaire exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, _ = shared.LoadRun(runID)
+	if len(run.PostGame.Answers) != 0 {
+		t.Fatalf("an afk-resolved questionnaire must observe nothing (answers: %v)", run.PostGame.Answers)
+	}
+
+	// The real answers observe the pinned markers; the run still owes the
+	// journal (markers alone never close it).
+	if code, _, stderr := runBinary(t, "posttooluse",
+		postGameQuestionnairePayload(t, runID, "tu-pg-1", map[string]bool{"q1": true, "q2": true, "q3": true, "q4": true}), nil); code != 0 {
+		t.Fatalf("questionnaire exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, _ = shared.LoadRun(runID)
+	if run.PostGameReady() || run.Status != shared.StatusPostGamePending {
+		t.Fatalf("markers alone must not close the run (ready %v status %s)", run.PostGameReady(), run.Status)
+	}
+
+	// The journal Write at the FIXED path: the platform executed the tool (the
+	// test writes the file), PostToolUse observes the content digest, and
+	// closure fires — CLOSED + post_game.completed + workflow.ended, once.
+	journalPath := shared.JournalPath(runID)
+	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Post-game journal (run " + runID + ")\n\nWhat worked: the cycle pinned by contract.\n"
+	if err := os.WriteFile(journalPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "Write",
+		"tool_use_id":     "tu-jr-1",
+		"tool_input":      map[string]interface{}{"file_path": filepath.Join(".summoner", "journal", runID+".md"), "content": content},
+		"tool_response":   map[string]interface{}{},
+	}), nil); code != 0 {
+		t.Fatalf("journal write exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusClosed || run.PostGame.CompletedAt == "" {
+		t.Fatalf("after journal: status %s completed %q, want CLOSED + stamp", run.Status, run.PostGame.CompletedAt)
+	}
+	evs := allTraceEvents(t)
+	if n := len(eventsOfType(evs, shared.EventPostGameCompleted)); n != 1 {
+		t.Fatalf("post_game.completed events = %d, want 1", n)
+	}
+	if n := len(eventsOfType(evs, shared.EventWorkflowEnded)); n != 1 {
+		t.Fatalf("workflow.ended events = %d, want 1", n)
+	}
+
+	// A later ordinary edit of the closed run's journal observes nothing —
+	// CLOSED never reopens and never appends a second workflow.ended.
+	if err := os.WriteFile(journalPath, []byte(content+"\nan afterthought\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "Edit",
+		"tool_use_id":     "tu-jr-2",
+		"tool_input":      map[string]interface{}{"file_path": journalPath, "old_string": content, "new_string": content + "\nx"},
+		"tool_response":   map[string]interface{}{},
+	}), nil); code != 0 {
+		t.Fatalf("post-closed edit exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if n := len(eventsOfType(allTraceEvents(t), shared.EventWorkflowEnded)); n != 1 {
+		t.Fatalf("workflow.ended events after closed-run edit = %d, want still 1", n)
+	}
+	if run2, err := shared.LoadRun(runID); err != nil || run2.Status != shared.StatusClosed {
+		t.Fatalf("closed run reopened or unreadable: %v %+v", err, run2)
+	}
+
+	// The closed run no longer blocks a new one.
+	if code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:fix a fresh bug"), nil); code != 0 {
+		t.Fatalf("new run after closure exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if files := runStateFiles(t); len(files) != 2 {
+		t.Fatalf("run state files = %d, want 2 (closed + fresh)", len(files))
+	}
+	if err := shared.VerifyChain(runID); err != nil {
+		t.Errorf("VerifyChain: %v", err)
+	}
+}
+
+// TestEndToEndEmergencyStopMinimalJournal pins the STOP arm (T18, spec §6):
+// an emergency STOP writes the minimal exit journal hook-side IMMEDIATELY,
+// records its observation, and stays POST_GAME_PENDING (kind
+// emergency_minimal) — the questionnaire is 补答-debt; closure comes later in
+// the owning session through the same observations.
+func TestEndToEndEmergencyStopMinimalJournal(t *testing.T) {
+	useContractEnv(t)
+	if code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:fix emergency stop"), nil); code != 0 {
+		t.Fatalf("run start exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	runID := soleRunID(t)
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecideSettle(t, runID, "tu-ask-1", run.CurrentCheckpoint(), 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "stop")
+	}, "unlimited", "")
+
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusPostGamePending || run.PostGame == nil || run.PostGame.Kind != "emergency_minimal" {
+		t.Fatalf("after STOP: status %s post-game %+v, want POST_GAME_PENDING kind emergency_minimal", run.Status, run.PostGame)
+	}
+	b, err := os.ReadFile(shared.JournalPath(runID))
+	if err != nil {
+		t.Fatalf("the minimal exit journal must exist immediately after STOP: %v", err)
+	}
+	if !strings.Contains(string(b), "kind: emergency_minimal") || !strings.Contains(string(b), runID) {
+		t.Fatalf("minimal journal = %q, want emergency_minimal frontmatter naming the run", string(b))
+	}
+	if run.PostGame.Journal == nil {
+		t.Fatal("the STOP decision must record the journal observation hook-side")
+	}
+	started := eventsOfType(allTraceEvents(t), shared.EventPostGameStarted)
+	if len(started) != 1 || started[0].Payload["kind"] != "emergency_minimal" {
+		t.Fatalf("post_game.started events = %+v, want one kind=emergency_minimal", started)
+	}
+	if n := len(eventsOfType(allTraceEvents(t), shared.EventWorkflowEnded)); n != 0 {
+		t.Fatalf("workflow.ended events = %d, want 0 (STOP is not closure)", n)
+	}
+
+	// The 补答: questionnaire markers (the stop call answered none), then the
+	// full journal rewrite — the LATEST observed version governs closure.
+	if code, _, stderr := runBinary(t, "posttooluse",
+		postGameQuestionnairePayload(t, runID, "tu-pg-1", map[string]bool{"q1": true, "q2": true, "q3": true, "q4": true}), nil); code != 0 {
+		t.Fatalf("questionnaire exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	full := "# Full post-game journal (run " + runID + ")\n\nEmergency stop retrospective.\n"
+	if err := os.WriteFile(shared.JournalPath(runID), []byte(full), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "Write",
+		"tool_use_id":     "tu-jr-9",
+		"tool_input":      map[string]interface{}{"file_path": shared.JournalPath(runID), "content": full},
+		"tool_response":   map[string]interface{}{},
+	}), nil); code != 0 {
+		t.Fatalf("journal rewrite exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusClosed {
+		t.Fatalf("status = %s, want CLOSED after 补答 (post-game %+v)", run.Status, run.PostGame)
+	}
+	if n := len(eventsOfType(allTraceEvents(t), shared.EventWorkflowEnded)); n != 1 {
+		t.Fatalf("workflow.ended events = %d, want exactly 1", n)
 	}
 	if err := shared.VerifyChain(runID); err != nil {
 		t.Errorf("VerifyChain: %v", err)

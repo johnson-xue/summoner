@@ -52,10 +52,19 @@ menu:
 paged ask (one page per decision question, ≤4 options):
   page 1/2: continue · skip · done · stop — more: 查看其余选项
   page 2/2: continue · recall · review · stop — back: 返回上一页
+budget ask (run-start budget — rides the decision call, nonce-free):
+  proposal ({manifest | framework}): {axis} {n | 不限} · …
+  options: budget: 按已显示预算 · budget: 不设上限
+extend ask (budget exhausted — add the displayed amount once more):
+  delta: {axis} {n | 不限} · …
+  options: extend: 追加已显示额度 · extend: 不追加
 ```
 
 (The `paged ask` block appears only when the kind's menu pages — single-page
-kinds omit it. The `menu:` block always shows the FULL legal menu.)
+kinds omit it. The `menu:` block always shows the FULL legal menu. The
+`budget ask` block appears only on the run's FIRST checkpoint while the
+run-start budget is unsettled; the `extend ask` block only on a checkpoint
+opened at budget exhaustion — see "Budget ride-along questions".)
 
 Field rules:
 
@@ -68,6 +77,8 @@ Field rules:
 | `artifacts` | The checkpoint-frozen versions; artifacts changing after this invalidate reviews of them. |
 | `menu` | Exactly the legal options for the kind (below), in the binary's order — the FULL menu, always visible. |
 | `paged ask` | The persisted page projection (`menu_pages` in run state): pages of ≤4 options, each page anchoring `continue`+`stop` plus two kind-relevant actions; `more:`/`back:` are navigation labels, not options. |
+| `budget ask` | The run-start budget offer (T18): the persisted proposal (manifest `suggested_budgets` or the framework unlimited default) plus the two POINTER options the ride-along question must offer verbatim. Digest-bound content — a changed offer after display invalidates the binding. |
+| `extend ask` | The exhaustion offer: delta = the current limit per set axis, plus its two pointer options. Present only on checkpoints opened at exhaustion. |
 
 Example (fix, diagnosis submitted):
 
@@ -196,6 +207,58 @@ PostToolUse records them:
   the review phase's checkpoint opens the envelope channel from ACTIVE —
   spec §1 终局⑤默认强制; an explicit `skip:` of that phase closes it as
   UNREVIEWED.)
+
+### Budget ride-along questions (run-start confirm + exhaustion extend)
+
+The budget is a human-controlled dial, and both of its questions ride the
+SAME AskUserQuestion call as the nonce decision question — nonce-free, like
+drops. The gate validates their shape at the door; PostToolUse settles them
+with the decision in ONE commit (settlement + decision all-or-nothing on the
+combined callback):
+
+- **Run-start ask** — the run's FIRST checkpoint carries the offer (proposal
+  from the manifest `suggested_budgets` when at least one budget axis is
+  suggested, else the framework unlimited default; an unreadable manifest
+  fails the checkpoint CLOSED rather than guessing). Exactly two options:
+  `budget: 按已显示预算` (confirm the displayed proposal) and
+  `budget: 不设上限` (unlimited). The labels are POINTERS, never numbers —
+  the reducer applies the PERSISTED proposal the render displayed.
+- **Post-hoc rule** — at the unsettled first checkpoint, a `continue:`/
+  `skip:` answer with NO same-call budget answer rejects the WHOLE callback
+  (`decision_rejected`, nothing recorded — no decision, no settlement).
+  `stop`/`done`/`recall`/`review` are exempt: terminal and redirect exits
+  are never budget hostages (an emergency `stop` lands POST_GAME_PENDING
+  with the budget unsettled).
+- **Digest binding** — the OFFER is checkpoint content (a changed proposal
+  after display → re-render, re-ask; the stale twin is rejected wholesale).
+  Applied Limits/Counters are NOT content: settling or extending never
+  invalidates the display.
+- **Extend ask** — a checkpoint opened while the budget reads exhausted
+  carries ONE extension offer (delta = the current limit per SET axis; unset
+  axes stay unlimited). Exactly two options: `extend: 追加已显示额度` and
+  `extend: 不追加`, riding the decision call the same nonce-free way. Applied
+  only from the persisted delta, bound to the answering call; a fresh answer
+  at a later exhaustion may extend again.
+- **Exhaustion surface (fail-open for the human, closed for the work)** — at
+  zero headroom every tool call is denied EXCEPT: `summoner:phase-submit`
+  (the exhausted phase must reach its checkpoint), the exact read-only
+  status invocation (`"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<<
+  '{…}'` — any flag, redirect, or pipe is judged normally), the checkpoint
+  ask itself, `summoner:change` (replan), and read-class OUTCOME_UNKNOWN
+  probes. POST_GAME_PENDING runs may additionally ask their questionnaire
+  and write ONLY the fixed journal path. Never try to work around an
+  exhausted budget — present the checkpoint and let the user extend, replan,
+  or stop.
+- **Malformed rides** — a budget question with foreign labels, three
+  options, a carried nonce, or no persisted ask fails the whole call (gate
+  exit 2 / `decision_rejected`), the decision included. A budget ANSWER that
+  is not one of the two persisted labels rejects the whole callback too.
+- **Partial answers** — the budget answered while the decision question is
+  not: the settlement records standalone, the decision rejects (the
+  checkpoint stays open) — same semantics as drops.
+- **Trace**: `budget.confirmed` (limits source + the applied values) once at
+  the first settlement; `budget.extended` per applied extension — both bound
+  to the answering call's tool_use_id.
 
 ## CHANGE_CONFIRM checkpoint (requirement-change close)
 

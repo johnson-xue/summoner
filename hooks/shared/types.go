@@ -284,6 +284,14 @@ type CheckpointState struct {
 	// render shows the FULL menu plus a paging note; the gate pins any
 	// nonce-carrying question's offered labels to one page exactly.
 	MenuPages []MenuPage `json:"menu_pages,omitempty"`
+	// BudgetAsk (T18) persists the first-checkpoint budget question: the
+	// displayed proposal (digest-bound content) and its pointer labels. Set
+	// when the run's FIRST checkpoint opens before any budget settlement.
+	BudgetAsk *BudgetAsk `json:"budget_ask,omitempty"`
+	// ExtendAsk (T18) persists the extension question of a checkpoint opened
+	// while the budget is exhausted: the offered delta (digest-bound content)
+	// and its pointer labels.
+	ExtendAsk *ExtendAsk `json:"extend_ask,omitempty"`
 }
 
 // ReviewObligation is the persisted [v] (REVIEW_ON_DEMAND) obligation
@@ -340,6 +348,75 @@ type BudgetCounters struct {
 	Delegations    int `json:"delegations"`
 }
 
+// BudgetProposal is the budget offer displayed at the run's FIRST checkpoint
+// (T18, spec §5 预算与终止: 默认值由用户在运行起点确认): the manifest's
+// suggested_budgets projection (via the runtime manifest loader) or the
+// framework default — unlimited, never article-derived numbers. The proposal
+// is DIGEST-BOUND checkpoint content: changing the offer after display
+// invalidates the binding and demands a re-render (the applied Limits are NOT
+// that content — controller clarification 2).
+type BudgetProposal struct {
+	Limits BudgetLimits `json:"limits"`
+	Source string       `json:"source,omitempty"` // manifest | framework
+}
+
+// BudgetAsk persists the first-checkpoint budget question (T18): the displayed
+// proposal plus the two POINTER labels the question's options must equal
+// exactly. Labels never carry numbers — the recorder applies the PERSISTED
+// proposal, never label-parsed values (panel TQ3 redesign: budget rides a
+// nonce-free non-decision question, no Decision enum addition).
+type BudgetAsk struct {
+	Proposal       BudgetProposal `json:"proposal"`
+	ConfirmLabel   string         `json:"confirm_label"`
+	UnlimitedLabel string         `json:"unlimited_label"`
+}
+
+// ExtendAsk persists the extension question of a checkpoint opened while the
+// budget is EXHAUSTED (T18): the offered delta (per set axis, the current
+// limit again) and its two pointer labels. The extend answer rides the same
+// callback as the decision; ExtendBudget applies the PERSISTED delta
+// atomically with it (panel OQ3 — deltas are never model-authored at ask
+// time).
+type ExtendAsk struct {
+	Delta       BudgetLimits `json:"delta"`
+	ExtendLabel string       `json:"extend_label"`
+	HoldLabel   string       `json:"hold_label"`
+}
+
+// BudgetExtension is the durable receipt of ONE applied budget extension: the
+// delta applied and the platform tool_use_id of the answering AskUserQuestion
+// call. Append-only (a re-delivered callback never extends twice); extensions
+// themselves are repeatable through FRESH human answers.
+type BudgetExtension struct {
+	Delta     BudgetLimits `json:"delta"`
+	ToolUseID string       `json:"tool_use_id,omitempty"`
+	At        string       `json:"at,omitempty"`
+}
+
+// JournalRecord is the observed journal of one POST_GAME_PENDING run (T18):
+// the content digest captured AT OBSERVATION time (a later Write/Edit while
+// still POST_GAME_PENDING overwrites the record — the latest observed version
+// governs closure; once CLOSED the record is final).
+type JournalRecord struct {
+	Path      string `json:"path"`
+	Digest    string `json:"digest"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	At        string `json:"at,omitempty"`
+}
+
+// PostGame is the post-game closure ledger (T18, spec §6: 问卷+journal 持久化
+// 后才 CLOSED): the questionnaire marker answers OBSERVED by PostToolUse
+// (actual non-timeout platform answers, never model-authored text), the
+// observed journal record, and the completion stamp. CompletePostGame
+// validates these reducer-owned records — never model claims.
+type PostGame struct {
+	Kind        string            `json:"kind,omitempty"` // normal | emergency_minimal
+	StartedAt   string            `json:"started_at,omitempty"`
+	Answers     map[string]string `json:"answers,omitempty"` // marker id → settling tool_use_id
+	Journal     *JournalRecord    `json:"journal,omitempty"`
+	CompletedAt string            `json:"completed_at,omitempty"`
+}
+
 // RecallRecord is one applied recall (spec §4: 保存决定+原因+新 visit). Reason
 // is wired from AskUserQuestion annotations in Task 4; the field exists now
 // so the schema is complete (task-2.5 M11).
@@ -384,8 +461,19 @@ type RunState struct {
 	OutcomeUnknowns []OutcomeUnknown      `json:"outcome_unknowns,omitempty"`
 	Limits          BudgetLimits          `json:"budget_limits"`
 	Counters        BudgetCounters        `json:"budget_counters"`
-	StartedAt       string                `json:"started_at,omitempty"`
-	UpdatedAt       string                `json:"updated_at,omitempty"`
+	// BudgetConfirmed (T18) marks the run-start budget settlement observed at
+	// the first checkpoint (budget.confirmed); BudgetSettledBy binds it to the
+	// answering AskUserQuestion call; BudgetExtensions are the append-only
+	// receipts of applied extensions (budget.extended).
+	BudgetConfirmed  bool              `json:"budget_confirmed,omitempty"`
+	BudgetSettledBy  string            `json:"budget_settled_by,omitempty"`
+	BudgetExtensions []BudgetExtension `json:"budget_extensions,omitempty"`
+	// PostGame (T18) is the closure ledger of a DONE/STOPped run: observed
+	// questionnaire markers + journal; CLOSED only through CompletePostGame
+	// (the sole CLOSED writer).
+	PostGame  *PostGame `json:"post_game,omitempty"`
+	StartedAt string    `json:"started_at,omitempty"`
+	UpdatedAt string    `json:"updated_at,omitempty"`
 }
 
 // PhaseSubmission is the summoner:phase-submit payload: the phase's result —

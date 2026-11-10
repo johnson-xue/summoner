@@ -30,6 +30,16 @@ import (
 // entered only with a WAIT_USER run and a current (hence undecided)
 // checkpoint, so a successful RecordDecision here is always a fresh decision
 // and the checkpoint.decided trace is appended exactly once per callback.
+//
+// T18: the call may also carry nonce-free budget/extend ride-along questions
+// (the run's first checkpoint before settlement, and any checkpoint opened
+// while the budget was exhausted). Their validation precedes EVERY recording
+// effect; when the decision completes, settlement and decision persist in ONE
+// commit (RecordDecisionWithBudget — a failed Save applies neither); when the
+// decision does not complete, a valid budget answer still records through its
+// standalone setter (the T17 partial-answer semantics), and the post-hoc rule
+// (below) rejects a CONTINUE/SKIP at the unsettled first checkpoint with
+// NOTHING recorded.
 func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in *hookInput, errW io.Writer) int {
 	reject := func(reason string) int {
 		if err := appendTrace(run, in, shared.TraceEvent{
@@ -46,9 +56,9 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 
 	// 0. Fix-round I1: a callback whose tool_use_id already concluded a
 	// decision is a re-delivery — no-op it BEFORE any ride-along effect
-	// (drops included): the whole call is spent, so no part of it may record
-	// again. Silent, like RecordDecision's idempotent replay: nothing is
-	// recorded, nothing is traced.
+	// (drops and budget included): the whole call is spent, so no part of it
+	// may record again. Silent, like RecordDecision's idempotent replay:
+	// nothing is recorded, nothing is traced.
 	if in.ToolUseID != "" {
 		for i := range run.Checkpoints {
 			if run.Checkpoints[i].DecisionToolUseID == in.ToolUseID {
@@ -94,6 +104,16 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		return reject("dialog auto-resolved by afk timeout (afkTimeoutMs present) — not a human decision")
 	}
 
+	// 4.2 The T18 budget ride-along channel: validate every budget/extend
+	// question against the checkpoint's PERSISTED asks (shape, exact pointer
+	// labels, nonce-free, one per kind) BEFORE anything records — a malformed
+	// or stale budget question fails the whole callback and records nothing.
+	qs, _ := in.ToolInput[fieldQuestions].([]interface{})
+	budgetRides, problem := shared.ParseBudgetRideAlongs(cp, qs)
+	if problem != "" {
+		return reject(problem)
+	}
+
 	// 4.5 The T17 drop ride-along channel: validate every drop question and
 	// drop ANSWER first (all-or-nothing — a malformed drop question fails the
 	// whole callback and records nothing), then record the answered drops
@@ -111,6 +131,73 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 			return reject(problem)
 		}
 	}
+
+	// 4.6 Derive the budget settlement from the ANSWERS against the persisted
+	// asks: an answered budget question must choose one of its two offered
+	// pointer labels (anything else rejects the whole callback), and the
+	// applied VALUE comes only from the persisted proposal/delta — never from
+	// the label text (panel TQ3). Unanswered budget questions settle nothing
+	// (partial answers ride later calls).
+	var settle shared.BudgetSettlement
+	settling := false
+	for _, ride := range budgetRides {
+		ans, _ := answers[ride.Text].(string)
+		if ans == "" {
+			continue // unanswered: nothing to settle for this kind
+		}
+		if ride.Kind == "budget" {
+			switch ans {
+			case ride.Labels[0]: // confirm the displayed proposal
+				lim := cp.BudgetAsk.Proposal.Limits
+				settle.Confirm = &lim
+				settling = true
+			case ride.Labels[1]: // unlimited
+				lim := shared.BudgetLimits{}
+				settle.Confirm = &lim
+				settling = true
+			default:
+				return reject(fmt.Sprintf("budget question answer %q is not one of its offered pointer labels (%q / %q)", truncate(ans, 80), ride.Labels[0], ride.Labels[1]))
+			}
+		} else {
+			switch ans {
+			case ride.Labels[0]: // extend by the persisted delta
+				settle.Extend = true
+				settling = true
+			case ride.Labels[1]: // hold: answered, no effect
+			default:
+				return reject(fmt.Sprintf("extend question answer %q is not one of its offered pointer labels (%q / %q)", truncate(ans, 80), ride.Labels[0], ride.Labels[1]))
+			}
+		}
+	}
+
+	// 4.7 Pre-resolve the decision (pure — nothing recorded) so the post-hoc
+	// rule can fire BEFORE any ride-along effect.
+	var dPre shared.Decision
+	if q != nil {
+		if answer, ok := answers[q.text].(string); ok && answer != "" {
+			if label := matchOfferedLabel(q.options, answer); label != "" {
+				if d, ok := decisionForKeyword(label); ok {
+					dPre = d
+				}
+			}
+		}
+	}
+
+	// 4.8 T18 post-hoc rule: at the run's unsettled FIRST checkpoint (a
+	// persisted BudgetAsk the run never settled), a CONTINUE or SKIP decision
+	// without a same-callback budget answer is rejected with NOTHING recorded
+	// — the run-start budget settles with the same human answer that advances
+	// the run (spec §5 默认值由用户在运行起点确认). STOP/DONE/RECALL/REVIEW are
+	// exempt: terminal exits and replans are never budget hostages.
+	if (dPre == shared.DecisionContinue || dPre == shared.DecisionSkip) &&
+		cp.BudgetAsk != nil && !run.BudgetConfirmed && settle.Confirm == nil {
+		return reject(fmt.Sprintf(
+			"%s at checkpoint %s carries no budget answer — the run-start budget is unsettled: ask the budget question in the SAME call (options %q / %q, nonce-free ride-along); nothing was recorded",
+			dPre, cp.ID, cp.BudgetAsk.ConfirmLabel, cp.BudgetAsk.UnlimitedLabel))
+	}
+
+	// 4.9 Record the answered drops (the T17 ordering: drops land before the
+	// decision so an accepting CONTINUE clears them).
 	for _, dq := range drops {
 		ans, _ := answers[dq.text].(string)
 		if ans == "" || ans == dq.keepLabel {
@@ -135,15 +222,63 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		}
 	}
 
+	// settleAndReject closes a callback whose budget observation is valid but
+	// whose decision does not complete: the settlement records through its
+	// standalone setter (T17 partial-answer semantics — the checkpoint stays
+	// open and the decision is rejected), then the decision rejection traces.
+	// budget.confirmed / budget.extended trace only when the reducer newly
+	// applied something (replays and already-confirmed no-ops are silent).
+	settleAndReject := func(reason string) int {
+		if !settling {
+			return reject(reason)
+		}
+		settle.ToolUseID = in.ToolUseID
+		beforeConfirmed := run.BudgetConfirmed
+		beforeExts := len(run.BudgetExtensions)
+		if settle.Confirm != nil {
+			if _, err := run.SetBudgetLimits(*settle.Confirm, in.ToolUseID); err != nil {
+				return reject(err.Error())
+			}
+			if !beforeConfirmed && run.BudgetConfirmed {
+				if err := appendTrace(run, in, shared.TraceEvent{
+					Type: shared.EventBudgetConfirmed,
+					Payload: map[string]interface{}{
+						"checkpoint_id": cp.ID,
+						"limits":        budgetLimitsPayload(*settle.Confirm),
+					},
+				}, errW); err != nil {
+					return 2
+				}
+			}
+		}
+		if settle.Extend {
+			if _, err := run.ExtendBudget(in.ToolUseID); err != nil {
+				return reject(err.Error())
+			}
+			if len(run.BudgetExtensions) > beforeExts {
+				if err := appendTrace(run, in, shared.TraceEvent{
+					Type: shared.EventBudgetExtended,
+					Payload: map[string]interface{}{
+						"checkpoint_id": cp.ID,
+						"delta":         budgetLimitsPayload(run.BudgetExtensions[len(run.BudgetExtensions)-1].Delta),
+					},
+				}, errW); err != nil {
+					return 2
+				}
+			}
+		}
+		return reject(reason)
+	}
+
 	// 5. The chosen answer must exist for exactly the decision question —
 	// the deferred step-1 rejection lands here (after the drop channel), so a
 	// drop-only callback records its drops and still refuses the decision.
 	if q == nil {
-		return reject(notFound)
+		return settleAndReject(notFound)
 	}
 	answer, ok := answers[q.text].(string)
 	if !ok || answer == "" {
-		return reject(fmt.Sprintf("no answer for the decision question (%q)", truncate(q.text, 80)))
+		return settleAndReject(fmt.Sprintf("no answer for the decision question (%q)", truncate(q.text, 80)))
 	}
 
 	// 6. The answer must EXACTLY match one offered option label; a
@@ -151,23 +286,57 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	label := matchOfferedLabel(q.options, answer)
 	if label == "" {
 		if n := countNonEmpty(strings.Split(answer, ",")); n > 1 {
-			return reject(fmt.Sprintf("multi-select answer (%q) on the decision question — pick exactly one option", truncate(answer, 80)))
+			return settleAndReject(fmt.Sprintf("multi-select answer (%q) on the decision question — pick exactly one option", truncate(answer, 80)))
 		}
-		return reject(fmt.Sprintf("answer %q is not an offered option label of the decision question", truncate(answer, 80)))
+		return settleAndReject(fmt.Sprintf("answer %q is not an offered option label of the decision question", truncate(answer, 80)))
 	}
 
 	// 7. Map the label by leading keyword (lowercased first word,
 	// punctuation stripped): continue/skip/done/recall/stop/review/accept.
 	d, ok := decisionForKeyword(label)
 	if !ok {
-		return reject(fmt.Sprintf("option %q leads with a keyword that maps to no decision", truncate(label, 80)))
+		return settleAndReject(fmt.Sprintf("option %q leads with a keyword that maps to no decision", truncate(label, 80)))
 	}
 
 	// 8. Record through the reducer: display binding, decision-time digest
 	// recheck and kind legality live there. Its errors are rejections, not
-	// hook errors.
-	if err := run.RecordDecision(cp.ID, d, in.ToolUseID); err != nil {
+	// hook errors. With a settlement, ONE commit applies settlement AND
+	// decision (RecordDecisionWithBudget) — a validation failure or a failed
+	// Save leaves NEITHER applied.
+	beforeConfirmed := run.BudgetConfirmed
+	beforeExts := len(run.BudgetExtensions)
+	if settling {
+		settle.ToolUseID = in.ToolUseID
+		if err := run.RecordDecisionWithBudget(cp.ID, d, in.ToolUseID, &settle); err != nil {
+			return reject(err.Error())
+		}
+	} else if err := run.RecordDecision(cp.ID, d, in.ToolUseID); err != nil {
 		return reject(err.Error())
+	}
+	// The settlement's traces precede checkpoint.decided, mirroring the
+	// commit order (settlement first, decision second) — and fire only when
+	// the reducer newly applied something.
+	if settle.Confirm != nil && !beforeConfirmed && run.BudgetConfirmed {
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type: shared.EventBudgetConfirmed,
+			Payload: map[string]interface{}{
+				"checkpoint_id": cp.ID,
+				"limits":        budgetLimitsPayload(*settle.Confirm),
+			},
+		}, errW); err != nil {
+			return 2
+		}
+	}
+	if settle.Extend && len(run.BudgetExtensions) > beforeExts {
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type: shared.EventBudgetExtended,
+			Payload: map[string]interface{}{
+				"checkpoint_id": cp.ID,
+				"delta":         budgetLimitsPayload(run.BudgetExtensions[len(run.BudgetExtensions)-1].Delta),
+			},
+		}, errW); err != nil {
+			return 2
+		}
 	}
 	if err := appendTrace(run, in, shared.TraceEvent{
 		Type: shared.EventCheckpointDecided,
@@ -191,6 +360,66 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		}, errW); err != nil {
 			return 2
 		}
+	}
+	// T18: the terminal decisions enter post-game (spec §6). DONE starts the
+	// normal questionnaire; STOP writes the minimal exit journal hook-side
+	// immediately (紧急 stop = 最小 journal + 补答). Both stay POST_GAME_PENDING
+	// — CLOSED comes only through CompletePostGame.
+	if d == shared.DecisionDone || d == shared.DecisionStop {
+		return concludeTerminalDecision(run, in, d == shared.DecisionStop, errW)
+	}
+	return 0
+}
+
+// budgetLimitsPayload is the trace-payload form of a BudgetLimits value.
+func budgetLimitsPayload(l shared.BudgetLimits) map[string]interface{} {
+	return map[string]interface{}{
+		"phase_tool_calls": l.PhaseToolCalls,
+		"failed_checks":    l.FailedChecks,
+		"run_rework":       l.RunRework,
+		"delegations":      l.Delegations,
+	}
+}
+
+// concludeTerminalDecision starts the post-game of a DONE/STOP decision (T18,
+// spec §6: 正常结束须问卷+journal 持久化后才 CLOSED; 紧急 stop = 最小 journal +
+// 补答). DONE → kind "normal" (questionnaire + full journal follow); STOP → the
+// hook writes the minimal exit journal immediately and records its
+// observation, kind "emergency_minimal". Both leave the run POST_GAME_PENDING;
+// closure happens only in the OWNING session when every marker and the journal
+// observation are on record (maybeClosePostGame).
+func concludeTerminalDecision(run *shared.RunState, in *hookInput, emergency bool, errW io.Writer) int {
+	kind := "normal"
+	if emergency {
+		kind = "emergency_minimal"
+	}
+	// StartPostGame first, so the ledger's kind is authoritative before any
+	// observation auto-creates it.
+	if err := run.StartPostGame(kind); err != nil {
+		fmt.Fprintf(errW, "summoner posttooluse: starting the post-game ledger failed — fail-closed: %v\n", err)
+		return 2
+	}
+	if emergency {
+		digest, err := shared.WriteMinimalExitJournal(run)
+		if err != nil {
+			fmt.Fprintf(errW, "summoner posttooluse: writing the minimal exit journal failed — fail-closed: %v\n", err)
+			return 2
+		}
+		if err := run.RecordPostGameJournal(digest, in.ToolUseID); err != nil {
+			fmt.Fprintf(errW, "summoner posttooluse: recording the journal observation failed — fail-closed: %v\n", err)
+			return 2
+		}
+	}
+	if err := appendTrace(run, in, shared.TraceEvent{
+		Type:    shared.EventPostGameStarted,
+		Payload: map[string]interface{}{"kind": kind},
+	}, errW); err != nil {
+		return 2
+	}
+	// An emergency stop with the questionnaire already complete (a resumed
+	// post-game re-stopped) may close immediately.
+	if run.Status == shared.StatusPostGamePending {
+		return maybeClosePostGame(run, in, errW)
 	}
 	return 0
 }

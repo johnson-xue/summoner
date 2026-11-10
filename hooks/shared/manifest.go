@@ -40,6 +40,11 @@ type RuntimeManifest struct {
 	// runtime's authority is review scope + the check registry, and no routing
 	// is built on it here.
 	Phases map[string]SkillBinding
+	// SuggestedBudgets is the manifest's suggested_budgets projection (T18):
+	// the run-start budget SUGGESTION displayed at the first checkpoint for
+	// user confirmation — never a pre-authorized limit (references/
+	// manifest-spec.md). Nil = no suggestion (the framework default render).
+	SuggestedBudgets *BudgetLimits
 }
 
 // SkillBinding is one phases.<id>.skill binding in either documented form
@@ -143,10 +148,22 @@ func (s *yamlSkillBinding) UnmarshalYAML(node *yaml.Node) error {
 
 // runtimeManifestDoc is the subset of summoner.yaml the runtime reads.
 type runtimeManifestDoc struct {
-	Version       string                 `yaml:"version"`
-	Project       map[string]interface{} `yaml:"project"`
-	Phases        map[string]yamlPhase   `yaml:"phases"`
-	CheckRegistry []yamlCheckDef         `yaml:"check_registry"`
+	Version          string                 `yaml:"version"`
+	Project          map[string]interface{} `yaml:"project"`
+	Phases           map[string]yamlPhase   `yaml:"phases"`
+	CheckRegistry    []yamlCheckDef         `yaml:"check_registry"`
+	SuggestedBudgets *yamlSuggestedBudgets  `yaml:"suggested_budgets"`
+}
+
+// yamlSuggestedBudgets mirrors the documented suggested_budgets shape: five
+// OPTIONAL positive-integer axes. check_timeout_seconds is tolerated (it is
+// a documented axis) but not consumed — BudgetLimits has no timeout axis.
+type yamlSuggestedBudgets struct {
+	PhaseToolCalls      *int `yaml:"phase_tool_calls"`
+	FailedChecks        *int `yaml:"failed_checks"`
+	RunRework           *int `yaml:"run_rework"`
+	Delegations         *int `yaml:"delegations"`
+	CheckTimeoutSeconds *int `yaml:"check_timeout_seconds"`
 }
 
 // LoadRuntimeManifest reads ProjectDir()/summoner.yaml. Absent → (nil, nil)
@@ -250,7 +267,90 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 			}
 		}
 	}
+	if err := validateSuggestedBudgets(root, mdoc.SuggestedBudgets); err != nil {
+		return nil, err
+	}
+	if y := mdoc.SuggestedBudgets; y != nil {
+		var lim BudgetLimits
+		set := false
+		if y.PhaseToolCalls != nil {
+			lim.PhaseToolCalls, set = *y.PhaseToolCalls, true
+		}
+		if y.FailedChecks != nil {
+			lim.FailedChecks, set = *y.FailedChecks, true
+		}
+		if y.RunRework != nil {
+			lim.RunRework, set = *y.RunRework, true
+		}
+		if y.Delegations != nil {
+			lim.Delegations, set = *y.Delegations, true
+		}
+		// check_timeout_seconds is validated above but not consumed —
+		// BudgetLimits has no timeout axis. An object naming none of the four
+		// consumed axes projects no suggestion (the framework default offer).
+		if set {
+			m.SuggestedBudgets = &lim
+		}
+	}
 	return m, nil
+}
+
+// validateSuggestedBudgets enforces the validator's exact shape on the
+// suggested_budgets the runtime consumes (T18): exactly the five known keys
+// (a typo'd axis would silently degrade the offer) and positive integers for
+// the axes present (absent = no suggestion for that axis). An object naming
+// none of the four CONSUMED axes (e.g. only check_timeout_seconds) is legal
+// per the validator and simply projects no suggestion — the caller decides
+// from the decoded fields whether a BudgetLimits projection exists.
+func validateSuggestedBudgets(root *yaml.Node, y *yamlSuggestedBudgets) error {
+	if y == nil {
+		return nil
+	}
+	node := manifestMappingEntry(root, "suggested_budgets")
+	if node != nil {
+		known := map[string]bool{
+			"phase_tool_calls": true, "failed_checks": true, "run_rework": true,
+			"delegations": true, "check_timeout_seconds": true,
+		}
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind == yaml.ScalarNode && !known[key.Value] {
+				return fmt.Errorf("parse summoner.yaml: unknown key %q in suggested_budgets line=%d — the axes are phase_tool_calls, failed_checks, run_rework, delegations, check_timeout_seconds", key.Value, key.Line)
+			}
+		}
+	}
+	check := func(name string, v *int) error {
+		if v == nil {
+			return nil
+		}
+		if *v <= 0 {
+			return fmt.Errorf("parse summoner.yaml: suggested_budgets.%s must be a positive integer (got %d) — omit the axis to make no suggestion", name, *v)
+		}
+		return nil
+	}
+	for name, v := range map[string]*int{
+		"phase_tool_calls":      y.PhaseToolCalls,
+		"failed_checks":         y.FailedChecks,
+		"run_rework":            y.RunRework,
+		"delegations":           y.Delegations,
+		"check_timeout_seconds": y.CheckTimeoutSeconds,
+	} {
+		if err := check(name, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// manifestMappingEntry returns the top-level mapping node under key, or nil
+// when the key is absent or not a mapping (the typed decode reports those).
+func manifestMappingEntry(root *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == key && root.Content[i+1].Kind == yaml.MappingNode {
+			return root.Content[i+1]
+		}
+	}
+	return nil
 }
 
 // --- validator-mirrored invariants (fix-round I2) -----------------------------------
