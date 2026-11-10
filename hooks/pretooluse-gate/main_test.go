@@ -616,7 +616,12 @@ func TestAgentReviewerRequiresPreparedReviewID(t *testing.T) {
 		t.Fatalf("RequestReview: %v", err)
 	} // REVIEW_PENDING, review PREPARED
 
-	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "please review the artifacts")))
+	// Review round 2 (R1): worker delegations require ACTIVE — while a
+	// review is pending, a worker delegation is denied.
+	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("worker", "shard")))
+	wantExit2(t, code, stderr, "ACTIVE")
+
+	code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "please review the artifacts")))
 	wantExit2(t, code, stderr, "review_id")
 
 	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-42 per contract")))
@@ -869,6 +874,9 @@ func TestWriteClassBashHeuristic(t *testing.T) {
 		"/bin/rm -f x", "/usr/bin/rm -rf /tmp/x", "/usr/bin/git commit -m x",
 		"command rm x", "command git push", "env MODE=1 rm x", "env rm x", "nohup rm x",
 		`git -C "/tmp/a repo" reset --hard`, "nohup env MODE=1 tee out.txt",
+		// R3: an empty quoted operand is still an operand — the flag must
+		// consume it, not the subcommand.
+		`git -C "" reset --hard`,
 	}
 	for _, cmd := range writes {
 		if !isWriteClassCommand(cmd) {
@@ -887,6 +895,7 @@ func TestWriteClassBashHeuristic(t *testing.T) {
 		`grep 'foo bar' file.txt`, `cat "my file.txt"`,
 		`git log --grep "fix stuff"`, "git diff HEAD~1..HEAD",
 		"env | grep PATH", "command -v rm", "nohup cat file.txt",
+		`git -C "real path" log`,
 	}
 	for _, cmd := range nonWrites {
 		if isWriteClassCommand(cmd) {
@@ -1174,6 +1183,56 @@ func TestAgentTraceFailureDeniesWithoutMutation(t *testing.T) {
 	}
 }
 
+// TestDelegationSaveFailureLeavesDiskUnchanged — review round 2, R1: the
+// delegation transition is ONE reducer call with ONE Save. Inject a Save
+// failure (session dir made non-writable; ReadDir still works, so the gate
+// reaches apply) and the disk must end exactly where it started: review
+// PREPARED, counters zero — retry after repair succeeds.
+func TestDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block writes")
+	}
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	env := shared.Envelope{
+		SchemaVersion: "2",
+		RunID:         "run-1",
+		ReviewID:      "rev-1",
+		ArtifactSet:   []shared.ArtifactRef{{Path: "fix.md", Digest: "ddd"}},
+	}
+	if _, err := r.RequestReview(env); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+
+	dir := filepath.Join(os.Getenv("SUMMONER_STATE_DIR"), shared.ProjectKey(), gateSession)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	wantExit2(t, code, stderr, "")
+	_ = os.Chmod(dir, 0o755) // repair for the reload check (Cleanup chmod is idempotent)
+
+	after := reloadRun(t, "run-1")
+	if after.Reviews[0].Status != shared.ReviewPrepared {
+		t.Fatalf("disk review = %s, want PREPARED — a failed Save must leave the disk unchanged", after.Reviews[0].Status)
+	}
+	if after.Counters.Delegations != 0 || after.Counters.PhaseToolCalls != 0 {
+		t.Fatalf("disk counters = %+v, want zero", after.Counters)
+	}
+
+	// Retry after repair: end-to-end success.
+	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	if code != 0 {
+		t.Fatalf("retry after repair: exit %d, want 0", code)
+	}
+	after = reloadRun(t, "run-1")
+	if after.Reviews[0].Status != shared.ReviewRunning || after.Counters.Delegations != 1 {
+		t.Fatalf("retry: review=%s delegations=%d", after.Reviews[0].Status, after.Counters.Delegations)
+	}
+}
+
 // --- review round 1: I7 — malformed known-tool payloads deny -------------------
 
 func TestGateMalformedKnownToolPayloads(t *testing.T) {
@@ -1197,11 +1256,33 @@ func TestGateMalformedKnownToolPayloads(t *testing.T) {
 		{"Skill numeric", "Skill", map[string]interface{}{"skill": 42}},
 		{"AskUserQuestion questions not array", "AskUserQuestion", map[string]interface{}{"questions": "yes?"}},
 		{"AskUserQuestion question not string", "AskUserQuestion", map[string]interface{}{"questions": []interface{}{map[string]interface{}{"header": "h"}}}},
+		// R2: required field TYPES, not just presence.
+		{"Write content numeric", "Write", map[string]interface{}{"file_path": "/tmp/x", "content": 42}},
+		{"Write content missing", "Write", map[string]interface{}{"file_path": "/tmp/x"}},
+		{"Edit old_string numeric", "Edit", map[string]interface{}{"file_path": "/tmp/x", "old_string": 1, "new_string": "b"}},
+		{"Edit new_string missing", "Edit", map[string]interface{}{"file_path": "/tmp/x", "old_string": "a"}},
+		{"NotebookEdit new_source numeric", "NotebookEdit", map[string]interface{}{"notebook_path": "/tmp/n", "new_source": 7}},
 	}
 	for _, tc := range cases {
 		code, stderr := callGate(t, toolPayload(t, tc.toolName, tc.toolInput))
 		if code != 2 {
 			t.Errorf("%s: exit %d, want 2 (fail-closed); stderr %q", tc.name, code, stderr)
+		}
+	}
+
+	// Well-typed payloads of the same tools pass shape validation.
+	for _, ok := range []struct {
+		name      string
+		toolName  string
+		toolInput map[string]interface{}
+	}{
+		{"Write", "Write", writeInput()},
+		{"Edit", "Edit", editInput()},
+		{"NotebookEdit", "NotebookEdit", notebookInput()},
+	} {
+		code, _ := callGate(t, toolPayload(t, ok.toolName, ok.toolInput))
+		if code != 0 {
+			t.Errorf("%s: exit %d, want 0", ok.name, code)
 		}
 	}
 

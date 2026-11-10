@@ -877,3 +877,126 @@ func TestSessionRunsUnreadableDirFailsClosed(t *testing.T) {
 		t.Fatalf("SessionRuns on unreadable dir = %v, nil — must fail closed, not look like zero runs", runs)
 	}
 }
+
+// TestSessionRunsDirEntryFailsClosed: a run-state path that became a
+// directory is detectable corruption — it must error, never silently
+// shrink the run set to zero (review round 2, R4).
+func TestSessionRunsDirEntryFailsClosed(t *testing.T) {
+	prev := runStateDirOverride
+	runStateDirOverride = t.TempDir()
+	t.Cleanup(func() { runStateDirOverride = prev })
+
+	if _, err := StartRun("run-1", "sess-d", "fix", BudgetLimits{}); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-d")
+	if err := os.MkdirAll(filepath.Join(dir, "evil.json"), 0o755); err != nil {
+		t.Fatalf("mkdir evil.json: %v", err)
+	}
+	if runs, err := SessionRuns("sess-d"); err == nil {
+		t.Fatalf("SessionRuns accepted a directory named *.json (runs=%v) — must fail closed", runs)
+	}
+}
+
+// --- delegation start (review round 2, R1) --------------------------------------
+
+// preparedReview drives a run to REVIEW_PENDING with one PREPARED review.
+func preparedReview(t *testing.T, r *RunState) string {
+	t.Helper()
+	env := Envelope{
+		SchemaVersion: "2",
+		RunID:         r.RunID,
+		ReviewID:      "rev-1",
+		ArtifactSet:   []ArtifactRef{{Path: "a.md", Digest: "ddd"}},
+	}
+	if _, err := r.RequestReview(env); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	return env.ReviewID
+}
+
+// TestStartDelegation: one method, one Save — reviewer PREPARED→RUNNING in
+// REVIEW_PENDING, worker only in ACTIVE, both consuming a delegation slot
+// and a tool call atomically.
+func TestStartDelegation(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	revID := preparedReview(t, r)
+
+	// Worker delegation needs ACTIVE — REVIEW_PENDING refuses.
+	if err := r.StartDelegation("", false); err == nil {
+		t.Fatal("StartDelegation(worker) in REVIEW_PENDING: want error, got nil")
+	}
+	// Reviewer happy path: PREPARED → RUNNING, counters consumed, one Save.
+	if err := r.StartDelegation(revID, true); err != nil {
+		t.Fatalf("StartDelegation(reviewer): %v", err)
+	}
+	if r.Reviews[0].Status != ReviewRunning {
+		t.Fatalf("review status = %s, want RUNNING", r.Reviews[0].Status)
+	}
+	if r.Counters.Delegations != 1 || r.Counters.PhaseToolCalls != 1 {
+		t.Fatalf("counters = %+v, want delegations=1 toolCalls=1", r.Counters)
+	}
+	// The persisted file agrees (single Save actually happened).
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if disk.Reviews[0].Status != ReviewRunning || disk.Counters.Delegations != 1 {
+		t.Fatalf("disk state = %s %+v — StartDelegation must persist atomically", disk.Reviews[0].Status, disk.Counters)
+	}
+
+	// Idempotence guards: unknown review, non-PREPARED review, wrong status.
+	if err := r.StartDelegation("nope", true); err == nil {
+		t.Fatal("StartDelegation(unknown review): want error")
+	}
+	if err := r.StartDelegation(revID, true); err == nil {
+		t.Fatal("StartDelegation on a RUNNING review: want error")
+	}
+
+	// Worker delegation in ACTIVE works and counts.
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: revID, RunStatus: ReviewRunBlocked, ReasonCode: "x"}); err != nil {
+		t.Fatalf("RecordReviewResult: %v", err)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue) // review-result checkpoint → ACTIVE
+	if err := r.StartDelegation("", false); err != nil {
+		t.Fatalf("StartDelegation(worker) in ACTIVE: %v", err)
+	}
+	if r.Counters.Delegations != 2 || r.Counters.PhaseToolCalls != 2 {
+		t.Fatalf("counters = %+v, want delegations=2 toolCalls=2", r.Counters)
+	}
+}
+
+// TestStartDelegationSaveFailureLeavesDiskUnchanged: the whole transition is
+// one in-memory pass + one Save — an unwritable state dir leaves the disk
+// exactly as it was (review still PREPARED, counters untouched), so a retry
+// after repair is clean.
+func TestStartDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block writes")
+	}
+	r := startTestRun(t, BudgetLimits{})
+	revID := preparedReview(t, r)
+
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	if err := r.StartDelegation(revID, true); err == nil {
+		t.Fatal("StartDelegation with an unwritable state dir must fail")
+	}
+
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod repair: %v", err)
+	}
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if disk.Reviews[0].Status != ReviewPrepared || disk.Counters.Delegations != 0 || disk.Counters.PhaseToolCalls != 0 {
+		t.Fatalf("disk after failed Save = %s %+v — must be unchanged (PREPARED, zero counters)",
+			disk.Reviews[0].Status, disk.Counters)
+	}
+}

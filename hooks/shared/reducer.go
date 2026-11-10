@@ -468,9 +468,16 @@ func SessionRuns(sessionID string) ([]*RunState, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-			names = append(names, e.Name())
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
 		}
+		if e.IsDir() {
+			// A run-state path that became a directory is detectable
+			// corruption — erroring beats silently shrinking the run set
+			// (which the gate would read as "zero live runs").
+			return nil, fmt.Errorf("session runs: %s is a directory — corrupted state, failing closed", filepath.Join(dir, e.Name()))
+		}
+		names = append(names, e.Name())
 	}
 	sort.Strings(names) // deterministic order for ambiguity reporting
 	runs := make([]*RunState, 0, len(names))
@@ -1028,7 +1035,9 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 }
 
 // MarkReviewRunning moves a PREPARED review to RUNNING (the reviewer agent
-// actually started).
+// actually started). Kept as the single-step primitive; the PreToolUse gate
+// uses StartDelegation instead, which binds this transition to the delegation
+// and tool-call counters in ONE Save (review round 2, R1).
 func (r *RunState) MarkReviewRunning(reviewID string) error {
 	if err := r.requireStatus(StatusReviewPending, "MarkReviewRunning"); err != nil {
 		return err
@@ -1042,6 +1051,39 @@ func (r *RunState) MarkReviewRunning(reviewID string) error {
 	}
 	rv.Status = ReviewRunning
 	rv.StartedAt = nowUTC()
+	return r.Save()
+}
+
+// StartDelegation consumes one delegation slot atomically: for a reviewer it
+// moves the PREPARED review to RUNNING, and every delegation counts against
+// the delegation budget and the phase tool budget — all validated first,
+// then persisted in ONE Save (review round 2, R1: two separate Saves left a
+// window where RUNNING was on disk but the counter was not, making the
+// review undispatchable and unretryable). A reviewer delegation is legal
+// only in REVIEW_PENDING with that review PREPARED; a worker delegation only
+// in ACTIVE. A failed Save leaves the disk untouched — mutation happens in
+// memory first — so a retry after repair is clean.
+func (r *RunState) StartDelegation(reviewID string, isReviewer bool) error {
+	if isReviewer {
+		if err := r.requireStatus(StatusReviewPending, "StartDelegation"); err != nil {
+			return err
+		}
+		rv := r.findReview(reviewID)
+		if rv == nil {
+			return fmt.Errorf("StartDelegation: unknown review %q", reviewID)
+		}
+		if rv.Status != ReviewPrepared {
+			return fmt.Errorf("StartDelegation: review %s is %s, not PREPARED", reviewID, rv.Status)
+		}
+		rv.Status = ReviewRunning
+		rv.StartedAt = nowUTC()
+	} else {
+		if err := r.requireStatus(StatusActive, "StartDelegation"); err != nil {
+			return err
+		}
+	}
+	r.Counters.Delegations++
+	r.CountToolCall()
 	return r.Save()
 }
 

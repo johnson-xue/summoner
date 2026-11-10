@@ -83,15 +83,19 @@ func isWriteClassCommand(command string) bool {
 
 // tokenize splits one shell segment into words with quoting respected:
 // single- and double-quoted spans join the current word (quotes stripped).
+// An EMPTY quoted operand ("") still yields a token (review round 2, R3) —
+// dropping it let `git -C "" reset --hard` swallow `reset` as -C's value.
 // Escapes are not interpreted — conservative and sufficient for verbs.
 func tokenize(s string) []string {
 	var toks []string
 	var cur strings.Builder
 	var quote rune
+	hasTok := false // a quote opened a token, even if nothing was written
 	flush := func() {
-		if cur.Len() > 0 {
+		if hasTok || cur.Len() > 0 {
 			toks = append(toks, cur.String())
 			cur.Reset()
+			hasTok = false
 		}
 	}
 	for _, r := range s {
@@ -104,6 +108,7 @@ func tokenize(s string) []string {
 			}
 		case r == '\'' || r == '"':
 			quote = r
+			hasTok = true
 		case r == ' ' || r == '\t':
 			flush()
 		default:

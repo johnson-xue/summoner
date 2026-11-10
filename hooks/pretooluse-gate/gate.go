@@ -40,8 +40,7 @@ type submitReject struct {
 type effects struct {
 	openPhase     string                  // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
 	submit        *shared.PhaseSubmission // SubmitPhase payload (ruling 6)
-	startReview   string                  // MarkReviewRunning(reviewID) — reviewer delegation
-	delegation    string                  // subagent_type — Counters.Delegations++ + delegation.started
+	delegation    string                  // subagent_type — StartDelegation + delegation.started
 	delegateRevID string                  // review_id bound to the delegation, when reviewer
 }
 
@@ -180,7 +179,9 @@ func decideWrite(run *shared.RunState, toolName string) decision {
 
 // decideAgent — ruling 7: typed delegation only (reviewer|worker), within
 // budget; a reviewer must be bound to a PREPARED review whose id the prompt
-// carries, and allowing it starts that review.
+// carries. Legality mirrors StartDelegation exactly (review round 2, R1):
+// reviewer only in REVIEW_PENDING, worker only in ACTIVE — pre-checked here
+// so an illegal delegation denies BEFORE any intent event is appended.
 func decideAgent(in *gateInput, run *shared.RunState) decision {
 	typ := stringField(in.ToolInput, "subagent_type")
 	if typ == "" {
@@ -198,6 +199,10 @@ func decideAgent(in *gateInput, run *shared.RunState) decision {
 	}
 	eff := &effects{delegation: typ}
 	if typ == "reviewer" {
+		if run.Status != shared.StatusReviewPending {
+			return deny(fmt.Sprintf(
+				"Summoner gate: reviewer delegation requires REVIEW_PENDING (a PREPARED review to run), status is %s.", run.Status))
+		}
 		prompt := stringField(in.ToolInput, "prompt")
 		revID := ""
 		for i := range run.Reviews {
@@ -210,8 +215,10 @@ func decideAgent(in *gateInput, run *shared.RunState) decision {
 		if revID == "" {
 			return deny("Summoner gate: reviewer delegation requires a PREPARED review whose review_id appears in the prompt — no match (the reviewer must run a registered envelope, not ad-hoc work).")
 		}
-		eff.startReview = revID
 		eff.delegateRevID = revID
+	} else if run.Status != shared.StatusActive {
+		return deny(fmt.Sprintf(
+			"Summoner gate: worker delegation requires ACTIVE, status is %s — delegation is phase work, not a checkpoint bypass.", run.Status))
 	}
 	return allow(eff)
 }
@@ -347,6 +354,15 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 	if err := appendAll(events); err != nil {
 		return err // nothing mutated — retry after repair is clean
 	}
+	if eff != nil && eff.delegation != "" {
+		// One reducer call, one Save: the review transition and both
+		// counter consumptions persist atomically (review round 2, R1).
+		if err := run.StartDelegation(eff.delegateRevID, eff.delegation == "reviewer"); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: StartDelegation failed — denying: %v\n", err)
+			return err
+		}
+		return nil
+	}
 	if eff != nil && eff.openPhase != "" {
 		if err := run.OpenPhase(eff.openPhase); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: OpenPhase(%s) failed — denying: %v\n", eff.openPhase, err)
@@ -358,15 +374,6 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		}}); err != nil {
 			return err
 		}
-	}
-	if eff != nil && eff.startReview != "" {
-		if err := run.MarkReviewRunning(eff.startReview); err != nil {
-			fmt.Fprintf(errW, "Summoner gate: MarkReviewRunning(%s) failed — denying: %v\n", eff.startReview, err)
-			return err
-		}
-	}
-	if eff != nil && eff.delegation != "" {
-		run.Counters.Delegations++
 	}
 	run.CountToolCall()
 	if err := run.Save(); err != nil {
@@ -411,10 +418,24 @@ func validateShape(in *gateInput) error {
 	switch in.ToolName {
 	case "Bash":
 		return needString("command")
-	case "Edit", "Write":
-		return needString("file_path")
+	case "Edit":
+		if err := needString("file_path"); err != nil {
+			return err
+		}
+		if err := needString("old_string"); err != nil {
+			return err
+		}
+		return needString("new_string")
+	case "Write":
+		if err := needString("file_path"); err != nil {
+			return err
+		}
+		return needString("content")
 	case "NotebookEdit":
-		return needString("notebook_path")
+		if err := needString("notebook_path"); err != nil {
+			return err
+		}
+		return needString("new_source")
 	case "Agent":
 		if err := needString("subagent_type"); err != nil {
 			return err
