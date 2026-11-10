@@ -1,0 +1,349 @@
+// subagentstop — the SubagentStop hook of the single-loop rewrite (spec
+// docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md §3 崩溃恢复
+// + §5 SubagentStop row: 子 transcript 路径登记、⑤ 结果补记; 不路由).
+//
+// A REGISTRAR/BACKFILLER, never a gate: the platform grants SubagentStop
+// block-decision powers, but this binary NEVER blocks — a subagent's exit must
+// not be bricked by reconciliation. Exit 0 always; the single fail-closed path
+// is unparseable stdin (exit 2).
+//
+// Verified platform fact: internal agents (prompt suggestions, /btw, …) also
+// fire SubagentStop with their own agent_type — only {reviewer, worker} are
+// Summoner delegations; every other agent_type is ignored entirely.
+//
+// For a reviewer/worker stop against the session's one live run:
+//   - the agent transcript path is registered as evidence
+//     (delegation.completed {agent_id, agent_type, transcript_path} — spec §7:
+//     大证据本机存、trace 记路径);
+//   - a REVIEWER stop whose run has an in-flight review (RUNNING, or PREPARED
+//     — the §3 崩溃恢复 crash window) backfills the structured result: the
+//     transcript's SubagentHandback tool_use input.message carrying a JSON
+//     object with the ReviewResult fields is replayed through
+//     RecordReviewResult, which validates everything (enums, review identity,
+//     conclusion state) and refuses LATE duplicates — a result for an already
+//     concluded review never affects a new generation (按调用 id 去重). A
+//     refused or failed backfill is a stderr note, never an error for the
+//     subagent's exit.
+//
+// The un-brick path is SUMMONER_HOOKS_DISABLE == "1" exactly: enforce nothing,
+// exit 0 — but using it while exactly one run is live appends one
+// hooks.disabled event first (a recorded contract violation).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	shared "github.com/johnson-xue/summoner/hooks/shared"
+)
+
+// subagentStopSource stamps every trace event this binary appends.
+const subagentStopSource = "subagentstop"
+
+// Platform event name (ruling 2). Empty is tolerated for lenient payloads.
+const eventSubagentStop = "SubagentStop"
+
+// delegatedAgentTypes is the delegation allow-list (mirrors the gate's ruling:
+// reviewer|worker only). Everything else — internal platform agents included —
+// is not a Summoner delegation and produces nothing.
+var delegatedAgentTypes = map[string]bool{"reviewer": true, "worker": true}
+
+// subagentStopInput is the parsed SubagentStop payload: exactly the typed
+// fields the hook needs (ruling 2). last_assistant_message is carried but not
+// trusted: the report of record lives in the transcript's SubagentHandback.
+type subagentStopInput struct {
+	EventName            string
+	SessionID            string
+	StopHookActive       bool
+	AgentID              string
+	AgentType            string
+	TranscriptPath       string
+	LastAssistantMessage string
+}
+
+// parseInput decodes one SubagentStop payload. Anything that is not a single
+// JSON object is an error — the caller fails closed (exit 2), the one
+// fail-closed path of this hook. Trailing garbage after the object is refused.
+func parseInput(r io.Reader) (*subagentStopInput, error) {
+	var raw struct {
+		HookEventName        string `json:"hook_event_name"`
+		SessionID            string `json:"session_id"`
+		StopHookActive       bool   `json:"stop_hook_active"`
+		AgentID              string `json:"agent_id"`
+		AgentType            string `json:"agent_type"`
+		AgentTranscriptPath  string `json:"agent_transcript_path"`
+		LastAssistantMessage string `json:"last_assistant_message"`
+	}
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("stdin is not a hook JSON object: %v", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("unexpected trailing data after the JSON object")
+	}
+	return &subagentStopInput{
+		EventName:            raw.HookEventName,
+		SessionID:            raw.SessionID,
+		StopHookActive:       raw.StopHookActive,
+		AgentID:              raw.AgentID,
+		AgentType:            raw.AgentType,
+		TranscriptPath:       raw.AgentTranscriptPath,
+		LastAssistantMessage: raw.LastAssistantMessage,
+	}, nil
+}
+
+func main() {
+	os.Exit(runSubagentStop(os.Stdin, os.Stderr))
+}
+
+// runSubagentStop is the whole hook. Returns the process exit code: 0 for
+// every outcome, 2 only for unparseable input.
+func runSubagentStop(stdin io.Reader, errW io.Writer) int {
+	in, err := parseInput(stdin)
+	if err != nil {
+		fmt.Fprintf(errW, "summoner subagentstop: unreadable hook input — fail-closed: %v\n", err)
+		return 2
+	}
+	if in.EventName != "" && in.EventName != eventSubagentStop {
+		fmt.Fprintf(errW, "summoner subagentstop: unknown hook_event_name %q (this binary serves SubagentStop) — ignoring\n", in.EventName)
+		return 0
+	}
+
+	// SUMMONER_HOOKS_DISABLE — the un-brick hatch (spec §5), armed by the
+	// exact value "1" only, same contract as the gate's and posttooluse's:
+	// enforce nothing, but using it while exactly one run is live is a
+	// recorded contract violation. A state-read error here does not re-brick
+	// the session: the hatch outranks state.
+	if os.Getenv("SUMMONER_HOOKS_DISABLE") == "1" {
+		if runs, err := shared.SessionRuns(in.SessionID); err == nil {
+			if live := liveRuns(runs); len(live) == 1 {
+				if err := shared.AppendEvent(live[0].RunID, in.SessionID, shared.TraceEvent{
+					Type:   shared.EventHooksDisabled,
+					Source: subagentStopSource,
+					Payload: map[string]interface{}{
+						"agent_id":   in.AgentID,
+						"agent_type": in.AgentType,
+					},
+				}); err != nil {
+					fmt.Fprintf(errW, "summoner subagentstop: hooks.disabled trace append failed: %v\n", err)
+				}
+			}
+		}
+		return 0
+	}
+
+	// Delegation filter (verified platform fact): internal agents fire this
+	// event too — only reviewer/worker are Summoner delegations.
+	if !delegatedAgentTypes[in.AgentType] {
+		return 0
+	}
+
+	// Run resolution — warn, never fail: a registrar must not brick the
+	// subagent's exit (same asymmetry as the Stop hook's).
+	runs, err := shared.SessionRuns(in.SessionID)
+	if err != nil {
+		fmt.Fprintf(errW, "summoner subagentstop: session run-state unreadable — registering nothing: %v\n", err)
+		return 0
+	}
+	live := liveRuns(runs)
+	switch {
+	case len(live) == 0:
+		return 0 // no live run: not our business — no events
+	case len(live) > 1:
+		ids := make([]string, 0, len(live))
+		for _, r := range live {
+			ids = append(ids, r.RunID)
+		}
+		fmt.Fprintf(errW, "summoner subagentstop: %d live Summoner runs in this session (%s) — ambiguous; refusing to guess which run to register against\n",
+			len(live), strings.Join(ids, ", "))
+		return 0
+	}
+	run := live[0]
+
+	if in.TranscriptPath == "" {
+		fmt.Fprintf(errW, "summoner subagentstop: %s stop carried no agent_transcript_path — nothing to register\n", in.AgentType)
+		return 0
+	}
+
+	// Registration FIRST (evidence before mutation, mirroring the gate's
+	// intent-before-effect ordering): if the evidence channel is broken, do
+	// not conclude a review whose record would be unverifiable — the review
+	// stays in flight for a later re-fire or T7 reconciliation.
+	if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
+		Type:   shared.EventDelegationCompleted,
+		Source: subagentStopSource,
+		Payload: map[string]interface{}{
+			"agent_id":        in.AgentID,
+			"agent_type":      in.AgentType,
+			"transcript_path": in.TranscriptPath,
+		},
+	}); err != nil {
+		fmt.Fprintf(errW, "summoner subagentstop: delegation.completed trace append failed — skipping review backfill (review stays in flight): %v\n", err)
+		return 0
+	}
+
+	if in.AgentType == "reviewer" {
+		backfillReview(run, in, errW)
+	}
+	return 0
+}
+
+// backfillReview replays the reviewer's structured result from its transcript
+// through RecordReviewResult (spec §3 崩溃恢复: 能从子 transcript 找到有效结果
+// 就补记). Only a REVIEWER's transcript may conclude a review; the run must
+// have one in flight (RUNNING, or PREPARED — the crash window). Absent or
+// unparseable results register the transcript only; a refused replay (unknown
+// review, illegal status, LATE duplicate of a concluded review) is a stderr
+// note — never an error for the subagent's exit.
+func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer) {
+	if inFlightReview(run) == nil {
+		return // nothing to backfill: registration only
+	}
+	res, ok := parseReviewResult(in.TranscriptPath)
+	if !ok {
+		return // absent/unparseable: registration only
+	}
+	if err := run.RecordReviewResult(res); err != nil {
+		fmt.Fprintf(errW, "summoner subagentstop: review backfill for %s refused (state untouched or routed per reducer) — late or invalid results never affect a new generation: %v\n",
+			res.ReviewID, err)
+		return
+	}
+	payload := map[string]interface{}{
+		"review_id":  res.ReviewID,
+		"run_status": res.RunStatus,
+	}
+	if res.Verdict != "" {
+		payload["verdict"] = res.Verdict
+	}
+	if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
+		Type:    shared.EventReviewVerdict,
+		Source:  subagentStopSource,
+		Payload: payload,
+	}); err != nil {
+		fmt.Fprintf(errW, "summoner subagentstop: review.verdict trace append failed (conclusion persisted): %v\n", err)
+	}
+}
+
+// inFlightReview returns the run's unconcluded review (RUNNING, or PREPARED —
+// the crash window where dispatch persistence was lost), or nil. At most one
+// exists by construction: RequestReview refuses a second while one is in
+// flight.
+func inFlightReview(run *shared.RunState) *shared.ReviewRecord {
+	for i := range run.Reviews {
+		switch run.Reviews[i].Status {
+		case shared.ReviewPrepared, shared.ReviewRunning:
+			return &run.Reviews[i]
+		}
+	}
+	return nil
+}
+
+// --- transcript parsing ------------------------------------------------------------
+
+// parseReviewResult scans an agent transcript (JSONL) for the reviewer's
+// structured result: the SubagentHandback tool_use blocks whose input.message
+// carries a JSON object with the ReviewResult fields. The LAST such object
+// wins — the final handback is the report of record. Unparseable lines and
+// non-handback content are skipped (a transcript holds much more than the
+// report).
+func parseReviewResult(path string) (shared.ReviewResult, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return shared.ReviewResult{}, false
+	}
+	var last shared.ReviewResult
+	found := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.Contains(line, "SubagentHandback") {
+			continue // cheap pre-filter: handback lines are rare
+		}
+		for _, msg := range handbackMessages(line) {
+			if res, ok := extractReviewResult(msg); ok {
+				last = res
+				found = true
+			}
+		}
+	}
+	return last, found
+}
+
+// handbackMessages extracts the input.message strings of every
+// SubagentHandback tool_use block in one transcript line (an assistant entry).
+// A line that is not JSON, or has no such block, yields nothing.
+func handbackMessages(line string) []string {
+	var entry struct {
+		Message struct {
+			Content []struct {
+				Type  string `json:"type"`
+				Name  string `json:"name"`
+				Input struct {
+					Message string `json:"message"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return nil
+	}
+	var msgs []string
+	for _, block := range entry.Message.Content {
+		if block.Type == "tool_use" && block.Name == "SubagentHandback" && block.Input.Message != "" {
+			msgs = append(msgs, block.Input.Message)
+		}
+	}
+	return msgs
+}
+
+// extractReviewResult pulls the ReviewResult JSON object out of one handback
+// message: bare, fenced (```json … ``` / ``` … ```), or embedded in prose.
+// A candidate must carry review_id and run_status — everything else is
+// validated by RecordReviewResult.
+func extractReviewResult(msg string) (shared.ReviewResult, bool) {
+	s := strings.TrimSpace(msg)
+	if strings.HasPrefix(s, "```") {
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			s = s[i+1:]
+		} else {
+			s = ""
+		}
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "```"))
+	}
+	if res, ok := unmarshalResult(s); ok {
+		return res, true
+	}
+	// Embedded in prose: first '{' … last '}'.
+	if i := strings.IndexByte(s, '{'); i >= 0 {
+		if j := strings.LastIndexByte(s, '}'); j > i {
+			return unmarshalResult(s[i : j+1])
+		}
+	}
+	return shared.ReviewResult{}, false
+}
+
+// unmarshalResult decodes one candidate string; unknown fields are tolerated
+// (the reviewer report may carry more than the wire contract), but review_id
+// and run_status are the minimum shape.
+func unmarshalResult(s string) (shared.ReviewResult, bool) {
+	var res shared.ReviewResult
+	if err := json.Unmarshal([]byte(s), &res); err != nil {
+		return res, false
+	}
+	if res.ReviewID == "" || res.RunStatus == "" {
+		return res, false
+	}
+	return res, true
+}
+
+// liveRuns filters out CLOSED runs — a closed run is not registered against.
+func liveRuns(runs []*shared.RunState) []*shared.RunState {
+	var live []*shared.RunState
+	for _, r := range runs {
+		if r.Status != shared.StatusClosed {
+			live = append(live, r)
+		}
+	}
+	return live
+}
