@@ -1841,14 +1841,16 @@ func soleRunID(t *testing.T) string {
 // writeContractManifest writes a minimal valid v2 manifest (with the given
 // suggested_budgets YAML body) into the temp project dir the contract env
 // points CLAUDE_PROJECT_DIR at — the runtime manifest loader reads it when
-// the run's first checkpoint opens its budget ask.
+// the run's first checkpoint opens its budget ask. The phases map is
+// REQUIRED (the loader is validate-manifest's twin: an empty/absent phases
+// map fails closed since the T11 alignment) — smallest valid form.
 func writeContractManifest(t *testing.T, budgetsYAML string) {
 	t.Helper()
 	dir := os.Getenv("CLAUDE_PROJECT_DIR")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte("version: \"2\"\nproject:\n  name: contract-probe\n"+budgetsYAML), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte("version: \"2\"\nproject:\n  name: contract-probe\nphases:\n  diagnosis:\n    skill: none\n"+budgetsYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
