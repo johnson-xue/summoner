@@ -18,11 +18,19 @@ import (
 const skillPhaseSubmit = "summoner:phase-submit"
 
 // decision is decide()'s verdict: allow with an effect plan, or deny with a
-// human-readable reason (the exit-2 stderr text).
+// human-readable reason (the exit-2 stderr text). A deny may also carry a
+// submission rejection to trace: phase_submitted.rejected is the record of
+// EVERY submission-path failure during an active run (ruling 6 + review I8).
 type decision struct {
 	allow  bool
 	reason string
-	eff    *effects // nil = allowed, nothing to mutate
+	eff    *effects      // nil = allowed, nothing to mutate
+	reject *submitReject // non-nil: trace phase_submitted.rejected on deny
+}
+
+// submitReject marks a denial that must persist phase_submitted.rejected.
+type submitReject struct {
+	phaseID string // "" when the payload never parsed far enough to carry one
 }
 
 // effects is the ordered side-effect plan apply() executes. It never mixes:
@@ -38,6 +46,13 @@ type effects struct {
 }
 
 func deny(reason string) decision { return decision{allow: false, reason: reason} }
+
+// denySubmit is a deny that also records phase_submitted.rejected — every
+// submission-path failure during an active run leaves that trace (I8).
+func denySubmit(phaseID, reason string) decision {
+	return decision{allow: false, reason: reason, reject: &submitReject{phaseID: phaseID}}
+}
+
 func allow(eff *effects) decision { return decision{allow: true, eff: eff} }
 
 // decide routes one tool call through the gate rules (rulings 3-9).
@@ -46,11 +61,12 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	isSubmit := in.ToolName == "Skill" && skill == skillPhaseSubmit
 
 	// Budget first (ruling 9), with one deliberate exception: the
-	// control-plane verbs — summoner:phase-submit and AskUserQuestion — are
-	// the only paths that carry an exhausted run to its checkpoint, where
-	// the user adds budget or replans (spec §5 预算与终止). Blocking them
-	// would strand the run in ACTIVE with no exit but free-text stop.
-	if !isSubmit && in.ToolName != "AskUserQuestion" {
+	// control-plane verbs that carry an exhausted run to its checkpoint,
+	// where the user adds budget or replans (spec §5 预算与终止), stay
+	// usable — summoner:phase-submit always, and AskUserQuestion only
+	// while WAIT_USER (the nonce-gated decision channel; review I5:
+	// ordinary ACTIVE questions are budget-gated like everything else).
+	if !(isSubmit || (in.ToolName == "AskUserQuestion" && run.Status == shared.StatusWaitUser)) {
 		if exhausted, why := run.BudgetExhausted(); exhausted {
 			return deny(fmt.Sprintf(
 				"Summoner gate: %s — remaining budget is zero (余量为零). Only the user can add budget or replan: submit the phase via summoner:phase-submit so the checkpoint can present the exhausted budget.",
@@ -88,14 +104,14 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 	if skill == skillPhaseSubmit {
 		args, ok := in.ToolInput["args"].(string)
 		if !ok {
-			return deny("Summoner gate: summoner:phase-submit requires args — a JSON string carrying the phase submission (phase_id, artifacts, criteria, check refs).")
+			return denySubmit("", "Summoner gate: summoner:phase-submit requires args — a JSON string carrying the phase submission (phase_id, artifacts, criteria, check refs).")
 		}
 		var sub shared.PhaseSubmission
 		if err := json.Unmarshal([]byte(args), &sub); err != nil {
-			return deny(fmt.Sprintf("Summoner gate: summoner:phase-submit args is not valid JSON: %v", err))
+			return denySubmit("", fmt.Sprintf("Summoner gate: summoner:phase-submit args is not valid JSON: %v", err))
 		}
 		if sub.PhaseID == "" {
-			return deny("Summoner gate: summoner:phase-submit payload requires phase_id.")
+			return denySubmit("", "Summoner gate: summoner:phase-submit payload requires phase_id.")
 		}
 		eff := &effects{submit: &sub}
 		// Ruling 3 fallback: with no open phase, auto-open the payload's
@@ -130,10 +146,14 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 }
 
 // decideWrite — the write-eligibility matrix (ruling 4). POST_GAME_PENDING
-// allows writes (journal persistence precedes CLOSED); ACTIVE/CHANGE_OPEN face
-// only the diagnosis iron law; CLOSED never reaches here (not a live run).
+// allows writes before anything else is considered (review I3: the emergency
+// stop journal is writable even when no diagnosis was ever accepted); then
+// WAIT_USER/REVIEW_PENDING/OUTCOME_UNKNOWN deny; ACTIVE/CHANGE_OPEN face only
+// the diagnosis iron law. CLOSED never reaches here (not a live run).
 func decideWrite(run *shared.RunState, toolName string) decision {
 	switch run.Status {
+	case shared.StatusPostGamePending:
+		return allow(nil) // journal persistence precedes CLOSED
 	case shared.StatusWaitUser:
 		cp := run.CurrentCheckpoint()
 		where := "its checkpoint"
@@ -221,69 +241,70 @@ func decideAskUser(in *gateInput, run *shared.RunState) decision {
 		cp.ID, cp.Nonce))
 }
 
-// apply executes the effect plan: reducer transitions first (each persists
-// atomically), then counters + Save, then trace appends (ruling 9: only
-// allowed calls are traced, tool.started first). Any failure prints the
-// reason and denies.
+// apply executes the effect plan. Two orderings, by path (review I6/I8):
+//
+//   - submit path (summoner:phase-submit): the reducer runs FIRST — its
+//     rejections consume nothing and must leave no tool.started, only
+//     phase_submitted.rejected. On success the intent record (tool.started)
+//     and result events (phase.started/phase.closed/checkpoint.opened) are
+//     appended, then counters.
+//
+//   - dispatch path (everything else): intent events (tool.started,
+//     delegation.started) are appended BEFORE any mutation — a trace failure
+//     denies with nothing consumed (no review started, no counters spent),
+//     so a retry after repair succeeds. A failure AFTER mutations began
+//     (reducer Save, counter Save) denies with the mutation persisted:
+//     dangling intent events are the correct OUTCOME_UNKNOWN posture.
 func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) error {
-	var cp *shared.CheckpointState
-
-	if eff != nil && eff.openPhase != "" {
-		if err := run.OpenPhase(eff.openPhase); err != nil {
-			fmt.Fprintf(errW, "Summoner gate: OpenPhase(%s) failed — denying: %v\n", eff.openPhase, err)
-			return err
-		}
-	}
-	if eff != nil && eff.submit != nil {
-		c, err := run.SubmitPhase(*eff.submit)
-		if err != nil {
-			// Ruling 6: reducer rejections are the one denied call that
-			// leaves a trace record.
-			if terr := shared.AppendEvent(run.RunID, run.SessionID, shared.TraceEvent{
-				Type:      shared.EventPhaseSubmittedRejected,
-				Source:    gateSource,
-				ToolUseID: in.ToolUseID,
-				Payload: map[string]interface{}{
-					"phase_id": eff.submit.PhaseID,
-					"reason":   err.Error(),
-				},
-			}); terr != nil {
-				fmt.Fprintf(errW, "Summoner gate: phase_submitted.rejected trace append also failed: %v\n", terr)
+	appendAll := func(events []shared.TraceEvent) error {
+		for _, ev := range events {
+			ev.Source = gateSource
+			ev.ToolUseID = in.ToolUseID
+			if err := shared.AppendEvent(run.RunID, in.SessionID, ev); err != nil {
+				fmt.Fprintf(errW, "Summoner gate: trace append (%s) failed — denying (fail-closed): %v\n", ev.Type, err)
+				return err
 			}
-			fmt.Fprintf(errW, "Summoner gate: summoner:phase-submit rejected — %v\n", err)
-			return err
 		}
-		cp = &c
+		return nil
 	}
-	if eff != nil && eff.startReview != "" {
-		if err := run.MarkReviewRunning(eff.startReview); err != nil {
-			fmt.Fprintf(errW, "Summoner gate: MarkReviewRunning(%s) failed — denying: %v\n", eff.startReview, err)
-			return err
+	rejectSubmit := func(phaseID string, err error) error {
+		payload := map[string]interface{}{"reason": err.Error()}
+		if phaseID != "" {
+			payload["phase_id"] = phaseID
 		}
-	}
-
-	if eff != nil && eff.delegation != "" {
-		run.Counters.Delegations++
-	}
-	run.CountToolCall()
-	if err := run.Save(); err != nil {
-		fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+		if terr := shared.AppendEvent(run.RunID, run.SessionID, shared.TraceEvent{
+			Type:      shared.EventPhaseSubmittedRejected,
+			Source:    gateSource,
+			ToolUseID: in.ToolUseID,
+			Payload:   payload,
+		}); terr != nil {
+			fmt.Fprintf(errW, "Summoner gate: phase_submitted.rejected trace append also failed: %v\n", terr)
+		}
+		fmt.Fprintf(errW, "Summoner gate: summoner:phase-submit rejected — %v\n", err)
 		return err
 	}
 
-	// Trace, in causal order: the intent record first, then each transition
-	// this gate performed.
-	events := []shared.TraceEvent{{
-		Type:    shared.EventToolStarted,
-		Payload: map[string]interface{}{"tool_name": in.ToolName},
-	}}
-	if eff != nil && eff.openPhase != "" {
-		events = append(events, shared.TraceEvent{
-			Type:    shared.EventPhaseStarted,
-			Payload: map[string]interface{}{"phase_id": eff.openPhase},
-		})
-	}
 	if eff != nil && eff.submit != nil {
+		// --- submit path: reducer first, rejections un-intended (I8) ---
+		if eff.openPhase != "" {
+			if err := run.OpenPhase(eff.openPhase); err != nil {
+				return rejectSubmit(eff.openPhase, err)
+			}
+		}
+		cp, err := run.SubmitPhase(*eff.submit)
+		if err != nil {
+			return rejectSubmit(eff.submit.PhaseID, err)
+		}
+		events := []shared.TraceEvent{{
+			Type:    shared.EventToolStarted,
+			Payload: map[string]interface{}{"tool_name": in.ToolName},
+		}}
+		if eff.openPhase != "" {
+			events = append(events, shared.TraceEvent{
+				Type:    shared.EventPhaseStarted,
+				Payload: map[string]interface{}{"phase_id": eff.openPhase},
+			})
+		}
 		events = append(events,
 			shared.TraceEvent{
 				Type:    shared.EventPhaseClosed,
@@ -297,7 +318,22 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 					"nonce":         cp.Nonce,
 				},
 			})
+		if err := appendAll(events); err != nil {
+			return err // state already moved (WAIT_USER) — deny fail-closed
+		}
+		run.CountToolCall()
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+			return err
+		}
+		return nil
 	}
+
+	// --- dispatch path: intents before any mutation (I6) ---
+	events := []shared.TraceEvent{{
+		Type:    shared.EventToolStarted,
+		Payload: map[string]interface{}{"tool_name": in.ToolName},
+	}}
 	if eff != nil && eff.delegation != "" {
 		payload := map[string]interface{}{"subagent_type": eff.delegation}
 		if eff.delegateRevID != "" {
@@ -308,13 +344,34 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 			Payload: payload,
 		})
 	}
-	for _, ev := range events {
-		ev.Source = gateSource
-		ev.ToolUseID = in.ToolUseID
-		if err := shared.AppendEvent(run.RunID, in.SessionID, ev); err != nil {
-			fmt.Fprintf(errW, "Summoner gate: trace append (%s) failed — denying (fail-closed): %v\n", ev.Type, err)
+	if err := appendAll(events); err != nil {
+		return err // nothing mutated — retry after repair is clean
+	}
+	if eff != nil && eff.openPhase != "" {
+		if err := run.OpenPhase(eff.openPhase); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: OpenPhase(%s) failed — denying: %v\n", eff.openPhase, err)
 			return err
 		}
+		if err := appendAll([]shared.TraceEvent{{
+			Type:    shared.EventPhaseStarted,
+			Payload: map[string]interface{}{"phase_id": eff.openPhase},
+		}}); err != nil {
+			return err
+		}
+	}
+	if eff != nil && eff.startReview != "" {
+		if err := run.MarkReviewRunning(eff.startReview); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: MarkReviewRunning(%s) failed — denying: %v\n", eff.startReview, err)
+			return err
+		}
+	}
+	if eff != nil && eff.delegation != "" {
+		run.Counters.Delegations++
+	}
+	run.CountToolCall()
+	if err := run.Save(); err != nil {
+		fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+		return err
 	}
 	return nil
 }
@@ -327,6 +384,60 @@ func stringField(m map[string]interface{}, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
+}
+
+// validateShape enforces the known tool_input shapes before classification
+// (review I7): during an active run, a malformed payload for a KNOWN tool is
+// a fail-closed deny, never an observe-and-allow. Unknown tool names keep the
+// observe-and-allow policy — the gate does not model their inputs.
+func validateShape(in *gateInput) error {
+	if in.ToolName == "" {
+		return fmt.Errorf("tool_name is empty")
+	}
+	switch in.ToolName {
+	case "Bash", "Edit", "Write", "NotebookEdit", "Agent", "Skill", "AskUserQuestion":
+	default:
+		return nil // unknown tool name: observe and allow
+	}
+	if in.ToolInput == nil {
+		return fmt.Errorf("tool_input for %s must be an object", in.ToolName)
+	}
+	needString := func(key string) error {
+		if _, ok := in.ToolInput[key].(string); !ok {
+			return fmt.Errorf("%s requires a string %q", in.ToolName, key)
+		}
+		return nil
+	}
+	switch in.ToolName {
+	case "Bash":
+		return needString("command")
+	case "Edit", "Write":
+		return needString("file_path")
+	case "NotebookEdit":
+		return needString("notebook_path")
+	case "Agent":
+		if err := needString("subagent_type"); err != nil {
+			return err
+		}
+		return needString("prompt")
+	case "Skill":
+		return needString("skill")
+	case "AskUserQuestion":
+		qs, ok := in.ToolInput["questions"].([]interface{})
+		if !ok {
+			return fmt.Errorf("AskUserQuestion requires a questions array")
+		}
+		for i, q := range qs {
+			m, ok := q.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("AskUserQuestion questions[%d] must be an object", i)
+			}
+			if _, ok := m["question"].(string); !ok {
+				return fmt.Errorf("AskUserQuestion questions[%d] requires a string question", i)
+			}
+		}
+	}
+	return nil
 }
 
 func openPhaseOf(run *shared.RunState) *shared.PhaseState {
@@ -348,39 +459,36 @@ func hasAcceptedPhase(run *shared.RunState, id string) bool {
 }
 
 // nextExpectedPhase derives which phase the sequence allows to open next
-// (ruling 3): the first sequence phase with no PhaseState entry yet, or —
-// once every phase has history (e.g. after a recall redid an earlier phase) —
-// the phase after the last decided-CONTINUE checkpoint. "" = nothing may open.
+// (ruling 3, review I2): walk the workflow sequence and, for each phase id,
+// look at its LATEST PhaseState (last entry per id — recall appends fresh
+// visits); a phase is settled only when that visit's Outcome is accepted or
+// skipped. The first unsettled phase is the next expected one. A recalled
+// phase (Outcome "recalled", or no visit at all) re-enters ahead of any
+// later phase. "" = every phase is settled, nothing may open.
 func nextExpectedPhase(run *shared.RunState) string {
 	seq, err := shared.WorkflowPhases(run.Workflow)
 	if err != nil {
 		return ""
 	}
-	hasEntry := func(id string) bool {
-		for _, p := range run.Phases {
-			if p.ID == id {
-				return true
+	lastVisit := func(id string) *shared.PhaseState {
+		var last *shared.PhaseState
+		for i := range run.Phases {
+			if run.Phases[i].ID == id {
+				last = &run.Phases[i]
 			}
 		}
-		return false
+		return last
 	}
 	for _, id := range seq {
-		if !hasEntry(id) {
-			return id
+		visit := lastVisit(id)
+		if visit == nil {
+			return id // never visited — unsettled
 		}
-	}
-	for i := len(run.Checkpoints) - 1; i >= 0; i-- {
-		cp := run.Checkpoints[i]
-		if !cp.Decided || cp.Decision != shared.DecisionContinue || cp.PhaseID == "" {
-			continue
-		}
-		for j, id := range seq {
-			if id == cp.PhaseID {
-				if j+1 < len(seq) {
-					return seq[j+1]
-				}
-				return ""
-			}
+		switch visit.Outcome {
+		case "accepted", "skipped":
+			continue // settled; sequencing moves on
+		default:
+			return id // open, undecided or recalled — the phase owes work
 		}
 	}
 	return ""

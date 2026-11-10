@@ -852,3 +852,28 @@ func TestSessionRuns(t *testing.T) {
 		t.Fatal("SessionRuns accepted an unparseable run file — must fail closed")
 	}
 }
+
+// TestSessionRunsUnreadableDirFailsClosed: an unreadable session dir must be an
+// error, never "zero runs" — the gate's pass-through depends on that
+// distinction (review round 1, I1).
+func TestSessionRunsUnreadableDirFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block reads")
+	}
+	prev := runStateDirOverride
+	runStateDirOverride = t.TempDir()
+	t.Cleanup(func() { runStateDirOverride = prev })
+
+	if _, err := StartRun("run-1", "sess-9", "fix", BudgetLimits{}); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-9")
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	if runs, err := SessionRuns("sess-9"); err == nil {
+		t.Fatalf("SessionRuns on unreadable dir = %v, nil — must fail closed, not look like zero runs", runs)
+	}
+}

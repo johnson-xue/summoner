@@ -74,12 +74,13 @@ func runGate(stdin io.Reader, errW io.Writer) int {
 		return 2
 	}
 
-	// SUMMONER_HOOKS_DISABLE — the un-brick hatch (spec §5). Enforce nothing.
-	// Using it while exactly one run is live is itself a recorded contract
-	// violation (hooks.disabled); zero live or ambiguous runs have nothing
-	// unambiguously live to violate — exit 0 with no events. A state-read
-	// error here does not re-brick the session: the hatch outranks state.
-	if os.Getenv("SUMMONER_HOOKS_DISABLE") != "" {
+	// SUMMONER_HOOKS_DISABLE — the un-brick hatch (spec §5), armed by the
+	// exact value "1" only. Enforce nothing. Using it while exactly one run
+	// is live is itself a recorded contract violation (hooks.disabled); zero
+	// live or ambiguous runs have nothing unambiguously live to violate —
+	// exit 0 with no events. A state-read error here does not re-brick the
+	// session: the hatch outranks state.
+	if os.Getenv("SUMMONER_HOOKS_DISABLE") == "1" {
 		if runs, err := shared.SessionRuns(in.SessionID); err == nil {
 			if live := liveRuns(runs); len(live) == 1 {
 				if err := shared.AppendEvent(live[0].RunID, in.SessionID, shared.TraceEvent{
@@ -122,8 +123,26 @@ func runGate(stdin io.Reader, errW io.Writer) int {
 	}
 
 	run := live[0]
+	if err := validateShape(in); err != nil {
+		fmt.Fprintf(errW, "summoner gate: malformed payload — denying (fail-closed): %v\n", err)
+		return 2
+	}
 	d := decide(in, run)
 	if !d.allow {
+		if d.reject != nil {
+			payload := map[string]interface{}{"reason": d.reason}
+			if d.reject.phaseID != "" {
+				payload["phase_id"] = d.reject.phaseID
+			}
+			if err := shared.AppendEvent(run.RunID, run.SessionID, shared.TraceEvent{
+				Type:      shared.EventPhaseSubmittedRejected,
+				Source:    gateSource,
+				ToolUseID: in.ToolUseID,
+				Payload:   payload,
+			}); err != nil {
+				fmt.Fprintf(errW, "summoner gate: phase_submitted.rejected trace append failed: %v\n", err)
+			}
+		}
 		fmt.Fprintln(errW, d.reason)
 		return 2
 	}

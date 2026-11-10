@@ -69,14 +69,20 @@ func callGate(t *testing.T, payload string) (int, string) {
 
 const gateSession = "sess-1"
 
+// startRunWF starts run "run-1" for an arbitrary workflow in this test's session.
+func startRunWF(t *testing.T, workflow string, limits shared.BudgetLimits) *shared.RunState {
+	t.Helper()
+	r, err := shared.StartRun("run-1", gateSession, workflow, limits)
+	if err != nil {
+		t.Fatalf("StartRun(%s): %v", workflow, err)
+	}
+	return r
+}
+
 // startFixRun starts run "run-1" for the fix workflow in this test's session.
 func startFixRun(t *testing.T, limits shared.BudgetLimits) *shared.RunState {
 	t.Helper()
-	r, err := shared.StartRun("run-1", gateSession, "fix", limits)
-	if err != nil {
-		t.Fatalf("StartRun: %v", err)
-	}
-	return r
+	return startRunWF(t, "fix", limits)
 }
 
 // acceptPhase drives one full phase cycle: open → submit → display → CONTINUE.
@@ -125,6 +131,14 @@ func editInput() map[string]interface{} {
 	return map[string]interface{}{
 		"file_path": "/tmp/x.go", "old_string": "a", "new_string": "b",
 	}
+}
+
+func writeInput() map[string]interface{} {
+	return map[string]interface{}{"file_path": "/tmp/x.go", "content": "package x\n"}
+}
+
+func notebookInput() map[string]interface{} {
+	return map[string]interface{}{"notebook_path": "/tmp/nb.ipynb", "new_source": "print(1)"}
 }
 
 func readInput() map[string]interface{} {
@@ -256,7 +270,7 @@ func TestWriteGateBlockedWhileWaitUser(t *testing.T) {
 	code, stderr := callGate(t, toolPayload(t, "Edit", editInput()))
 	wantExit2(t, code, stderr, "WAIT_USER")
 
-	code, stderr = callGate(t, toolPayload(t, "Write", editInput()))
+	code, stderr = callGate(t, toolPayload(t, "Write", writeInput()))
 	wantExit2(t, code, stderr, "WAIT_USER")
 
 	code, stderr = callGate(t, toolPayload(t, "Bash", bashInput("echo hi > f.txt")))
@@ -401,13 +415,25 @@ func TestPhaseSubmitRejectedBadPayload(t *testing.T) {
 		wantExit2(t, code, stderr, tc.want)
 	}
 
-	// Parse rejections are not traced (only reducer rejections are; ruling 6).
-	if evs := readGateTrace(t, "run-1"); len(evs) != 0 {
-		t.Fatalf("parse rejections must not append trace events, got %v", traceTypes(evs))
+	// I8: EVERY submission-path failure during an active run traces
+	// phase_submitted.rejected — parse failures included — with no
+	// tool.started and no CountToolCall.
+	evs := readGateTrace(t, "run-1")
+	if got := traceTypes(evs); len(got) != len(cases) {
+		t.Fatalf("trace types = %v, want %d phase_submitted.rejected events", got, len(cases))
+	}
+	for i, ev := range evs {
+		if ev.Type != shared.EventPhaseSubmittedRejected {
+			t.Fatalf("event %d = %s, want phase_submitted.rejected", i, ev.Type)
+		}
+		if ev.Payload["reason"] == nil || ev.Payload["reason"] == "" {
+			t.Fatalf("rejection %d must carry a reason payload, got %v", i, ev.Payload)
+		}
 	}
 	after := reloadRun(t, "run-1")
-	if after.Status != shared.StatusActive || len(after.Checkpoints) != 0 {
-		t.Fatalf("state must be untouched, got %s / %d checkpoints", after.Status, len(after.Checkpoints))
+	if after.Status != shared.StatusActive || len(after.Checkpoints) != 0 || after.Counters.PhaseToolCalls != 0 {
+		t.Fatalf("state must be untouched, got %s / %d checkpoints / %d calls",
+			after.Status, len(after.Checkpoints), after.Counters.PhaseToolCalls)
 	}
 }
 
@@ -699,6 +725,12 @@ func TestBudgetExhaustionBlocks(t *testing.T) {
 	code, stderr := callGate(t, toolPayload(t, "Read", readInput()))
 	wantExit2(t, code, stderr, "budget")
 
+	// I5: the AskUserQuestion budget exemption applies only to the
+	// WAIT_USER decision channel — an ordinary ACTIVE question is still
+	// budget-gated (耗尽 → 检查点).
+	code, stderr = callGate(t, toolPayload(t, "AskUserQuestion", askInput("ordinary question")))
+	wantExit2(t, code, stderr, "budget")
+
 	// Control-plane exceptions: phase-submit and the checkpoint's
 	// AskUserQuestion must stay usable, or a zero budget could never reach
 	// the checkpoint where the user resolves it.
@@ -832,6 +864,11 @@ func TestWriteClassBashHeuristic(t *testing.T) {
 		"git commit -m 'x'", "git push origin main", "git -C /repo reset --hard HEAD~1",
 		"git checkout -b feature", "git rebase main", "git merge develop", "git stash",
 		"echo $(rm -rf x)", "FOO=1 rm -rf x", "true && touch done",
+		// I4: ordinary spellings that must not slip through — absolute
+		// paths, wrappers, quoted flag values.
+		"/bin/rm -f x", "/usr/bin/rm -rf /tmp/x", "/usr/bin/git commit -m x",
+		"command rm x", "command git push", "env MODE=1 rm x", "env rm x", "nohup rm x",
+		`git -C "/tmp/a repo" reset --hard`, "nohup env MODE=1 tee out.txt",
 	}
 	for _, cmd := range writes {
 		if !isWriteClassCommand(cmd) {
@@ -845,6 +882,11 @@ func TestWriteClassBashHeuristic(t *testing.T) {
 		"sed -n '1p' file.txt", "echo hello", "cat a | grep b",
 		"find . -name '*.go'", "grep -c rm notes.txt",
 		"go test ./...", "curl -s https://example.com",
+		// I4 negatives: quoting must not hide reads, wrappers must not
+		// invent writes.
+		`grep 'foo bar' file.txt`, `cat "my file.txt"`,
+		`git log --grep "fix stuff"`, "git diff HEAD~1..HEAD",
+		"env | grep PATH", "command -v rm", "nohup cat file.txt",
 	}
 	for _, cmd := range nonWrites {
 		if isWriteClassCommand(cmd) {
@@ -924,5 +966,332 @@ func TestEscapeHatchTracesViolationWhenRunActive(t *testing.T) {
 	after := reloadRun(t, "run-1")
 	if after.Counters.PhaseToolCalls != 0 || !after.Phases[0].Open {
 		t.Fatalf("hatch must not mutate state, counters=%d phases=%+v", after.Counters.PhaseToolCalls, after.Phases)
+	}
+}
+
+// M1: the hatch is armed by the exact value "1" only — "0", "false", "yes"
+// leave enforcement active.
+func TestEscapeHatchStrictValue(t *testing.T) {
+	for _, val := range []string{"0", "false", "yes", "true"} {
+		useGateEnv(t)
+		startFixRun(t, shared.BudgetLimits{})
+		setenv16(t, "SUMMONER_HOOKS_DISABLE", val)
+
+		// Pre-diagnosis Edit would be denied with enforcement active.
+		code, stderr := callGate(t, toolPayload(t, "Edit", editInput()))
+		if code != 2 {
+			t.Fatalf("SUMMONER_HOOKS_DISABLE=%q must NOT arm the hatch: exit %d, want 2", val, code)
+		}
+		if !strings.Contains(stderr, "diagnosis") {
+			t.Fatalf("SUMMONER_HOOKS_DISABLE=%q: stderr %q must show enforcement", val, stderr)
+		}
+		if evs := readGateTrace(t, "run-1"); len(evs) != 0 {
+			t.Fatalf("SUMMONER_HOOKS_DISABLE=%q must not trace, got %v", val, traceTypes(evs))
+		}
+	}
+}
+
+// --- review round 1: I1 — run discovery fails closed on unreadable state ------
+
+func TestSessionDirUnreadableFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block reads")
+	}
+	useGateEnv(t)
+	startFixRun(t, shared.BudgetLimits{})
+
+	dir := filepath.Join(os.Getenv("SUMMONER_STATE_DIR"), shared.ProjectKey(), gateSession)
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	// An unreadable session dir must not look like "no runs" (pass-through);
+	// it is a fail-closed deny.
+	code, stderr := callGate(t, toolPayload(t, "Edit", editInput()))
+	wantExit2(t, code, stderr, "unreadable")
+}
+
+// --- review round 1: I2 — recall-aware next-phase sequencing -------------------
+
+// TestNextPhaseAfterRecall — the reviewer's repro: recall to context, re-accept
+// it, and the next skill must open DIAGNOSIS (its visit is unsettled: recalled),
+// not reproduce.
+func TestNextPhaseAfterRecall(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	acceptPhase(t, r, "context")
+
+	// Diagnosis submitted, then recalled: the recall targets the most recent
+	// accepted phase (context), and diagnosis's visit is marked recalled.
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	cpD, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	if err := r.MarkDisplayed(cpD.ID, shared.CheckpointContentDigest(cpD, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cpD.ID, shared.DecisionRecall); err != nil {
+		t.Fatalf("RecordDecision(RECALL): %v", err)
+	}
+
+	// Re-accept context (reopened by the recall).
+	cpC, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	if err != nil {
+		t.Fatalf("SubmitPhase(context): %v", err)
+	}
+	if err := r.MarkDisplayed(cpC.ID, shared.CheckpointContentDigest(cpC, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cpC.ID, shared.DecisionContinue); err != nil {
+		t.Fatalf("RecordDecision(CONTINUE): %v", err)
+	}
+
+	code, stderr := callGate(t, toolPayload(t, "Skill", skillInput("project-diagnosis-skill", "")))
+	if code != 0 {
+		t.Fatalf("post-recall skill: exit %d, want 0 (stderr %q)", code, stderr)
+	}
+	after := reloadRun(t, "run-1")
+	last := after.Phases[len(after.Phases)-1]
+	if !last.Open || last.ID != "diagnosis" {
+		t.Fatalf("next phase after recall-to-context must be diagnosis, got %+v (all: %+v)", last, after.Phases)
+	}
+}
+
+// TestSkippedPhaseSequencing — a skipped phase is settled; sequencing moves on.
+func TestSkippedPhaseSequencing(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionSkip); err != nil {
+		t.Fatalf("RecordDecision(SKIP): %v", err)
+	}
+
+	code, _ := callGate(t, toolPayload(t, "Skill", skillInput("project-diagnosis-skill", "")))
+	if code != 0 {
+		t.Fatalf("skill after skip: exit %d, want 0", code)
+	}
+	after := reloadRun(t, "run-1")
+	if len(after.Phases) != 2 || !after.Phases[1].Open || after.Phases[1].ID != "diagnosis" {
+		t.Fatalf("after SKIP, next phase must be diagnosis, got %+v", after.Phases)
+	}
+}
+
+// --- review round 1: I3 — post-game writes without diagnosis -------------------
+
+func TestPostGameWriteWithoutDiagnosis(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	// Emergency stop: minimal exit journal must still be writable.
+	if err := r.RecordDecision(cp.ID, shared.DecisionStop); err != nil {
+		t.Fatalf("RecordDecision(STOP): %v", err)
+	}
+	if r.Status != shared.StatusPostGamePending {
+		t.Fatalf("status = %s, want POST_GAME_PENDING", r.Status)
+	}
+
+	code, stderr := callGate(t, toolPayload(t, "Write", writeInput()))
+	if code != 0 {
+		t.Fatalf("exit-journal Write in POST_GAME_PENDING (no accepted diagnosis): exit %d, want 0 (stderr %q)", code, stderr)
+	}
+}
+
+// --- review round 1: I6 — intent events precede any mutation -------------------
+
+func TestAgentTraceFailureDeniesWithoutMutation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block reads")
+	}
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	env := shared.Envelope{
+		SchemaVersion: "2",
+		RunID:         "run-1",
+		ReviewID:      "rev-1",
+		ArtifactSet:   []shared.ArtifactRef{{Path: "fix.md", Digest: "ddd"}},
+	}
+	if _, err := r.RequestReview(env); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+
+	// Break the trace dir: the intent append must fail BEFORE any state
+	// mutation — the review stays PREPARED, counters untouched.
+	keyDir := filepath.Join(os.Getenv("SUMMONER_TRACE_DIR"), shared.ProjectKey())
+	if err := os.MkdirAll(keyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(keyDir, 0o000); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(keyDir, 0o755) })
+
+	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	wantExit2(t, code, stderr, "")
+	after := reloadRun(t, "run-1")
+	if after.Reviews[0].Status != shared.ReviewPrepared {
+		t.Fatalf("failed intent append must not start the review, status = %s", after.Reviews[0].Status)
+	}
+	if after.Counters.Delegations != 0 || after.Counters.PhaseToolCalls != 0 {
+		t.Fatalf("failed intent append must not consume counters, got %+v", after.Counters)
+	}
+
+	// Repair: the same call now succeeds end-to-end.
+	if err := os.Chmod(keyDir, 0o755); err != nil {
+		t.Fatalf("chmod repair: %v", err)
+	}
+	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	if code != 0 {
+		t.Fatalf("retry after repair: exit %d, want 0", code)
+	}
+	after = reloadRun(t, "run-1")
+	if after.Reviews[0].Status != shared.ReviewRunning || after.Counters.Delegations != 1 {
+		t.Fatalf("retry after repair: review=%s delegations=%d", after.Reviews[0].Status, after.Counters.Delegations)
+	}
+	if got := traceTypes(readGateTrace(t, "run-1")); len(got) != 2 || got[0] != shared.EventToolStarted || got[1] != shared.EventDelegationStarted {
+		t.Fatalf("trace types = %v, want [tool.started delegation.started] (failed attempt must have appended nothing)", got)
+	}
+}
+
+// --- review round 1: I7 — malformed known-tool payloads deny -------------------
+
+func TestGateMalformedKnownToolPayloads(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	acceptPhase(t, r, "context")
+	acceptPhase(t, r, "diagnosis") // writes legal now — only shape can deny
+
+	cases := []struct {
+		name      string
+		toolName  string
+		toolInput map[string]interface{}
+	}{
+		{"Bash command missing", "Bash", map[string]interface{}{}},
+		{"Bash command numeric", "Bash", map[string]interface{}{"command": 42}},
+		{"Bash command null", "Bash", map[string]interface{}{"command": nil}},
+		{"Edit without file_path", "Edit", map[string]interface{}{"old_string": "a", "new_string": "b"}},
+		{"Write file_path numeric", "Write", map[string]interface{}{"file_path": 42, "content": "x"}},
+		{"NotebookEdit without notebook_path", "NotebookEdit", map[string]interface{}{"new_source": "x"}},
+		{"Agent without prompt", "Agent", map[string]interface{}{"subagent_type": "worker"}},
+		{"Skill numeric", "Skill", map[string]interface{}{"skill": 42}},
+		{"AskUserQuestion questions not array", "AskUserQuestion", map[string]interface{}{"questions": "yes?"}},
+		{"AskUserQuestion question not string", "AskUserQuestion", map[string]interface{}{"questions": []interface{}{map[string]interface{}{"header": "h"}}}},
+	}
+	for _, tc := range cases {
+		code, stderr := callGate(t, toolPayload(t, tc.toolName, tc.toolInput))
+		if code != 2 {
+			t.Errorf("%s: exit %d, want 2 (fail-closed); stderr %q", tc.name, code, stderr)
+		}
+	}
+
+	// Empty tool_name denies even though nothing else is known about the call.
+	raw := mustJSONStr(t, map[string]interface{}{
+		"session_id": gateSession, "tool_use_id": "tu-x", "tool_input": map[string]interface{}{},
+	})
+	if code, _ := callGate(t, raw); code != 2 {
+		t.Fatalf("empty tool_name: exit %d, want 2", code)
+	}
+
+	// Unknown tool NAMES keep the observe-and-allow policy.
+	code, _ := callGate(t, toolPayload(t, "FancyMcpTool", map[string]interface{}{"whatever": 1}))
+	if code != 0 {
+		t.Fatalf("unknown tool name with arbitrary shape: exit %d, want 0", code)
+	}
+}
+
+// --- review round 1: M2 — shape and workflow coverage ---------------------------
+
+func TestNotebookEditGate(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	acceptPhase(t, r, "context")
+
+	code, stderr := callGate(t, toolPayload(t, "NotebookEdit", notebookInput()))
+	wantExit2(t, code, stderr, "diagnosis")
+
+	acceptPhase(t, r, "diagnosis")
+	code, _ = callGate(t, toolPayload(t, "NotebookEdit", notebookInput()))
+	if code != 0 {
+		t.Fatalf("NotebookEdit after diagnosis accepted: exit %d, want 0", code)
+	}
+}
+
+func TestNewWorkflowSequence(t *testing.T) {
+	useGateEnv(t)
+	r := startRunWF(t, "new", shared.BudgetLimits{})
+
+	// The diagnosis iron law is fix|debug only: new allows ACTIVE writes.
+	code, _ := callGate(t, toolPayload(t, "Write", writeInput()))
+	if code != 0 {
+		t.Fatalf("new workflow ACTIVE Write: exit %d, want 0", code)
+	}
+
+	code, _ = callGate(t, toolPayload(t, "Skill", skillInput("project-context-skill", "")))
+	if code != 0 {
+		t.Fatalf("first skill: exit %d, want 0", code)
+	}
+	after := reloadRun(t, "run-1")
+	if len(after.Phases) != 1 || after.Phases[0].ID != "context" {
+		t.Fatalf("new workflow must open context first, got %+v", after.Phases)
+	}
+	acceptPhase(t, r, "context")
+
+	code, _ = callGate(t, toolPayload(t, "Skill", skillInput("project-requirements-skill", "")))
+	if code != 0 {
+		t.Fatalf("second skill: exit %d, want 0", code)
+	}
+	after = reloadRun(t, "run-1")
+	if last := after.Phases[len(after.Phases)-1]; !last.Open || last.ID != "requirements" {
+		t.Fatalf("second phase must be requirements, got %+v", after.Phases)
+	}
+}
+
+func TestDebugWorkflowSequence(t *testing.T) {
+	useGateEnv(t)
+	r := startRunWF(t, "debug", shared.BudgetLimits{})
+
+	code, _ := callGate(t, toolPayload(t, "Skill", skillInput("project-context-skill", "")))
+	if code != 0 {
+		t.Fatalf("first skill: exit %d, want 0", code)
+	}
+	acceptPhase(t, r, "context")
+
+	code, _ = callGate(t, toolPayload(t, "Skill", skillInput("project-diagnosis-skill", "")))
+	if code != 0 {
+		t.Fatalf("second skill: exit %d, want 0", code)
+	}
+	after := reloadRun(t, "run-1")
+	if last := after.Phases[len(after.Phases)-1]; !last.Open || last.ID != "diagnosis" {
+		t.Fatalf("debug workflow second phase must be diagnosis, got %+v", after.Phases)
+	}
+
+	// debug carries the diagnosis iron law: writes blocked until accepted.
+	code, stderr := callGate(t, toolPayload(t, "Edit", editInput()))
+	wantExit2(t, code, stderr, "diagnosis")
+	acceptPhase(t, r, "diagnosis")
+	code, _ = callGate(t, toolPayload(t, "Edit", editInput()))
+	if code != 0 {
+		t.Fatalf("Edit after diagnosis accepted: exit %d, want 0", code)
 	}
 }

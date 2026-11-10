@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -445,9 +446,10 @@ func LoadRun(runID string) (*RunState, error) {
 
 // SessionRuns loads every run state recorded for one session, ordered by run
 // id for deterministic resolution. The PreToolUse gate resolves "the session's
-// live runs" through this helper. An unreadable or unparseable run file is an
-// error (fail-closed): corrupted state must never silently shrink the set of
-// runs a gate could enforce.
+// live runs" through this helper. Only a missing session directory means "no
+// runs yet": any other read error — an unreadable directory, an unparseable
+// run file — is an error (fail-closed), because corrupted state must never
+// silently shrink (or empty) the set of runs a gate could enforce.
 func SessionRuns(sessionID string) ([]*RunState, error) {
 	if !validID(sessionID) {
 		return nil, fmt.Errorf("session runs: invalid session id %q", sessionID)
@@ -456,20 +458,30 @@ func SessionRuns(sessionID string) ([]*RunState, error) {
 	if err != nil {
 		return nil, err
 	}
-	matches, err := filepath.Glob(filepath.Join(root, ProjectKey(), sessionID, "*.json"))
+	dir := filepath.Join(root, ProjectKey(), sessionID)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, err
+		if os.IsNotExist(err) {
+			return nil, nil // no runs recorded for this session yet
+		}
+		return nil, fmt.Errorf("session runs: reading %s: %w", dir, err)
 	}
-	sort.Strings(matches)
-	runs := make([]*RunState, 0, len(matches))
-	for _, m := range matches {
-		b, err := os.ReadFile(m)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names) // deterministic order for ambiguity reporting
+	runs := make([]*RunState, 0, len(names))
+	for _, name := range names {
+		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return nil, err
 		}
 		var r RunState
 		if err := json.Unmarshal(b, &r); err != nil {
-			return nil, fmt.Errorf("session runs: %s is unparseable: %w", m, err)
+			return nil, fmt.Errorf("session runs: %s is unparseable: %w", name, err)
 		}
 		runs = append(runs, &r)
 	}
