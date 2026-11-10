@@ -14,7 +14,7 @@ Each scorer owns one slice of spec §7 and answers with a STATUS, not points:
 | Scorer | Owns |
 |---|---|
 | `scorers/deterministic/schema-check.sh` | v2 event-set membership (the 38-type allow-list mirrored from `hooks/shared/trace.go`), line shape, `workflow.started` first, terminal exactly-once discipline |
-| `scorers/deterministic/review-evidence-check.sh` | reviewer identity, running-review evidence, dangling verdicts, rubber-stamp PASS, evidence-id joins, per-criterion completeness, 同 digest 复用 |
+| `scorers/deterministic/review-evidence-check.sh` | reviewer identity, running-review evidence, dangling verdicts, rubber-stamp PASS, evidence-id joins, per-criterion completeness, 同 digest 复用. Reach note: on real runtime traces (thin payloads) the reuse audit's mismatch branch is UNREACHABLE — the content triple is always `(digest, (), ())` because criteria/scope are prepared-side enrichments the runtime does not emit — so the real-trace audit degrades to digest grouping + a reuse note; same-triple enforcement stays registration-side (the reducer's envelope validation) |
 | `scorers/deterministic/user-gate-check.sh` | 展示绑定 / 决策绑定 (AskUserQuestion-only decisions) / nonce / 幂等 / stale 渲染 / ride-along binding (criterion drops, budget) |
 | `scorers/deterministic/recovery-check.sh` | OUTCOME_UNKNOWN probe resolutions, recovery checkpoints on bad outcomes, review crash recovery without producer re-runs, recall semantics |
 | `scorers/deterministic/post-game-check.sh` | CLOSED only after `post_game.completed`; emergency stop stays POST_GAME_PENDING |

@@ -840,4 +840,26 @@ func TestSubagentStopBlockedResultWithoutEvidencePasses(t *testing.T) {
 	if disk.Status != shared.StatusWaitUser {
 		t.Fatalf("status = %s, want WAIT_USER at the review-result checkpoint", disk.Status)
 	}
+
+	// T12 fix-back 3 (F7), negative side of the digest mirror: a reason-code
+	// BLOCKED verdict carries NO artifact_digest key (nothing was claimed),
+	// no verdict and no evidence ids — while envelope_digest (registration
+	// identity, set at RequestReview) is still mirrored.
+	verdicts := eventsOfType(readTrace(t, "run-1"), shared.EventReviewVerdict)
+	if len(verdicts) != 1 {
+		t.Fatalf("review.verdict events = %d, want 1", len(verdicts))
+	}
+	pl := verdicts[0].Payload
+	if _, ok := pl["artifact_digest"]; ok {
+		t.Errorf("BLOCKED verdict carries artifact_digest = %#v — a reason-code block claims no artifact", pl["artifact_digest"])
+	}
+	if _, ok := pl["verdict"]; ok {
+		t.Errorf("BLOCKED verdict carries verdict = %#v — a reason code must never pose as a quality conclusion", pl["verdict"])
+	}
+	if _, ok := pl["evidence_tool_call_ids"]; ok {
+		t.Errorf("BLOCKED verdict carries evidence_tool_call_ids = %#v — nothing was reconciled to claim", pl["evidence_tool_call_ids"])
+	}
+	if env, ok := pl["envelope_digest"].(string); !ok || env == "" {
+		t.Errorf("BLOCKED verdict envelope_digest = %#v, want a non-empty registration digest", pl["envelope_digest"])
+	}
 }

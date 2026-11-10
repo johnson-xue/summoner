@@ -78,7 +78,7 @@ displayed-before-decided always.
 
 ## Harness
 
-- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (30
+- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (31
   fixtures × 5 scorers), adversarial message assertions, and sidecar /
   baseline self-checks. Run it in CI and after any scorer/fixture edit.
 - `scripts/score-trace.sh --trace <file>` — scores one trace and writes the

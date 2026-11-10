@@ -176,6 +176,7 @@ MISMATCH=$((MISMATCH + MSG_BAD))
 
 echo "── layer 3: sidecar + baseline self-check (throwaway copies)"
 SELF_BAD=0
+SELF_RUN_START=$RUN
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cp "$FIXTURES_DIR/valid-full-run.jsonl" "$TMP/run-a.jsonl"
@@ -265,7 +266,7 @@ fi
 RUN=$((RUN + 1))
 
 MISMATCH=$((MISMATCH + SELF_BAD))
-[[ $SELF_BAD -eq 0 ]] && echo "✓ sidecar + baseline self-checks green (8 assertions)"
+[[ $SELF_BAD -eq 0 ]] && echo "✓ sidecar + baseline self-checks green ($((RUN - SELF_RUN_START)) assertions)"
 
 if [[ $MISMATCH -eq 0 ]]; then
   echo "✓ trace-fixture matrix green: $RUN assertions across $TOTAL_MATRIX fixtures (5 scorers + messages + sidecar self-checks)"
