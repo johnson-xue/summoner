@@ -157,7 +157,7 @@ additions); anything else is a traced `phase_submitted.rejected`. Dev routes
 (fix round): retired keys, aliases, nulls, duplicate keys, exact CheckDef
 entry shape, unique check ids, trust enum, recomputed digests, and the
 mechanical/judgment citation split — a validator-invalid manifest fails
-closed as authority. The `phases.<id>.skill` binding loads in BOTH documented
+closed as authority. The `phases.<verb>.skill` binding loads in BOTH documented
 forms (string and `{default, alternate}`) and the parsed binding is retained
 on the runtime projection for consumers; anything beyond the two forms
 rejects, while provider-name semantics stay the CLI validator's authority.
@@ -167,7 +167,11 @@ providers") and an empty or absent `phases` map ("missing_field: phases must
 be a non-empty capability map") exactly as the CLI rejects them; the shapes
 are pinned as twins in both suites. Tolerated divergences: `goal`/`scope`/
 `expected` are not required on criteria, `rubric` and the `check_ids` listing
-are not required, and `env_allow` names are not pattern-checked. A missing
+are not required, and `env_allow` names are not pattern-checked; one shape
+away, a bare capability entry (`phases: {requirements: {}}` — an empty
+mapping) is `invalid_phase` to the CLI validator while the loader treats it
+as unbound (the runtime consumes nothing from such an entry). Do not treat
+the alignment class as enumerated beyond this list. A missing
 manifest is the no-manifest flow (defaults only); an **unparseable** manifest
 fails closed on every path.
 
