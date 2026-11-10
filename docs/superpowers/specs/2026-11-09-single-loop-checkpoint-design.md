@@ -195,7 +195,7 @@ reviewer 返回：`review_id`、`artifact_digest`、run_status: `COMPLETED|BLOCK
 
 ### 单一 trace schema
 
-无 mode 字段。公共字段含 schema_version/run_id/session_id/project_root_hash/seq/timestamp/source/**prompt_id/tool_use_id（平台关联键）**。事件：workflow.started/ended/aborted；phase.started/closed；phase_submitted.rejected；checkpoint.opened/**displayed**/decided（绑定 AskUserQuestion 调用 id）；recall.applied；tool.started/result/failed/**outcome_unknown/resolved**；check.result（标准覆盖+原始证据摘要）；review.prepared/started/verdict/failed/blocked/superseded；delegation.started/completed/failed、parallel.opened/joined；agent.telemetry（final_request_tokens 口径声明）；post_game.*。大证据本机存、trace 记路径+摘要；格式或缺关键控制事件=协议失败。
+无 mode 字段。公共字段含 schema_version/run_id/session_id/project_root_hash/seq/timestamp/source/**prompt_id/tool_use_id（平台关联键）**。事件：workflow.started/ended/aborted；phase.started/closed；phase_submitted.rejected；checkpoint.opened/**displayed**/decided（绑定 AskUserQuestion 调用 id）/decision_rejected（裁决尝试校验失败：非平台形状/错 checkpoint/超时自动续答/非法选择）；recall.applied；tool.started/result/failed/**outcome_unknown/resolved**；check.result（标准覆盖+原始证据摘要）；review.prepared/started/verdict/failed/blocked/superseded；delegation.started/completed/failed、parallel.opened/joined；agent.telemetry（final_request_tokens 口径声明）；hooks.disabled（SUMMONER_HOOKS_DISABLE 逃生舱在活动运行上使用=契约违例）；post_game.*。大证据本机存、trace 记路径+摘要；格式或缺关键控制事件=协议失败。
 
 ### 切换顺序
 
