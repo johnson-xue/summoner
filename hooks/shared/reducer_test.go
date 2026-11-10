@@ -78,6 +78,35 @@ func phaseByID(t *testing.T, r *RunState, id string) PhaseState {
 	return PhaseState{}
 }
 
+// lastVisit returns the LATEST visit of a phase id — recall (M11) appends a
+// fresh visit instead of reopening in place, so "the phase's state" is the
+// last entry with that id.
+func lastVisit(t *testing.T, r *RunState, id string) PhaseState {
+	t.Helper()
+	var last PhaseState
+	found := false
+	for _, p := range r.Phases {
+		if p.ID == id {
+			last = p
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("phase %s not found in %+v", id, r.Phases)
+	}
+	return last
+}
+
+func visitCount(r *RunState, id string) int {
+	n := 0
+	for _, p := range r.Phases {
+		if p.ID == id {
+			n++
+		}
+	}
+	return n
+}
+
 // --- legality matrix --------------------------------------------------------
 
 func TestIllegalTransitions(t *testing.T) {
@@ -263,7 +292,9 @@ func TestOutcomeUnknownCrashRecovery(t *testing.T) {
 		t.Errorf("status after resolve = %s, want ACTIVE", r2.Status)
 	}
 
-	// All three probe branches are legal (spec §5).
+	// All three probe branches are legal (spec §5). accepted restores the
+	// prior status directly; failed/indeterminate open a recovery checkpoint
+	// (B3) that the user must decide before the run resumes.
 	for i, want := range []string{"accepted", "failed", "indeterminate"} {
 		id := fmt.Sprintf("tu-%d", i+2)
 		r2.MarkOutcomeUnknown(id)
@@ -277,8 +308,23 @@ func TestOutcomeUnknownCrashRecovery(t *testing.T) {
 		if !e.Resolved || e.Outcome != want {
 			t.Errorf("entry = %+v, want resolved/%s", e, want)
 		}
-		if r2.Status != StatusActive {
-			t.Errorf("branch %s: status after resolve = %s, want ACTIVE", want, r2.Status)
+		switch want {
+		case OutcomeAccepted:
+			if r2.Status != StatusActive {
+				t.Fatalf("branch %s: status after resolve = %s, want ACTIVE", want, r2.Status)
+			}
+		default:
+			if r2.Status != StatusWaitUser {
+				t.Fatalf("branch %s: status after resolve = %s, want WAIT_USER (recovery checkpoint)", want, r2.Status)
+			}
+			if cp := r2.CurrentCheckpoint(); cp == nil || cp.Kind != CheckpointRecovery {
+				t.Fatalf("branch %s: want an open recovery checkpoint, got %+v", want, cp)
+			}
+			displayCurrent(t, r2)
+			decideCurrent(t, r2, DecisionContinue)
+			if r2.Status != StatusActive {
+				t.Fatalf("branch %s: status after recovery CONTINUE = %s, want ACTIVE", want, r2.Status)
+			}
 		}
 	}
 
@@ -294,8 +340,17 @@ func TestOutcomeUnknownCrashRecovery(t *testing.T) {
 		t.Error("unknown toolUseID: want error, got nil")
 	}
 
-	// Two unknowns: the run stays OUTCOME_UNKNOWN until the last one resolves.
-	r2.ResolveOutcome("tu-bad", "indeterminate")
+	// Close tu-bad's episode through its recovery checkpoint, then a clean
+	// two-unknown episode: the run stays OUTCOME_UNKNOWN until the last one
+	// resolves.
+	if err := r2.ResolveOutcome("tu-bad", "indeterminate"); err != nil {
+		t.Fatalf("ResolveOutcome(tu-bad): %v", err)
+	}
+	displayCurrent(t, r2)
+	decideCurrent(t, r2, DecisionContinue)
+	if r2.Status != StatusActive {
+		t.Fatalf("status after recovery CONTINUE = %s, want ACTIVE", r2.Status)
+	}
 	r2.MarkOutcomeUnknown("tu-a")
 	r2.MarkOutcomeUnknown("tu-b")
 	if err := r2.ResolveOutcome("tu-a", "accepted"); err != nil {
@@ -304,7 +359,7 @@ func TestOutcomeUnknownCrashRecovery(t *testing.T) {
 	if r2.Status != StatusOutcomeUnknown {
 		t.Errorf("status = %s while one unknown remains, want OUTCOME_UNKNOWN", r2.Status)
 	}
-	if err := r2.ResolveOutcome("tu-b", "indeterminate"); err != nil {
+	if err := r2.ResolveOutcome("tu-b", "accepted"); err != nil {
 		t.Fatalf("ResolveOutcome(tu-b): %v", err)
 	}
 	if r2.Status != StatusActive {
@@ -359,6 +414,10 @@ func TestBudgetCounting(t *testing.T) {
 	if exhausted, _ := r.BudgetExhausted(); exhausted {
 		t.Fatal("fresh run must not be exhausted")
 	}
+	// The phase tool budget is per open phase (M1b): open one first.
+	if err := r.OpenPhase("p1"); err != nil {
+		t.Fatalf("OpenPhase(p1): %v", err)
+	}
 	r.CountToolCall()
 	if exhausted, _ := r.BudgetExhausted(); exhausted {
 		t.Fatal("1 of 2 tool calls must not exhaust the phase budget")
@@ -370,8 +429,18 @@ func TestBudgetCounting(t *testing.T) {
 	}
 
 	// Per-phase scope: opening a new phase resets the phase tool-call counter.
-	if err := r.OpenPhase("p1"); err != nil {
-		t.Fatalf("OpenPhase: %v", err)
+	cp, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"})
+	if err != nil {
+		t.Fatalf("SubmitPhase(p1): %v", err)
+	}
+	if err := r.MarkDisplayed(cp.ID, CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+		t.Fatalf("RecordDecision: %v", err)
+	}
+	if err := r.OpenPhase("p2"); err != nil {
+		t.Fatalf("OpenPhase(p2): %v", err)
 	}
 	if exhausted, _ := r.BudgetExhausted(); exhausted {
 		t.Fatal("phase tool-call budget must reset on OpenPhase")
@@ -487,16 +556,25 @@ func TestRequirementChangeLoop(t *testing.T) {
 		t.Errorf("PendingVerifications = %v, want restored", r.DevPosition.PendingVerifications)
 	}
 
-	// Direct resume path (no confirm checkpoint in between).
+	// Direct resume without a delta is the bypass M2 kills: a change may only
+	// close through its single-point confirm checkpoint.
 	r.DevPosition.CurrentTask = "mid-change cleanup"
 	if err := r.OpenRequirementChange("follow-up tweak"); err != nil {
 		t.Fatalf("OpenRequirementChange: %v", err)
 	}
-	if err := r.ResumeAfterChange(); err != nil {
-		t.Fatalf("ResumeAfterChange: %v", err)
+	if err := r.ResumeAfterChange(); err == nil {
+		t.Fatal("ResumeAfterChange without an applied delta: want error, got nil")
 	}
+	if r.Change == nil {
+		t.Fatal("the refused resume must leave the change open")
+	}
+	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "tweak"}); err != nil {
+		t.Fatalf("ApplyRequirementDelta: %v", err)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionAcceptRequirementChange)
 	if r.Status != StatusActive || r.Change != nil || r.DevPosition.CurrentTask != "mid-change cleanup" {
-		t.Errorf("direct resume: status=%s change=%v pos=%+v", r.Status, r.Change, r.DevPosition)
+		t.Errorf("after delta+accept: status=%s change=%v pos=%+v", r.Status, r.Change, r.DevPosition)
 	}
 }
 
@@ -517,8 +595,16 @@ func TestRecallReopensAcceptedPriorPhase(t *testing.T) {
 	if r.Status != StatusActive {
 		t.Errorf("status = %s, want ACTIVE", r.Status)
 	}
-	if got := phaseByID(t, r, "p2"); !got.Open {
-		t.Error("RECALL must reopen the most recent accepted prior phase (p2)")
+	// M11: the recall target keeps its history — one closed "recalled" visit
+	// plus a fresh open visit with the same id.
+	if n := visitCount(r, "p2"); n != 2 {
+		t.Fatalf("p2 has %d visits, want 2 (recalled original + fresh open)", n)
+	}
+	if first := phaseByID(t, r, "p2"); first.Open || first.Outcome != "recalled" {
+		t.Errorf("p2 first visit = %+v, want closed/recalled", first)
+	}
+	if got := lastVisit(t, r, "p2"); !got.Open || got.Outcome != "" {
+		t.Errorf("p2 latest visit = %+v, want open/undecided", got)
 	}
 	if got := phaseByID(t, r, "p3"); got.Open || got.Outcome != "recalled" {
 		t.Errorf("p3 = %+v, want closed/recalled", got)
@@ -537,6 +623,13 @@ func TestRecallReopensAcceptedPriorPhase(t *testing.T) {
 // --- persistence ------------------------------------------------------------
 
 func TestSaveLoadRoundTrip(t *testing.T) {
+	// m2: hermeticity must hold from the FIRST LoadRun — the override is set
+	// before any state read, so the missing-run probe never touches the real
+	// state directory.
+	prev := runStateDirOverride
+	runStateDirOverride = t.TempDir()
+	t.Cleanup(func() { runStateDirOverride = prev })
+
 	if _, err := LoadRun("missing-run"); !errors.Is(err, ErrRunNotFound) {
 		t.Fatalf("LoadRun(missing) = %v, want ErrRunNotFound", err)
 	}
@@ -743,13 +836,14 @@ func TestReviewFailureRoutesToCheckpoint(t *testing.T) {
 	}
 }
 
-// TestRequirementChangeFromCheckpoint pins the controller ruling: a change may
-// open at a pending checkpoint (WAIT_USER entry); ResumeAfterChange refuses
-// whenever any checkpoint awaits decision — acceptance only via
-// RecordDecision(ACCEPT_REQUIREMENT_CHANGE).
-func TestRequirementChangeFromCheckpoint(t *testing.T) {
+// TestM2RequirementChangeFromCheckpointSupersedesAndRerenders pins the M2
+// change-loop closure from a WAIT_USER entry: the pending checkpoint is
+// superseded (undecidable), the delta is reachable, and acceptance lands on a
+// fresh re-rendered checkpoint for the same phase — never straight back to
+// ACTIVE, and never a re-decision of the superseded original.
+func TestM2RequirementChangeFromCheckpointSupersedesAndRerenders(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
-	openAndSubmit(t, r, "p1", "c1")
+	cp1 := openAndSubmit(t, r, "p1", "c1") // WAIT_USER, cp-1 (PHASE, p1)
 	displayCurrent(t, r)
 
 	r.DevPosition = DevPosition{CurrentTask: "mid-phase", PendingVerifications: []string{"v1"}}
@@ -762,43 +856,98 @@ func TestRequirementChangeFromCheckpoint(t *testing.T) {
 	if r.Change.SavedPosition.CurrentTask != "mid-phase" {
 		t.Errorf("frozen position = %+v", r.Change.SavedPosition)
 	}
-	if r.Status != StatusWaitUser || r.CurrentCheckpoint() == nil {
-		t.Error("the pending checkpoint must remain owed while the change is open")
+
+	// The pending checkpoint is superseded: nothing is current, nothing is
+	// decidable — the change must be processed, not decided around.
+	if r.CurrentCheckpoint() != nil {
+		t.Fatal("a superseded checkpoint must not be CurrentCheckpoint")
+	}
+	if err := r.RecordDecision(cp1.ID, DecisionContinue); err == nil {
+		t.Fatal("decision on a superseded checkpoint: want error, got nil")
 	}
 
-	// Direct resume is refused while that checkpoint awaits decision.
-	if err := r.ResumeAfterChange(); err == nil {
-		t.Error("ResumeAfterChange with pending checkpoint: want error, got nil")
+	// The delta is reachable from the WAIT_USER entry and opens the confirm.
+	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "csv", Affected: []string{"c1"}}); err != nil {
+		t.Fatalf("ApplyRequirementDelta from WAIT_USER entry: %v", err)
+	}
+	confirm := r.CurrentCheckpoint()
+	if confirm == nil || confirm.Kind != CheckpointChangeConfirm {
+		t.Fatalf("want a pending CHANGE_CONFIRM checkpoint, got %+v", confirm)
+	}
+	if r.RequirementsVersion != 2 {
+		t.Fatalf("RequirementsVersion = %d, want 2", r.RequirementsVersion)
+	}
+	displayCurrent(t, r)
+	if err := r.RecordDecision(confirm.ID, DecisionAcceptRequirementChange); err != nil {
+		t.Fatalf("RecordDecision(ACCEPT_REQUIREMENT_CHANGE): %v", err)
 	}
 
-	// The user decides the pending checkpoint; the change stays open.
+	// Landing: the change closes, the position restores, and a fresh
+	// re-rendered checkpoint for p1 keeps the run at WAIT_USER (single-point
+	// closure — one re-render, not a phase-by-phase reopen).
+	if r.Change != nil {
+		t.Fatal("change must be closed after ACCEPT_REQUIREMENT_CHANGE")
+	}
+	if r.Status != StatusWaitUser {
+		t.Fatalf("status after accept = %s, want WAIT_USER (re-rendered checkpoint owed)", r.Status)
+	}
+	if r.DevPosition.CurrentTask != "mid-phase" {
+		t.Errorf("DevPosition = %+v, want restored position", r.DevPosition)
+	}
+	if !r.Checkpoints[0].Superseded {
+		t.Fatal("the original checkpoint must be marked Superseded")
+	}
+	rerender := r.CurrentCheckpoint()
+	if rerender == nil || rerender.ID == cp1.ID || rerender.Kind != CheckpointPhase || rerender.PhaseID != "p1" {
+		t.Fatalf("want a re-rendered PHASE checkpoint for p1, got %+v", rerender)
+	}
+	if !strings.Contains(rerender.Note, "re-rendered after requirement change v2") {
+		t.Fatalf("re-render note = %q, want the v2 marker", rerender.Note)
+	}
+	if p := phaseByID(t, r, "p1"); p.CheckpointID != rerender.ID {
+		t.Fatalf("p1.CheckpointID = %s, want the re-rendered %s", p.CheckpointID, rerender.ID)
+	}
+	if !containsID(r.Stale, "c1") {
+		t.Fatalf("Stale = %v, want c1 stale after the delta", r.Stale)
+	}
+
+	// The re-rendered checkpoint decides the phase normally.
+	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionContinue)
-	if r.Status != StatusActive || r.Change == nil {
-		t.Fatalf("after deciding p1: status=%s change=%v, want ACTIVE with change open", r.Status, r.Change)
+	if r.Status != StatusActive {
+		t.Fatalf("status after deciding the re-render = %s, want ACTIVE", r.Status)
 	}
-	// Now direct resume works and restores the frozen position.
-	if err := r.ResumeAfterChange(); err != nil {
-		t.Fatalf("ResumeAfterChange after checkpoint decided: %v", err)
+	if p := phaseByID(t, r, "p1"); p.Outcome != "accepted" {
+		t.Fatalf("p1 = %+v, want accepted via the re-rendered checkpoint", p)
 	}
-	if r.Change != nil || r.Status != StatusActive || r.DevPosition.CurrentTask != "mid-phase" {
-		t.Errorf("resume: change=%v status=%s pos=%+v", r.Change, r.Status, r.DevPosition)
-	}
+}
 
-	// A pending CHANGE_CONFIRM checkpoint also refuses direct resume:
-	// acceptance only via RecordDecision(ACCEPT_REQUIREMENT_CHANGE).
-	if err := r.OpenRequirementChange("second change"); err != nil {
+// TestM2ResumeWithoutDeltaRefused pins the killed bypass: opening a change and
+// resuming without any applied delta is refused — the only closure is the
+// single-point confirm checkpoint after a delta.
+func TestM2ResumeWithoutDeltaRefused(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	if err := r.OpenRequirementChange("no delta"); err != nil {
 		t.Fatalf("OpenRequirementChange: %v", err)
 	}
-	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "n", Affected: []string{"c1"}}); err != nil {
+	if err := r.ResumeAfterChange(); err == nil {
+		t.Fatal("ResumeAfterChange without an applied delta: want error, got nil")
+	}
+	if r.Change == nil {
+		t.Fatal("the refused resume must leave the change open")
+	}
+
+	// The sanctioned closure: delta → confirm → ACCEPT.
+	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "explicit no-op delta"}); err != nil {
 		t.Fatalf("ApplyRequirementDelta: %v", err)
 	}
-	if err := r.ResumeAfterChange(); err == nil {
-		t.Error("ResumeAfterChange with pending confirm checkpoint: want error, got nil")
+	if !r.Change.Applied {
+		t.Fatal("ApplyRequirementDelta must set Change.Applied")
 	}
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionAcceptRequirementChange)
 	if r.Change != nil || r.Status != StatusActive {
-		t.Errorf("after ACCEPT: change=%v status=%s", r.Change, r.Status)
+		t.Fatalf("after delta+accept: change=%v status=%s", r.Change, r.Status)
 	}
 }
 
@@ -933,9 +1082,11 @@ func TestStartDelegation(t *testing.T) {
 	if r.Reviews[0].Status != ReviewRunning {
 		t.Fatalf("review status = %s, want RUNNING", r.Reviews[0].Status)
 	}
-	if r.Counters.Delegations != 1 || r.Counters.PhaseToolCalls != 1 {
-		t.Fatalf("counters = %+v, want delegations=1 toolCalls=1", r.Counters)
+	if r.Counters.Delegations != 1 {
+		t.Fatalf("counters = %+v, want delegations=1", r.Counters)
 	}
+	// M1b: the phase tool-call budget charges only an OPEN phase — this run
+	// never opened one, so PhaseToolCalls stays zero through both delegations.
 	// The persisted file agrees (single Save actually happened).
 	disk, err := LoadRun("run-1")
 	if err != nil {
@@ -962,8 +1113,11 @@ func TestStartDelegation(t *testing.T) {
 	if err := r.StartDelegation("", false); err != nil {
 		t.Fatalf("StartDelegation(worker) in ACTIVE: %v", err)
 	}
-	if r.Counters.Delegations != 2 || r.Counters.PhaseToolCalls != 2 {
-		t.Fatalf("counters = %+v, want delegations=2 toolCalls=2", r.Counters)
+	if r.Counters.Delegations != 2 {
+		t.Fatalf("counters = %+v, want delegations=2", r.Counters)
+	}
+	if r.Counters.PhaseToolCalls != 0 {
+		t.Fatalf("counters = %+v, want PhaseToolCalls=0 (no open phase, M1b)", r.Counters)
 	}
 }
 
@@ -998,5 +1152,581 @@ func TestStartDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
 	if disk.Reviews[0].Status != ReviewPrepared || disk.Counters.Delegations != 0 || disk.Counters.PhaseToolCalls != 0 {
 		t.Fatalf("disk after failed Save = %s %+v — must be unchanged (PREPARED, zero counters)",
 			disk.Reviews[0].Status, disk.Counters)
+	}
+}
+
+// --- task 2.5: adversarial-review hardening ------------------------------------
+
+// TestB1DisplayBindingRejectsAlteredCheckpoint pins the B1 display binding:
+// the digest covers ALL checkpoint content (note, criteria, phase, version),
+// and a decision is accepted only when the content is byte-identical to what
+// was displayed — any post-display change demands a re-render.
+func TestB1DisplayBindingRejectsAlteredCheckpoint(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1", "c2")
+	displayCurrent(t, r)
+	cp := r.CurrentCheckpoint()
+
+	// Note edited after the display.
+	cp.Note = "amended after display"
+	err := r.RecordDecision(cp.ID, DecisionContinue)
+	if err == nil || !strings.Contains(err.Error(), "changed since display") {
+		t.Fatalf("note edited after display: err = %v, want content-changed rejection", err)
+	}
+	cp.Note = ""
+
+	// Criteria added after the display.
+	cp.CriteriaIDs = append(cp.CriteriaIDs, "c3")
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+		t.Fatal("criteria edited after display: want error, got nil")
+	}
+	cp.CriteriaIDs = cp.CriteriaIDs[:len(cp.CriteriaIDs)-1]
+
+	// Requirements version bumped after the display.
+	r.RequirementsVersion++
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err == nil {
+		t.Fatal("requirements version bump after display: want error, got nil")
+	}
+	r.RequirementsVersion--
+
+	// Untouched content still decides.
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+		t.Fatalf("unchanged checkpoint decision: %v", err)
+	}
+	if r.Status != StatusActive {
+		t.Fatalf("status = %s, want ACTIVE", r.Status)
+	}
+}
+
+// TestB2ReviewOnDemandObligation pins the B2 persisted review obligation:
+// [v] REVIEW_ON_DEMAND records an obligation and parks the run at
+// REVIEW_PENDING (not ACTIVE); the obligation blocks work until the matching
+// RequestReview consumes it, and it survives a crash.
+func TestB2ReviewOnDemandObligation(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	cp := openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	if err := r.RecordDecision(cp.ID, DecisionReviewOnDemand); err != nil {
+		t.Fatalf("RecordDecision(REVIEW_ON_DEMAND): %v", err)
+	}
+	if r.Status != StatusReviewPending {
+		t.Fatalf("status = %s, want REVIEW_PENDING (obligation recorded, not ACTIVE)", r.Status)
+	}
+	if r.ReviewObligation == nil || r.ReviewObligation.SourceCheckpointID != cp.ID || r.ReviewObligation.PhaseID != "p1" {
+		t.Fatalf("ReviewObligation = %+v, want source %s / phase p1", r.ReviewObligation, cp.ID)
+	}
+
+	// The obligation blocks work: no phase may open while it is outstanding.
+	if err := r.OpenPhase("p2"); err == nil {
+		t.Fatal("OpenPhase with an outstanding review obligation: want error, got nil")
+	}
+
+	// Requesting the review consumes the obligation and binds its source.
+	if _, err := r.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("RequestReview under obligation: %v", err)
+	}
+	if r.ReviewObligation != nil {
+		t.Fatal("RequestReview must consume the obligation")
+	}
+	if len(r.Reviews) != 1 || r.Reviews[0].Status != ReviewPrepared || r.Reviews[0].SourceCheckpointID != cp.ID {
+		t.Fatalf("reviews = %+v, want one PREPARED review carrying the source checkpoint", r.Reviews)
+	}
+
+	// Crash while the obligation is outstanding: reload, re-issue.
+	r2 := startTestRun(t, BudgetLimits{})
+	cp2 := openAndSubmit(t, r2, "p1", "c1")
+	displayCurrent(t, r2)
+	decideCurrent(t, r2, DecisionReviewOnDemand)
+	reloaded, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if reloaded.ReviewObligation == nil {
+		t.Fatal("the obligation must persist across a crash")
+	}
+	if _, err := reloaded.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("RequestReview after crash-reload: %v", err)
+	}
+	if reloaded.ReviewObligation != nil || reloaded.Reviews[0].SourceCheckpointID != cp2.ID {
+		t.Fatalf("recovered obligation = %+v, reviews = %+v", reloaded.ReviewObligation, reloaded.Reviews)
+	}
+}
+
+// TestB3RecoveryCheckpointOnFailedOrIndeterminate pins the B3 recovery
+// checkpoint: a failed or indeterminate probe never auto-restores — it opens a
+// `recovery` checkpoint whose only legal decisions are CONTINUE / RECALL /
+// STOP, and CONTINUE accepts the status quo and restores the prior.
+func TestB3RecoveryCheckpointOnFailedOrIndeterminate(t *testing.T) {
+	for _, branch := range []string{OutcomeFailed, OutcomeIndeterminate} {
+		r := startTestRun(t, BudgetLimits{})
+		openAndSubmit(t, r, "p1", "c1")
+		displayCurrent(t, r)
+		decideCurrent(t, r, DecisionContinue) // ACTIVE
+
+		r.MarkOutcomeUnknown("tu-1")
+		if err := r.ResolveOutcome("tu-1", branch); err != nil {
+			t.Fatalf("ResolveOutcome(%s): %v", branch, err)
+		}
+		if r.Status != StatusWaitUser {
+			t.Fatalf("branch %s: status = %s, want WAIT_USER (recovery checkpoint, no auto-restore)", branch, r.Status)
+		}
+		cp := r.CurrentCheckpoint()
+		if cp == nil || cp.Kind != CheckpointRecovery {
+			t.Fatalf("branch %s: want an open recovery checkpoint, got %+v", branch, cp)
+		}
+		if !strings.Contains(cp.Note, "tu-1="+branch) {
+			t.Fatalf("branch %s: recovery note %q must list each entry's outcome", branch, cp.Note)
+		}
+
+		// Only CONTINUE / RECALL / STOP are legal at a recovery checkpoint.
+		displayCurrent(t, r)
+		for _, d := range []Decision{DecisionSkip, DecisionDone, DecisionReviewOnDemand, DecisionAcceptRequirementChange} {
+			if err := r.RecordDecision(cp.ID, d); err == nil {
+				t.Fatalf("branch %s: %s at a recovery checkpoint: want error, got nil", branch, d)
+			}
+		}
+		if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+			t.Fatalf("branch %s: CONTINUE at recovery checkpoint: %v", branch, err)
+		}
+		if r.Status != StatusActive {
+			t.Fatalf("branch %s: status after CONTINUE = %s, want ACTIVE (prior restored)", branch, r.Status)
+		}
+		if r.RecoveryPrior != "" {
+			t.Fatalf("branch %s: RecoveryPrior must clear when the episode ends", branch)
+		}
+	}
+
+	// All accepted: no recovery checkpoint, direct restore.
+	r := startTestRun(t, BudgetLimits{})
+	r.MarkOutcomeUnknown("tu-ok")
+	if err := r.ResolveOutcome("tu-ok", OutcomeAccepted); err != nil {
+		t.Fatalf("ResolveOutcome(accepted): %v", err)
+	}
+	if r.Status != StatusActive {
+		t.Fatalf("all-accepted: status = %s, want direct restore to ACTIVE", r.Status)
+	}
+	if cp := r.CurrentCheckpoint(); cp != nil {
+		t.Fatalf("all-accepted must not open a checkpoint, got %+v", cp)
+	}
+}
+
+// TestB4RecoveryPriorFrozenPerEpisode pins the B4 episode prior: the restore
+// target is frozen when the episode STARTS (RecoveryPrior), so a later episode
+// never inherits an earlier one's prior, and a checkpoint pending when the
+// episode hit is not bypassed by the recovery.
+func TestB4RecoveryPriorFrozenPerEpisode(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r) // WAIT_USER with cp-1 pending
+
+	// Episode 1 starts from WAIT_USER and resolves accepted.
+	r.MarkOutcomeUnknown("tu-1")
+	if err := r.ResolveOutcome("tu-1", OutcomeAccepted); err != nil {
+		t.Fatalf("ResolveOutcome(tu-1): %v", err)
+	}
+	if r.Status != StatusWaitUser {
+		t.Fatalf("episode 1 restore: status = %s, want WAIT_USER", r.Status)
+	}
+	if cp := r.CurrentCheckpoint(); cp == nil || cp.ID != "cp-1" {
+		t.Fatalf("pending checkpoint after episode 1: %+v, want cp-1 still owed", cp)
+	}
+
+	// Leave WAIT_USER; episode 2 has two entries and starts from ACTIVE.
+	decideCurrent(t, r, DecisionContinue)
+	if r.Status != StatusActive {
+		t.Fatalf("status after deciding cp-1 = %s, want ACTIVE", r.Status)
+	}
+	r.MarkOutcomeUnknown("tu-a")
+	r.MarkOutcomeUnknown("tu-b")
+	if err := r.ResolveOutcome("tu-a", OutcomeAccepted); err != nil {
+		t.Fatalf("ResolveOutcome(tu-a): %v", err)
+	}
+	if r.Status != StatusOutcomeUnknown {
+		t.Fatalf("mid-episode: status = %s, want OUTCOME_UNKNOWN", r.Status)
+	}
+	if err := r.ResolveOutcome("tu-b", OutcomeAccepted); err != nil {
+		t.Fatalf("ResolveOutcome(tu-b): %v", err)
+	}
+	if r.Status != StatusActive {
+		t.Fatalf("episode 2 restore: status = %s, want ACTIVE (the episode's own prior, not episode 1's WAIT_USER)", r.Status)
+	}
+
+	// A FAILED episode that started at WAIT_USER must not bypass the pending
+	// checkpoint either: after the recovery checkpoint is decided, the
+	// original checkpoint resurfaces.
+	r2 := startTestRun(t, BudgetLimits{})
+	cp1 := openAndSubmit(t, r2, "p1", "c1")
+	displayCurrent(t, r2)
+	r2.MarkOutcomeUnknown("tu-f")
+	if err := r2.ResolveOutcome("tu-f", OutcomeFailed); err != nil {
+		t.Fatalf("ResolveOutcome(tu-f): %v", err)
+	}
+	displayCurrent(t, r2)
+	decideCurrent(t, r2, DecisionContinue)
+	if r2.Status != StatusWaitUser {
+		t.Fatalf("status after recovery CONTINUE = %s, want WAIT_USER (episode prior)", r2.Status)
+	}
+	if cp := r2.CurrentCheckpoint(); cp == nil || cp.ID != cp1.ID {
+		t.Fatalf("current checkpoint = %+v, want the original %s to resurface (not bypassed)", cp, cp1.ID)
+	}
+}
+
+// TestM1aRequestReviewStatusGateFirst pins the M1a reorder: the status check
+// precedes the same-envelope fast path, so a re-send never succeeds once the
+// run left REVIEW_PENDING (CLOSED / WAIT_USER / OUTCOME_UNKNOWN all refuse).
+func TestM1aRequestReviewStatusGateFirst(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	if _, err := r.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("RequestReview from ACTIVE: %v", err)
+	}
+	// Force states a PREPARED review should not authorize a re-send from.
+	for _, st := range []RunStatus{StatusClosed, StatusWaitUser, StatusOutcomeUnknown} {
+		r.Status = st
+		if _, err := r.RequestReview(testEnvelope()); err == nil {
+			t.Fatalf("same-envelope re-send with status %s: want error, got nil", st)
+		}
+	}
+	if len(r.Reviews) != 1 || r.Reviews[0].Status != ReviewPrepared {
+		t.Fatalf("refused re-sends must leave the review untouched, got %+v", r.Reviews)
+	}
+}
+
+// TestM1bCountToolCallRequiresOpenPhase pins M1b: the per-phase tool budget
+// charges only while a phase is open.
+func TestM1bCountToolCallRequiresOpenPhase(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	r.CountToolCall()
+	r.CountToolCall()
+	if r.Counters.PhaseToolCalls != 0 {
+		t.Fatalf("CountToolCall with no open phase: %d, want 0 (no-op)", r.Counters.PhaseToolCalls)
+	}
+	if err := r.OpenPhase("p1"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	r.CountToolCall()
+	if r.Counters.PhaseToolCalls != 1 {
+		t.Fatalf("CountToolCall with an open phase: %d, want 1", r.Counters.PhaseToolCalls)
+	}
+}
+
+// mustJSONStrT marshals v to a string (test-local helper name to avoid
+// clashing with the gate package's helper).
+func mustJSONStrT(t *testing.T, v interface{}) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b)
+}
+
+// TestM8ValidateRunState pins the M8 load-time validation: null, empty, wrong
+// schema, id-mismatched, enum-violating and referentially-broken state files
+// are corrupt errors — through LoadRun and SessionRuns alike.
+func TestM8ValidateRunState(t *testing.T) {
+	prev := runStateDirOverride
+	runStateDirOverride = t.TempDir()
+	t.Cleanup(func() { runStateDirOverride = prev })
+
+	if _, err := StartRun("run-1", "sess-1", "fix", BudgetLimits{}); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if _, err := LoadRun("run-1"); err != nil {
+		t.Fatalf("healthy state must load: %v", err)
+	}
+
+	// A healthy run to mutate into each corruption variant.
+	healthy := func() *RunState {
+		x, err := LoadRun("run-1")
+		if err != nil {
+			t.Fatalf("LoadRun base: %v", err)
+		}
+		return x
+	}
+	withID := func(id string, mutate func(*RunState)) string {
+		x := healthy()
+		x.RunID = id
+		if mutate != nil {
+			mutate(x)
+		}
+		return mustJSONStrT(t, x)
+	}
+	old := healthy()
+	old.SchemaVersion = "1"
+	cases := []struct {
+		name   string
+		fileID string
+		body   string
+	}{
+		{"null file", "run-null", "null"},
+		{"empty object", "run-empty", "{}"},
+		{"old schema version", "run-old", mustJSONStrT(t, old)},
+		{"run id mismatch", "run-mism", withID("run-mism", func(x *RunState) { x.RunID = "run-somewhere-else" })},
+		{"empty session id", "run-sess", withID("run-sess", func(x *RunState) { x.SessionID = "" })},
+		{"empty workflow", "run-wf", withID("run-wf", func(x *RunState) { x.Workflow = "" })},
+		{"status outside enum", "run-st", withID("run-st", func(x *RunState) { x.Status = RunStatus("PAUSED") })},
+		{"dangling checkpoint reference", "run-dangle", withID("run-dangle", func(x *RunState) {
+			x.Phases = append(x.Phases, PhaseState{ID: "p9", CheckpointID: "cp-999"})
+		})},
+	}
+	for _, tc := range cases {
+		p := filepath.Join(dir, tc.fileID+".json")
+		if err := os.WriteFile(p, []byte(tc.body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", tc.name, err)
+		}
+		if _, err := LoadRun(tc.fileID); err == nil || !strings.Contains(err.Error(), "corrupt") {
+			t.Errorf("%s: LoadRun = %v, want corrupt-state error", tc.name, err)
+		}
+		if _, err := SessionRuns("sess-1"); err == nil {
+			t.Errorf("%s: SessionRuns must fail closed on a corrupt session file", tc.name)
+		}
+		if err := os.Remove(p); err != nil {
+			t.Fatalf("remove %s: %v", p, err)
+		}
+	}
+
+	// The session loads again once the corrupt files are gone.
+	if runs, err := SessionRuns("sess-1"); err != nil || len(runs) != 1 {
+		t.Fatalf("SessionRuns after cleanup = %v, %v; want 1 run, nil", runs, err)
+	}
+}
+
+// TestM9CommitRollsBackOnSaveFailure pins the M9 commit pattern: a failed
+// Save leaves the in-memory state exactly where it was, so a retry after
+// repair takes the real path — it cannot masquerade as idempotent success.
+func TestM9CommitRollsBackOnSaveFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block writes")
+	}
+	r := startTestRun(t, BudgetLimits{})
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+
+	if _, err := r.RequestReview(testEnvelope()); err == nil {
+		t.Fatal("RequestReview with an unwritable state dir must fail")
+	}
+	if len(r.Reviews) != 0 || r.Status != StatusActive {
+		t.Fatalf("memory after failed Save: reviews=%d status=%s — commit must roll back", len(r.Reviews), r.Status)
+	}
+
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod repair: %v", err)
+	}
+	if _, err := r.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("retry after repair: %v", err)
+	}
+	if len(r.Reviews) != 1 || r.Reviews[0].Status != ReviewPrepared {
+		t.Fatalf("reviews after retry = %+v, want one PREPARED", r.Reviews)
+	}
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(disk.Reviews) != 1 || disk.Status != StatusReviewPending {
+		t.Fatalf("disk after retry = %+v / %s — the retry must persist for real", disk.Reviews, disk.Status)
+	}
+}
+
+// TestM10StaleClearedOnReaccept pins M10: a criterion that went stale regains
+// validity when its phase is redone and re-accepted at a checkpoint.
+func TestM10StaleClearedOnReaccept(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue) // c1 accepted
+
+	// A requirement delta marks c1 stale.
+	if err := r.OpenRequirementChange("format change"); err != nil {
+		t.Fatalf("OpenRequirementChange: %v", err)
+	}
+	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "csv", Affected: []string{"c1"}}); err != nil {
+		t.Fatalf("ApplyRequirementDelta: %v", err)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionAcceptRequirementChange)
+	if !containsID(r.Stale, "c1") {
+		t.Fatalf("Stale = %v, want c1 stale after the delta", r.Stale)
+	}
+
+	// Redo p1 (recall from p2's checkpoint) and re-accept it.
+	openAndSubmit(t, r, "p2", "c2")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionRecall)
+	sub := PhaseSubmission{
+		PhaseID:     "p1",
+		Summary:     "p1 redone",
+		CriteriaIDs: []string{"c1"},
+		Artifacts:   []ArtifactRef{{Path: "p1.md", Digest: "d2", Kind: "doc"}},
+	}
+	cp, err := r.SubmitPhase(sub)
+	if err != nil {
+		t.Fatalf("resubmit p1: %v", err)
+	}
+	if err := r.MarkDisplayed(cp.ID, CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, DecisionContinue); err != nil {
+		t.Fatalf("RecordDecision(p1 redo): %v", err)
+	}
+	if containsID(r.Stale, "c1") {
+		t.Fatalf("Stale = %v — re-accepting the phase must clear its own criteria", r.Stale)
+	}
+	// M10 is selective: p2's criterion was staled by the recall, not re-accepted.
+	if !containsID(r.Stale, "c2") {
+		t.Fatalf("Stale = %v, want c2 still stale (recall propagation)", r.Stale)
+	}
+}
+
+// TestM11RecallAppendsNewVisit pins M11: recall keeps the old visit (marked
+// recalled) and appends a fresh open visit of the same id; the checkpoint
+// history stays complete and "the phase" resolves to the latest visit.
+func TestM11RecallAppendsNewVisit(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	for _, id := range []string{"p1", "p2"} {
+		openAndSubmit(t, r, id, "c-"+id)
+		displayCurrent(t, r)
+		decideCurrent(t, r, DecisionContinue)
+	}
+	cp3 := openAndSubmit(t, r, "p3", "c-p3")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionRecall)
+
+	if n := visitCount(r, "p2"); n != 2 {
+		t.Fatalf("p2 visits = %d, want 2 (old kept + fresh appended)", n)
+	}
+	if got := lastVisit(t, r, "p2"); !got.Open || got.Outcome != "" || got.ClosedAt != "" {
+		t.Fatalf("p2 latest visit = %+v, want open/undecided", got)
+	}
+	if got := phaseByID(t, r, "p2"); got.Open || got.Outcome != "recalled" {
+		t.Fatalf("p2 original visit = %+v, want closed/recalled", got)
+	}
+	// The checkpoint history is complete: all three checkpoints remain.
+	if len(r.Checkpoints) != 3 || r.Checkpoints[2].ID != cp3.ID {
+		t.Fatalf("checkpoints = %+v, want all three kept", r.Checkpoints)
+	}
+	if len(r.Recalls) != 1 || r.Recalls[0].TargetPhaseID != "p2" || r.Recalls[0].FromPhaseID != "p3" {
+		t.Fatalf("recalls = %+v", r.Recalls)
+	}
+	if ph := r.openPhaseState(); ph == nil || ph.ID != "p2" {
+		t.Fatalf("open phase = %+v, want the fresh p2 visit", ph)
+	}
+}
+
+// TestM12BlockedCompletedExclusivity pins M12: BLOCKED must not pose as a
+// quality verdict and COMPLETED must not carry a reason code — both are
+// protocol errors routed through the ReviewFailed recovery path.
+func TestM12BlockedCompletedExclusivity(t *testing.T) {
+	pendingReview := func(t *testing.T) *RunState {
+		t.Helper()
+		r := startTestRun(t, BudgetLimits{})
+		openAndSubmit(t, r, "p1", "c1")
+		displayCurrent(t, r)
+		decideCurrent(t, r, DecisionContinue)
+		if _, err := r.RequestReview(testEnvelope()); err != nil {
+			t.Fatalf("RequestReview: %v", err)
+		}
+		return r
+	}
+
+	// BLOCKED with a quality verdict: protocol error.
+	r := pendingReview(t)
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunBlocked, ReasonCode: "L3", Verdict: VerdictPass}); err == nil {
+		t.Fatal("BLOCKED with a verdict: want protocol error, got nil")
+	}
+	if r.Reviews[0].Status != ReviewFailed {
+		t.Fatalf("review = %s, want FAILED", r.Reviews[0].Status)
+	}
+	if r.Status != StatusWaitUser || r.CurrentCheckpoint() == nil || r.CurrentCheckpoint().Kind != CheckpointReviewResult {
+		t.Fatalf("protocol error must route to a REVIEW_RESULT checkpoint, status=%s cp=%+v", r.Status, r.CurrentCheckpoint())
+	}
+
+	// COMPLETED with a reason code: protocol error.
+	r2 := pendingReview(t)
+	if err := r2.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass, ReasonCode: "leftover"}); err == nil {
+		t.Fatal("COMPLETED with a reason_code: want protocol error, got nil")
+	}
+	if r2.Reviews[0].Status != ReviewFailed {
+		t.Fatalf("review = %s, want FAILED", r2.Reviews[0].Status)
+	}
+
+	// A clean BLOCKED result notes BLOCKED (plus reason) without a verdict.
+	r3 := pendingReview(t)
+	if err := r3.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunBlocked, ReasonCode: "L3-UNAVAILABLE"}); err != nil {
+		t.Fatalf("clean BLOCKED: %v", err)
+	}
+	cp := r3.CurrentCheckpoint()
+	if cp == nil {
+		t.Fatal("clean BLOCKED must open a REVIEW_RESULT checkpoint")
+	}
+	if !strings.Contains(cp.Note, ReviewRunBlocked) || strings.Contains(cp.Note, VerdictPass) || strings.Contains(cp.Note, VerdictNeedsFix) {
+		t.Fatalf("BLOCKED note = %q, want run status only (no verdict)", cp.Note)
+	}
+}
+
+// TestMinorNonceRedrawsOnCollision pins m1: a nonce colliding with an existing
+// checkpoint nonce in the run is re-drawn, at most 8 times.
+func TestMinorNonceRedrawsOnCollision(t *testing.T) {
+	draws := 0
+	n, err := drawNonce(func(string) bool { draws++; return draws <= 3 })
+	if err != nil {
+		t.Fatalf("drawNonce: %v", err)
+	}
+	if draws != 4 || n == "" {
+		t.Fatalf("draws = %d nonce = %q, want the 4th draw accepted", draws, n)
+	}
+
+	if _, err := drawNonce(func(string) bool { return true }); err == nil {
+		t.Fatal("drawNonce with everything rejected: want error after 8 attempts")
+	}
+
+	// The run-level nonce never duplicates an existing checkpoint nonce.
+	r := startTestRun(t, BudgetLimits{})
+	if err := r.OpenPhase("p1"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	cp, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	for _, existing := range r.Checkpoints {
+		if existing.ID != cp.ID && existing.Nonce == cp.Nonce {
+			t.Fatalf("nonce collision between %s and %s", existing.ID, cp.ID)
+		}
+	}
+}
+
+// TestStartDelegationEnforcesOwnBudget pins the T3 handoff 14(a): the reducer
+// enforces the delegation budget itself — the gate's check is not the only
+// guard, so direct reducer callers cannot exceed the limit either.
+func TestStartDelegationEnforcesOwnBudget(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{Delegations: 1})
+	if err := r.OpenPhase("p1"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	if err := r.StartDelegation("", false); err != nil {
+		t.Fatalf("first delegation within budget: %v", err)
+	}
+	if err := r.StartDelegation("", false); err == nil {
+		t.Fatal("StartDelegation past the delegation limit: want error (reducer-level guard), got nil")
+	}
+	if r.Counters.Delegations != 1 {
+		t.Fatalf("delegations = %d, want 1 (the refused call must not consume)", r.Counters.Delegations)
+	}
+
+	// The reviewer path is guarded by the same budget.
+	if _, err := r.RequestReview(testEnvelope()); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if err := r.StartDelegation("rev-1", true); err == nil {
+		t.Fatal("reviewer StartDelegation past the limit: want error, got nil")
+	}
+	if r.Reviews[0].Status != ReviewPrepared {
+		t.Fatalf("review = %s, want PREPARED (refused dispatch must not start it)", r.Reviews[0].Status)
 	}
 }

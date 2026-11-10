@@ -33,9 +33,21 @@ func ProjectDir() string {
 	return dir
 }
 
-// ProjectKey returns a stable hash of the project directory.
+// ProjectKey returns a stable hash of the project directory. The directory is
+// NORMALIZED first — filepath.Abs, then EvalSymlinks (task-2.5 m4) — so two
+// spellings of one checkout (a relative path, a symlinked path such as /var
+// vs /private/var, or a user-level link to the repo) hash to the same key
+// instead of forking the state and trace trees. Any normalization failure
+// falls back to the best value obtained so far.
 func ProjectKey() string {
-	hash := sha256.Sum256([]byte(ProjectDir()))
+	dir := ProjectDir()
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = real
+		}
+	}
+	hash := sha256.Sum256([]byte(dir))
 	return fmt.Sprintf("%x", hash[:8])
 }
 

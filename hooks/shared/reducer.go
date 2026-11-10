@@ -1,15 +1,17 @@
 package shared
 
 // reducer.go — single-loop run-state machine v2 (spec
-// docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md §4/§5).
+// docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md §1/§3/§4/§5).
 //
 // The reducer owns run status, phase/checkpoint lifecycle, review lifecycle,
 // requirement-change loop, recall history, OUTCOME_UNKNOWN recovery and
 // budgets. It validates every transition against the legality matrix before
 // mutating; illegal transitions return an error and never persist (the hook
-// binary decides the exit-2 wording). Error-returning transitions persist
-// atomically (temp file + rename) before returning; the void methods
-// (CountToolCall, MarkOutcomeUnknown) mutate in memory only — callers Save.
+// binary decides the exit-2 wording). Persisting transitions run through the
+// commit pattern (see commit below): they mutate a deep-copy snapshot and
+// swap it in only after the Save succeeds, so a failed Save never leaves
+// half-applied state behind. The void methods (CountToolCall,
+// MarkOutcomeUnknown) mutate in memory only — callers Save.
 //
 // Nothing here interprets DAGs, issues instructions or does domain work.
 
@@ -30,302 +32,7 @@ import (
 // ErrRunNotFound is returned by LoadRun when no state file matches the run id.
 var ErrRunNotFound = errors.New("run state not found")
 
-// --- enums ------------------------------------------------------------------
-
-// RunStatus is the reducer state machine (spec §4): a phase closing sets
-// WAIT_USER; only a recorded user decision (or a review result opening a new
-// checkpoint) moves it on. A skill start or reviewer PASS never authorizes.
-type RunStatus string
-
-const (
-	StatusActive          RunStatus = "ACTIVE"
-	StatusWaitUser        RunStatus = "WAIT_USER"
-	StatusReviewPending   RunStatus = "REVIEW_PENDING"
-	StatusOutcomeUnknown  RunStatus = "OUTCOME_UNKNOWN"
-	StatusPostGamePending RunStatus = "POST_GAME_PENDING"
-	StatusClosed          RunStatus = "CLOSED"
-)
-
-// Decision is the checkpoint decision enum; decisions arrive only through the
-// platform-injected AskUserQuestion tool_response (PostToolUse hook).
-type Decision string
-
-const (
-	DecisionContinue                Decision = "CONTINUE"
-	DecisionSkip                    Decision = "SKIP"
-	DecisionDone                    Decision = "DONE"
-	DecisionRecall                  Decision = "RECALL"
-	DecisionStop                    Decision = "STOP"
-	DecisionReviewOnDemand          Decision = "REVIEW_ON_DEMAND"
-	DecisionAcceptRequirementChange Decision = "ACCEPT_REQUIREMENT_CHANGE"
-)
-
-// ReviewState is the ⑤ review lifecycle (spec §3 崩溃恢复).
-type ReviewState string
-
-const (
-	ReviewPrepared ReviewState = "PREPARED"
-	ReviewRunning  ReviewState = "RUNNING"
-	ReviewReviewed ReviewState = "REVIEWED"
-	ReviewFailed   ReviewState = "FAILED"
-	ReviewBlocked  ReviewState = "BLOCKED"
-)
-
-// CheckpointKind distinguishes what a checkpoint asks the user to confirm.
-type CheckpointKind string
-
-const (
-	CheckpointPhase         CheckpointKind = "PHASE"
-	CheckpointChangeConfirm CheckpointKind = "CHANGE_CONFIRM"
-	CheckpointReviewResult  CheckpointKind = "REVIEW_RESULT"
-)
-
-// Review result wire enums (spec §3 证据与 verdict): run_status and the
-// quality verdict are separate axes.
-const (
-	ReviewRunCompleted = "COMPLETED"
-	ReviewRunBlocked   = "BLOCKED"
-	VerdictPass        = "PASS"
-	VerdictNeedsFix    = "NEEDS-FIX"
-)
-
-// OUTCOME_UNKNOWN probe results (spec §5: accepted / failed / indeterminate).
-const (
-	OutcomeAccepted      = "accepted"
-	OutcomeFailed        = "failed"
-	OutcomeIndeterminate = "indeterminate"
-)
-
-// --- review contract types (spec §3) ----------------------------------------
-// Envelope/ReviewResult live here so every hook shares one shape; validation
-// functions are added in envelope.go (Task 7) around these types.
-
-// CriterionMethod declares how a criterion is verified.
-type CriterionMethod string
-
-const (
-	MethodMechanical CriterionMethod = "mechanical"
-	MethodJudgment   CriterionMethod = "judgment"
-)
-
-// ArtifactRef names one immutable artifact version.
-type ArtifactRef struct {
-	Path   string `json:"path"`
-	Digest string `json:"digest"`
-	Kind   string `json:"kind,omitempty"`
-}
-
-// Criterion is one exit criterion of the frozen acceptance view.
-type Criterion struct {
-	ID       string          `json:"id"`
-	Goal     string          `json:"goal,omitempty"`
-	Scope    string          `json:"scope,omitempty"`
-	Method   CriterionMethod `json:"method"`
-	Expected string          `json:"expected,omitempty"`
-	Required bool            `json:"required,omitempty"`
-	CheckID  string          `json:"check_id,omitempty"` // mechanical: registered check
-	Rubric   string          `json:"rubric,omitempty"`   // judgment: rubric pointer
-}
-
-// FrozenRequirement maps one accepted requirement to its criteria and scope.
-type FrozenRequirement struct {
-	ID          string   `json:"id"`
-	CriteriaIDs []string `json:"criteria_ids,omitempty"`
-	Artifacts   []string `json:"artifacts,omitempty"`
-}
-
-// FrozenView is the acceptance view frozen at user acceptance; producers
-// cannot trim it.
-type FrozenView struct {
-	Version      int                 `json:"version,omitempty"`
-	Requirements []FrozenRequirement `json:"requirements,omitempty"`
-}
-
-// VerificationScope bounds what a reviewer may read and run.
-type VerificationScope struct {
-	Readable     []string `json:"readable,omitempty"`
-	CheckIDs     []string `json:"check_ids,omitempty"`
-	OutputSchema string   `json:"output_schema,omitempty"`
-}
-
-// Envelope is the sole review input contract (spec §3).
-type Envelope struct {
-	SchemaVersion     string            `json:"schema_version"`
-	RunID             string            `json:"run_id"`
-	ReviewID          string            `json:"review_id"`
-	ArtifactSet       []ArtifactRef     `json:"artifact_set"`
-	Requirements      FrozenView        `json:"requirements"`
-	ExitCriteria      []Criterion       `json:"exit_criteria"`
-	VerificationScope VerificationScope `json:"verification_scope"`
-}
-
-// CriterionVerdict is the per-criterion conclusion of a review.
-type CriterionVerdict struct {
-	CriterionID string `json:"criterion_id"`
-	Status      string `json:"status"`
-	Note        string `json:"note,omitempty"`
-}
-
-// Finding is one review finding; it carries no next-phase choice.
-type Finding struct {
-	CriterionID string `json:"criterion_id"`
-	Path        string `json:"path"`
-	Line        int    `json:"line,omitempty"`
-	Failure     string `json:"failure"`
-	Suggestion  string `json:"suggestion,omitempty"`
-}
-
-// ReviewResult is the structured reviewer return (spec §3 证据与 verdict).
-type ReviewResult struct {
-	ReviewID            string             `json:"review_id"`
-	ArtifactDigest      string             `json:"artifact_digest"`
-	RunStatus           string             `json:"run_status"`            // COMPLETED|BLOCKED
-	ReasonCode          string             `json:"reason_code,omitempty"` // BLOCKED only
-	Verdict             string             `json:"verdict,omitempty"`     // PASS|NEEDS-FIX, COMPLETED only
-	CriterionVerdicts   []CriterionVerdict `json:"criterion_verdicts,omitempty"`
-	Findings            []Finding          `json:"findings,omitempty"`
-	EvidenceToolCallIDs []string           `json:"evidence_tool_call_ids,omitempty"`
-}
-
-// --- state types ------------------------------------------------------------
-
-// DevPosition is where implementation stood when a requirement change opened
-// (current task, test progress, pending verifications — spec §1 变更闭环).
-type DevPosition struct {
-	CurrentTask          string   `json:"current_task,omitempty"`
-	TestProgress         string   `json:"test_progress,omitempty"`
-	PendingVerifications []string `json:"pending_verifications,omitempty"`
-}
-
-// ChangeContext is the CHANGE_OPEN sub-state: why the change opened, the
-// status that preceded it, and the frozen development position to restore.
-type ChangeContext struct {
-	Note          string      `json:"note,omitempty"`
-	OpenedAt      string      `json:"opened_at,omitempty"`
-	PriorStatus   RunStatus   `json:"prior_status,omitempty"`
-	SavedPosition DevPosition `json:"saved_position"`
-}
-
-// RequirementDelta is the explicit change statement (what changed) plus the
-// impact assessment (which ids are affected). The assessment method belongs
-// to the chosen requirement/plan skill, not the framework.
-type RequirementDelta struct {
-	Note     string   `json:"note,omitempty"`
-	Changed  []string `json:"changed,omitempty"`
-	Affected []string `json:"affected,omitempty"`
-}
-
-// ImpactReport summarizes one applied delta.
-type ImpactReport struct {
-	RequirementsVersion int      `json:"requirements_version"`
-	NewlyStale          []string `json:"newly_stale,omitempty"`
-	Preserved           []string `json:"preserved,omitempty"`
-}
-
-// PhaseState tracks one phase's lifecycle inside the run.
-type PhaseState struct {
-	ID               string   `json:"id"`
-	Open             bool     `json:"open"`
-	OpenedAt         string   `json:"opened_at,omitempty"`
-	ClosedAt         string   `json:"closed_at,omitempty"`
-	Outcome          string   `json:"outcome,omitempty"` // accepted|skipped|recalled
-	CriteriaIDs      []string `json:"criteria_ids,omitempty"`
-	AcceptedCriteria []string `json:"accepted_criteria,omitempty"`
-	CheckpointID     string   `json:"checkpoint_id,omitempty"`
-}
-
-// CheckpointState is one human checkpoint (spec §4). A decision is accepted
-// only after the checkpoint was displayed with a matching content digest.
-type CheckpointState struct {
-	ID               string            `json:"id"`
-	Kind             CheckpointKind    `json:"kind"`
-	PhaseID          string            `json:"phase_id,omitempty"`
-	Note             string            `json:"note,omitempty"`
-	Nonce            string            `json:"nonce"`
-	ArtifactVersions map[string]string `json:"artifact_versions,omitempty"`
-	CriteriaIDs      []string          `json:"criteria_ids,omitempty"`
-	OpenedAt         string            `json:"opened_at,omitempty"`
-	Displayed        bool              `json:"displayed"`
-	DisplayDigest    string            `json:"display_digest,omitempty"`
-	DisplayedAt      string            `json:"displayed_at,omitempty"`
-	Decided          bool              `json:"decided"`
-	Decision         Decision          `json:"decision,omitempty"`
-	DecidedAt        string            `json:"decided_at,omitempty"`
-}
-
-// ReviewRecord is one ⑤ review's lifecycle record.
-type ReviewRecord struct {
-	ReviewID       string      `json:"review_id"`
-	Status         ReviewState `json:"status"`
-	EnvelopeDigest string      `json:"envelope_digest,omitempty"`
-	ArtifactDigest string      `json:"artifact_digest,omitempty"`
-	Verdict        string      `json:"verdict,omitempty"`
-	ReasonCode     string      `json:"reason_code,omitempty"`
-	RequestedAt    string      `json:"requested_at,omitempty"`
-	StartedAt      string      `json:"started_at,omitempty"`
-	ConcludedAt    string      `json:"concluded_at,omitempty"`
-}
-
-// OutcomeUnknown is one possibly-executed-but-unpersisted tool side effect
-// (spec §5). Mutating actions are never auto-replayed; the capability's
-// one-shot read-only probe resolves each entry.
-type OutcomeUnknown struct {
-	ToolUseID   string    `json:"tool_use_id"`
-	PriorStatus RunStatus `json:"prior_status,omitempty"`
-	RecordedAt  string    `json:"recorded_at,omitempty"`
-	Resolved    bool      `json:"resolved"`
-	Outcome     string    `json:"outcome,omitempty"` // accepted|failed|indeterminate
-	ResolvedAt  string    `json:"resolved_at,omitempty"`
-}
-
-// BudgetLimits are the run-start budget confirmations (spec §5); zero = unlimited.
-type BudgetLimits struct {
-	PhaseToolCalls int `json:"phase_tool_calls,omitempty"`
-	FailedChecks   int `json:"failed_checks,omitempty"`
-	RunRework      int `json:"run_rework,omitempty"`
-	Delegations    int `json:"delegations,omitempty"`
-}
-
-// BudgetCounters are the hook-trusted counters checked against BudgetLimits.
-type BudgetCounters struct {
-	PhaseToolCalls int `json:"phase_tool_calls"`
-	FailedChecks   int `json:"failed_checks"`
-	RunRework      int `json:"run_rework"`
-	Delegations    int `json:"delegations"`
-}
-
-// RecallRecord is one applied recall (spec §4).
-type RecallRecord struct {
-	FromPhaseID   string `json:"from_phase_id,omitempty"`
-	TargetPhaseID string `json:"target_phase_id,omitempty"`
-	At            string `json:"at,omitempty"`
-}
-
-// RunState is the persisted run document. State root:
-// $SUMMONER_STATE_DIR (or ~/.summoner/state-v2) / {project_key} / {session_id}
-// / {run_id}.json — version-independent so plugin-cache wipes never orphan it.
-type RunState struct {
-	SchemaVersion       string            `json:"schema_version"`
-	RunID               string            `json:"run_id"`
-	SessionID           string            `json:"session_id"`
-	Workflow            string            `json:"workflow,omitempty"`
-	Status              RunStatus         `json:"status"`
-	RequirementsVersion int               `json:"requirements_version"`
-	DevPosition         DevPosition       `json:"dev_position"`
-	Change              *ChangeContext    `json:"change,omitempty"` // non-nil = CHANGE_OPEN
-	Stale               []string          `json:"stale,omitempty"`
-	Phases              []PhaseState      `json:"phases,omitempty"`
-	Checkpoints         []CheckpointState `json:"checkpoints,omitempty"`
-	Reviews             []ReviewRecord    `json:"reviews,omitempty"`
-	Recalls             []RecallRecord    `json:"recalls,omitempty"`
-	OutcomeUnknowns     []OutcomeUnknown  `json:"outcome_unknowns,omitempty"`
-	Limits              BudgetLimits      `json:"budget_limits"`
-	Counters            BudgetCounters    `json:"budget_counters"`
-	StartedAt           string            `json:"started_at,omitempty"`
-	UpdatedAt           string            `json:"updated_at,omitempty"`
-}
-
-// --- persistence ------------------------------------------------------------
+// --- persistence ----------------------------------------------------------------
 
 // runStateDirOverride redirects v2 run-state into a test directory so the
 // suite stays hermetic (same pattern as internal/graph.stateDirOverride).
@@ -378,7 +85,7 @@ func runStatePath(sessionID, runID string) (string, error) {
 }
 
 // Save persists the run atomically: temp file in the same directory, then
-// rename. Callers may invoke it directly; transitions do so themselves.
+// rename. Callers may invoke it directly; transitions commit through it.
 func (r *RunState) Save() error {
 	p, err := runStatePath(r.SessionID, r.RunID)
 	if err != nil {
@@ -413,6 +120,49 @@ func (r *RunState) Save() error {
 	return os.Rename(tmpName, p)
 }
 
+// validateRunState is the load-time integrity gate (task-2.5 M8): schema
+// version, identity fields, status enums and phase→checkpoint referential
+// integrity. fileRunID is the run id the file was found under ("" skips the
+// cross-check); any violation is a corrupt-state error — a damaged state file
+// must never load as a plausible run.
+func validateRunState(r *RunState, fileRunID string) error {
+	if r.SchemaVersion != RunStateSchemaVersion {
+		return fmt.Errorf("schema_version %q is not %q (old or foreign state file)", r.SchemaVersion, RunStateSchemaVersion)
+	}
+	if r.RunID == "" {
+		return fmt.Errorf("run_id is empty")
+	}
+	if fileRunID != "" && r.RunID != fileRunID {
+		return fmt.Errorf("run_id %q does not match its state file %q", r.RunID, fileRunID)
+	}
+	if r.SessionID == "" {
+		return fmt.Errorf("session_id is empty")
+	}
+	if r.Workflow == "" {
+		return fmt.Errorf("workflow is empty")
+	}
+	switch r.Status {
+	case StatusActive, StatusWaitUser, StatusReviewPending, StatusOutcomeUnknown, StatusPostGamePending, StatusClosed:
+	default:
+		return fmt.Errorf("status %q is not a run status", r.Status)
+	}
+	switch r.RecoveryPrior {
+	case "", StatusActive, StatusWaitUser, StatusReviewPending, StatusOutcomeUnknown, StatusPostGamePending, StatusClosed:
+	default:
+		return fmt.Errorf("recovery_prior %q is not a run status", r.RecoveryPrior)
+	}
+	cpIDs := make(map[string]bool, len(r.Checkpoints))
+	for i := range r.Checkpoints {
+		cpIDs[r.Checkpoints[i].ID] = true
+	}
+	for i := range r.Phases {
+		if id := r.Phases[i].CheckpointID; id != "" && !cpIDs[id] {
+			return fmt.Errorf("phase %s references unknown checkpoint %s", r.Phases[i].ID, id)
+		}
+	}
+	return nil
+}
+
 // LoadRun loads a run by id. The session that owns it is resolved by a
 // single-match search under {root}/{project_key}/*/{run_id}.json.
 func LoadRun(runID string) (*RunState, error) {
@@ -441,6 +191,9 @@ func LoadRun(runID string) (*RunState, error) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, fmt.Errorf("load run %s: %w", runID, err)
 	}
+	if err := validateRunState(&r, runID); err != nil {
+		return nil, fmt.Errorf("load run %s: corrupt state file: %w", runID, err)
+	}
 	return &r, nil
 }
 
@@ -448,8 +201,8 @@ func LoadRun(runID string) (*RunState, error) {
 // id for deterministic resolution. The PreToolUse gate resolves "the session's
 // live runs" through this helper. Only a missing session directory means "no
 // runs yet": any other read error — an unreadable directory, an unparseable
-// run file — is an error (fail-closed), because corrupted state must never
-// silently shrink (or empty) the set of runs a gate could enforce.
+// or corrupt run file — is an error (fail-closed), because corrupted state
+// must never silently shrink (or empty) the set of runs a gate could enforce.
 func SessionRuns(sessionID string) ([]*RunState, error) {
 	if !validID(sessionID) {
 		return nil, fmt.Errorf("session runs: invalid session id %q", sessionID)
@@ -490,12 +243,60 @@ func SessionRuns(sessionID string) ([]*RunState, error) {
 		if err := json.Unmarshal(b, &r); err != nil {
 			return nil, fmt.Errorf("session runs: %s is unparseable: %w", name, err)
 		}
+		if err := validateRunState(&r, strings.TrimSuffix(name, ".json")); err != nil {
+			return nil, fmt.Errorf("session runs: %s is corrupt: %w", name, err)
+		}
 		runs = append(runs, &r)
 	}
 	return runs, nil
 }
 
-// --- run lifecycle ----------------------------------------------------------
+// --- atomic transitions (task-2.5 M9) ---------------------------------------------
+
+// deepCopy returns a value-independent copy of the run state via its own JSON
+// schema — every field is JSON-round-trippable, so this is a true deep copy.
+func (r *RunState) deepCopy() (RunState, error) {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return RunState{}, fmt.Errorf("commit: snapshot: %w", err)
+	}
+	var c RunState
+	if err := json.Unmarshal(b, &c); err != nil {
+		return RunState{}, fmt.Errorf("commit: snapshot: %w", err)
+	}
+	return c, nil
+}
+
+// commit is THE transition wrapper (task-2.5 M9 + T3 handoff 14b). It deep-
+// copies the state, runs mutate against the snapshot, persists the snapshot,
+// and only then swaps it into *r. A mutation error or a Save failure leaves
+// *r exactly as it was — memory never runs ahead of disk, so a retry after
+// repair re-executes the real transition instead of mis-reporting idempotent
+// success.
+//
+// CALLER CONTRACT (14b): although *r stays self-consistent on a Save failure,
+// a run whose Save failed is POISONED for decision-making — disk and memory
+// may have diverged in ways the caller cannot see (another hook may have
+// persisted a different transition in between). After any error that carries
+// a failed Save, the caller MUST reload with LoadRun before issuing further
+// transitions on this object. No new API is needed — the contract is this
+// comment.
+func (r *RunState) commit(mutate func(*RunState) error) error {
+	snap, err := r.deepCopy()
+	if err != nil {
+		return err
+	}
+	if err := mutate(&snap); err != nil {
+		return err
+	}
+	if err := snap.Save(); err != nil {
+		return err
+	}
+	*r = snap
+	return nil
+}
+
+// --- run lifecycle ---------------------------------------------------------------
 
 // StartRun creates and persists a new run in ACTIVE. Budget limits are
 // confirmed at run start (spec §5); zero-value limits mean unlimited. An
@@ -513,7 +314,7 @@ func StartRun(runID, sessionID, workflow string, limits BudgetLimits) (*RunState
 		return nil, err
 	}
 	r := &RunState{
-		SchemaVersion:       "2",
+		SchemaVersion:       RunStateSchemaVersion,
 		RunID:               runID,
 		SessionID:           sessionID,
 		Workflow:            workflow,
@@ -522,7 +323,9 @@ func StartRun(runID, sessionID, workflow string, limits BudgetLimits) (*RunState
 		Limits:              limits,
 		StartedAt:           nowUTC(),
 	}
-	if err := r.Save(); err != nil {
+	// Persisted through commit like every mutator (M9): on failure the run
+	// simply does not exist yet.
+	if err := r.commit(func(*RunState) error { return nil }); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -535,18 +338,23 @@ func (r *RunState) requireStatus(want RunStatus, op string) error {
 	return nil
 }
 
-// CurrentCheckpoint returns the open (undecided) checkpoint, or nil.
+// CurrentCheckpoint returns the open (undecided, unsuperseded) checkpoint —
+// the newest checkpoint still owed. Decided and superseded checkpoints from
+// the tail are skipped: a superseded checkpoint is replaced by its re-rendered
+// successor (M2), and a checkpoint below a decided recovery checkpoint
+// legitimately resurfaces (B3/B4 — an episode must not bypass it).
 func (r *RunState) CurrentCheckpoint() *CheckpointState {
-	if len(r.Checkpoints) == 0 {
-		return nil
+	for i := len(r.Checkpoints) - 1; i >= 0; i-- {
+		if r.Checkpoints[i].Decided || r.Checkpoints[i].Superseded {
+			continue
+		}
+		return &r.Checkpoints[i]
 	}
-	last := &r.Checkpoints[len(r.Checkpoints)-1]
-	if last.Decided {
-		return nil
-	}
-	return last
+	return nil
 }
 
+// openPhaseState returns the open phase visit. At most one visit is open at
+// any time (recall appends the fresh visit, M11), so the scan is unambiguous.
 func (r *RunState) openPhaseState() *PhaseState {
 	for i := range r.Phases {
 		if r.Phases[i].Open {
@@ -558,8 +366,9 @@ func (r *RunState) openPhaseState() *PhaseState {
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// newNonce returns a short random-looking nonce (crypto/rand, never math/rand)
-// that the AskUserQuestion payload must carry to bind a decision to a checkpoint.
+// newNonce returns one short random-looking nonce (crypto/rand, never
+// math/rand) that the AskUserQuestion payload must carry to bind a decision
+// to a checkpoint.
 func newNonce() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
@@ -568,8 +377,38 @@ func newNonce() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// drawNonce draws a nonce, re-drawing while reject returns true, at most 8
+// attempts (task-2.5 m1). The bound keeps a pathological rejector from
+// spinning; crypto/rand failures surface immediately.
+func drawNonce(reject func(string) bool) (string, error) {
+	const maxDraws = 8
+	for i := 0; i < maxDraws; i++ {
+		n, err := newNonce()
+		if err != nil {
+			return "", err
+		}
+		if reject == nil || !reject(n) {
+			return n, nil
+		}
+	}
+	return "", fmt.Errorf("checkpoint nonce: no unique nonce after %d draws", maxDraws)
+}
+
+// uniqueNonce draws a nonce distinct from every checkpoint nonce already in
+// the run — a repeated nonce would let one answer bind to two checkpoints.
+func (r *RunState) uniqueNonce() (string, error) {
+	return drawNonce(func(n string) bool {
+		for i := range r.Checkpoints {
+			if r.Checkpoints[i].Nonce == n {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func (r *RunState) addCheckpoint(kind CheckpointKind, phaseID, note string, artifacts []ArtifactRef, criteria []string) (CheckpointState, error) {
-	nonce, err := newNonce()
+	nonce, err := r.uniqueNonce()
 	if err != nil {
 		return CheckpointState{}, fmt.Errorf("checkpoint nonce: %w", err)
 	}
@@ -598,6 +437,17 @@ func artifactVersionMap(artifacts []ArtifactRef) map[string]string {
 	return m
 }
 
+func copyArtifactVersions(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]string, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
 func containsID(ids []string, id string) bool {
 	for _, x := range ids {
 		if x == id {
@@ -613,13 +463,32 @@ func (r *RunState) addStale(id string) {
 	}
 }
 
+// removeStale drops one id from Stale — re-verification through re-acceptance
+// restores a criterion's validity (task-2.5 M10).
+func (r *RunState) removeStale(id string) {
+	for i, x := range r.Stale {
+		if x == id {
+			r.Stale = append(r.Stale[:i], r.Stale[i+1:]...)
+			return
+		}
+	}
+}
+
 // CheckpointContentDigest is the canonical digest of a checkpoint's current
-// version. MarkDisplayed binds exactly this; a render of a stale or altered
-// checkpoint cannot produce it, so "展示版本错配" fails closed.
+// content: id, nonce, kind, phase, requirements version, note, criteria
+// (sorted) and artifact versions (sorted). MarkDisplayed binds exactly this;
+// RecordDecision re-computes it and refuses any decision whose checkpoint
+// content drifted from what was displayed (task-2.5 B1) — a render of a stale
+// or altered checkpoint can never produce it, so "展示版本错配" fails closed.
 func CheckpointContentDigest(cp CheckpointState, requirementsVersion int) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "summoner-checkpoint/v1\nid=%s\nnonce=%s\nkind=%s\nreq=%d\n",
-		cp.ID, cp.Nonce, cp.Kind, requirementsVersion)
+	fmt.Fprintf(h, "summoner-checkpoint/v1\nid=%s\nnonce=%s\nkind=%s\nphase=%s\nreq=%d\nnote=%s\n",
+		cp.ID, cp.Nonce, cp.Kind, cp.PhaseID, requirementsVersion, cp.Note)
+	criteria := append([]string(nil), cp.CriteriaIDs...)
+	sort.Strings(criteria)
+	for _, c := range criteria {
+		fmt.Fprintf(h, "criterion=%s\n", c)
+	}
 	paths := make([]string, 0, len(cp.ArtifactVersions))
 	for p := range cp.ArtifactVersions {
 		paths = append(paths, p)
@@ -631,92 +500,92 @@ func CheckpointContentDigest(cp CheckpointState, requirementsVersion int) string
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// --- phase & checkpoint transitions -----------------------------------------
+// --- phase & checkpoint transitions ----------------------------------------------
 
 // OpenPhase opens a phase for work: legal only in ACTIVE with no phase open
 // and no requirement change in flight. Resets the per-phase tool budget.
 func (r *RunState) OpenPhase(id string) error {
-	if err := r.requireStatus(StatusActive, "OpenPhase"); err != nil {
-		return err
-	}
-	if r.Change != nil {
-		return errors.New("OpenPhase: requirement change open (resume before opening a phase)")
-	}
-	if ph := r.openPhaseState(); ph != nil {
-		return fmt.Errorf("OpenPhase(%s): phase %q is already open", id, ph.ID)
-	}
-	r.Phases = append(r.Phases, PhaseState{ID: id, Open: true, OpenedAt: nowUTC()})
-	r.Counters.PhaseToolCalls = 0
-	return r.Save()
-}
-
-// PhaseSubmission is the summoner:phase-submit payload: the phase's result —
-// artifacts, proposed criteria ids, and references to registered-check results.
-type PhaseSubmission struct {
-	PhaseID     string        `json:"phase_id"`
-	Summary     string        `json:"summary,omitempty"`
-	Artifacts   []ArtifactRef `json:"artifacts,omitempty"`
-	CriteriaIDs []string      `json:"criteria_ids,omitempty"`
-	CheckRefs   []string      `json:"check_refs,omitempty"`
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusActive, "OpenPhase"); err != nil {
+			return err
+		}
+		if s.Change != nil {
+			return errors.New("OpenPhase: requirement change open (resume before opening a phase)")
+		}
+		if ph := s.openPhaseState(); ph != nil {
+			return fmt.Errorf("OpenPhase(%s): phase %q is already open", id, ph.ID)
+		}
+		s.Phases = append(s.Phases, PhaseState{ID: id, Open: true, OpenedAt: nowUTC()})
+		s.Counters.PhaseToolCalls = 0
+		return nil
+	})
 }
 
 // SubmitPhase closes the open phase and opens its checkpoint (WAIT_USER).
 // Illegal while a checkpoint is pending, no phase is open, the payload names a
 // different phase, or a requirement change is open (CHANGE_OPEN).
 func (r *RunState) SubmitPhase(sub PhaseSubmission) (CheckpointState, error) {
-	if err := r.requireStatus(StatusActive, "SubmitPhase"); err != nil {
-		return CheckpointState{}, err
-	}
-	if r.Change != nil {
-		return CheckpointState{}, errors.New("SubmitPhase: rejected — requirement change open (CHANGE_OPEN)")
-	}
-	ph := r.openPhaseState()
-	if ph == nil {
-		return CheckpointState{}, errors.New("SubmitPhase: no open phase (OpenPhase first)")
-	}
-	if sub.PhaseID != ph.ID {
-		return CheckpointState{}, fmt.Errorf("SubmitPhase: phase id mismatch (payload %q, open %q)", sub.PhaseID, ph.ID)
-	}
-	now := nowUTC()
-	ph.Open = false
-	ph.ClosedAt = now
-	ph.CriteriaIDs = append([]string(nil), sub.CriteriaIDs...)
-	cp, err := r.addCheckpoint(CheckpointPhase, ph.ID, sub.Summary, sub.Artifacts, sub.CriteriaIDs)
+	var cp CheckpointState
+	err := r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusActive, "SubmitPhase"); err != nil {
+			return err
+		}
+		if s.Change != nil {
+			return errors.New("SubmitPhase: rejected — requirement change open (CHANGE_OPEN)")
+		}
+		ph := s.openPhaseState()
+		if ph == nil {
+			return errors.New("SubmitPhase: no open phase (OpenPhase first)")
+		}
+		if sub.PhaseID != ph.ID {
+			return fmt.Errorf("SubmitPhase: phase id mismatch (payload %q, open %q)", sub.PhaseID, ph.ID)
+		}
+		now := nowUTC()
+		ph.Open = false
+		ph.ClosedAt = now
+		ph.CriteriaIDs = append([]string(nil), sub.CriteriaIDs...)
+		added, err := s.addCheckpoint(CheckpointPhase, ph.ID, sub.Summary, sub.Artifacts, sub.CriteriaIDs)
+		if err != nil {
+			return err
+		}
+		ph.CheckpointID = added.ID
+		s.Status = StatusWaitUser
+		cp = added
+		return nil
+	})
 	if err != nil {
-		return CheckpointState{}, err
-	}
-	ph.CheckpointID = cp.ID
-	r.Status = StatusWaitUser
-	if err := r.Save(); err != nil {
 		return CheckpointState{}, err
 	}
 	return cp, nil
 }
 
 // MarkDisplayed binds a checkpoint to a verified render: the digest must
-// equal the checkpoint's canonical content digest. Idempotent for the same
-// digest; any mismatch fails closed.
+// equal the checkpoint's canonical content digest. Re-binding after a
+// re-render overwrites the binding with the current content's digest; any
+// mismatch fails closed.
 func (r *RunState) MarkDisplayed(checkpointID, contentDigest string) error {
-	if err := r.requireStatus(StatusWaitUser, "MarkDisplayed"); err != nil {
-		return err
-	}
-	cp := r.CurrentCheckpoint()
-	if cp == nil || cp.ID != checkpointID {
-		return fmt.Errorf("MarkDisplayed: %q is not the open checkpoint", checkpointID)
-	}
-	expected := CheckpointContentDigest(*cp, r.RequirementsVersion)
-	if contentDigest != expected {
-		return fmt.Errorf("MarkDisplayed: display digest mismatch for %s (render does not match the current checkpoint version)", checkpointID)
-	}
-	cp.Displayed = true
-	cp.DisplayDigest = contentDigest
-	cp.DisplayedAt = nowUTC()
-	return r.Save()
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusWaitUser, "MarkDisplayed"); err != nil {
+			return err
+		}
+		cp := s.CurrentCheckpoint()
+		if cp == nil || cp.ID != checkpointID {
+			return fmt.Errorf("MarkDisplayed: %q is not the open checkpoint", checkpointID)
+		}
+		expected := CheckpointContentDigest(*cp, s.RequirementsVersion)
+		if contentDigest != expected {
+			return fmt.Errorf("MarkDisplayed: display digest mismatch for %s (render does not match the current checkpoint version)", checkpointID)
+		}
+		cp.Displayed = true
+		cp.DisplayDigest = contentDigest
+		cp.DisplayedAt = nowUTC()
+		return nil
+	})
 }
 
 // phaseForDecision maps a checkpoint to the phase its CONTINUE/SKIP settles:
-// the phase it closed, or — after a review — the latest phase still awaiting
-// acceptance.
+// the phase visit it closed (CheckpointID match), or — after a review — the
+// latest phase visit still awaiting acceptance.
 func (r *RunState) phaseForDecision(cp *CheckpointState) *PhaseState {
 	if cp.Kind == CheckpointPhase {
 		for i := range r.Phases {
@@ -734,6 +603,9 @@ func (r *RunState) phaseForDecision(cp *CheckpointState) *PhaseState {
 	return nil
 }
 
+// decidePhase settles the phase a checkpoint decides. Re-accepting a phase
+// re-validates its criteria: each one leaves Stale (task-2.5 M10) — stale
+// means "needs re-verification", and the user just re-verified it.
 func (r *RunState) decidePhase(cp *CheckpointState, accepted bool) {
 	p := r.phaseForDecision(cp)
 	if p == nil {
@@ -742,13 +614,17 @@ func (r *RunState) decidePhase(cp *CheckpointState, accepted bool) {
 	if accepted {
 		p.Outcome = "accepted"
 		p.AcceptedCriteria = append([]string(nil), p.CriteriaIDs...)
+		for _, c := range p.AcceptedCriteria {
+			r.removeStale(c)
+		}
 	} else {
 		p.Outcome = "skipped"
 	}
 }
 
 // planRecall resolves the recall target — the most recent accepted prior
-// phase (spec §4 default), or the checkpoint's own phase when none exists.
+// phase visit (spec §4 default), or the checkpoint's own phase when none
+// exists.
 func (r *RunState) planRecall(cp *CheckpointState) (int, error) {
 	for i := len(r.Phases) - 1; i >= 0; i-- {
 		if r.Phases[i].Outcome == "accepted" {
@@ -763,6 +639,11 @@ func (r *RunState) planRecall(cp *CheckpointState) (int, error) {
 	return 0, errors.New("RecordDecision: RECALL has no phase target")
 }
 
+// applyRecallAt applies a recall at the target visit (task-2.5 M11): the old
+// visit keeps its full history with Outcome "recalled" (its acceptance is
+// revoked), and a FRESH visit of the same id is appended open — checkpoint
+// history stays complete and "the phase" resolves to the latest visit. Every
+// later visit's criteria go stale.
 func (r *RunState) applyRecallAt(cp *CheckpointState, targetIdx int) {
 	for i := targetIdx + 1; i < len(r.Phases); i++ {
 		for _, c := range r.Phases[i].CriteriaIDs {
@@ -772,13 +653,12 @@ func (r *RunState) applyRecallAt(cp *CheckpointState, targetIdx int) {
 			r.addStale(c)
 		}
 	}
-	tgt := &r.Phases[targetIdx]
-	tgt.Open = true
-	tgt.ClosedAt = ""
-	tgt.Outcome = ""
-	tgt.AcceptedCriteria = nil
+	target := &r.Phases[targetIdx]
+	target.Open = false
+	target.Outcome = "recalled"
+	r.Phases = append(r.Phases, PhaseState{ID: target.ID, Open: true, OpenedAt: nowUTC()})
 	r.Counters.PhaseToolCalls = 0 // a redone phase gets a fresh tool budget
-	r.Recalls = append(r.Recalls, RecallRecord{FromPhaseID: cp.PhaseID, TargetPhaseID: tgt.ID, At: nowUTC()})
+	r.Recalls = append(r.Recalls, RecallRecord{FromPhaseID: cp.PhaseID, TargetPhaseID: target.ID, At: nowUTC()})
 	r.Status = StatusActive
 }
 
@@ -791,72 +671,134 @@ func validDecision(d Decision) error {
 	return fmt.Errorf("unknown decision %q", d)
 }
 
-// RecordDecision applies a user decision to the open checkpoint. The
-// checkpoint must be displayed with a bound digest; the decision must be
-// legal for the checkpoint kind (ACCEPT_REQUIREMENT_CHANGE only at a
-// requirement-change confirm checkpoint; only ACCEPT/STOP decide one).
-func (r *RunState) RecordDecision(checkpointID string, d Decision) error {
-	if err := r.requireStatus(StatusWaitUser, "RecordDecision"); err != nil {
-		return err
-	}
-	cp := r.CurrentCheckpoint()
-	if cp == nil || cp.ID != checkpointID {
-		return fmt.Errorf("RecordDecision: %q is not the open checkpoint", checkpointID)
-	}
-	if !cp.Displayed || cp.DisplayDigest == "" {
-		return fmt.Errorf("RecordDecision: checkpoint %s was never displayed — decision rejected", checkpointID)
-	}
-	if err := validDecision(d); err != nil {
-		return err
-	}
-	if cp.Kind == CheckpointChangeConfirm {
+// legalDecisionForKind is the per-kind legality matrix: a change-confirm
+// checkpoint decides only ACCEPT_REQUIREMENT_CHANGE/STOP; a recovery
+// checkpoint only CONTINUE/RECALL/STOP (B3); everything else takes the full
+// menu except ACCEPT_REQUIREMENT_CHANGE.
+func legalDecisionForKind(kind CheckpointKind, d Decision) error {
+	switch kind {
+	case CheckpointChangeConfirm:
 		if d != DecisionAcceptRequirementChange && d != DecisionStop {
-			return fmt.Errorf("RecordDecision: %s illegal at change-confirm checkpoint %s (want ACCEPT_REQUIREMENT_CHANGE or STOP)", d, checkpointID)
+			return fmt.Errorf("%s illegal at change-confirm checkpoint (want ACCEPT_REQUIREMENT_CHANGE or STOP)", d)
 		}
-	} else if d == DecisionAcceptRequirementChange {
-		return fmt.Errorf("RecordDecision: ACCEPT_REQUIREMENT_CHANGE illegal at %s checkpoint %s (no requirement change open)", cp.Kind, checkpointID)
-	}
-	// Pre-validate every effect before mutating anything.
-	recallIdx := -1
-	if d == DecisionRecall {
-		var err error
-		if recallIdx, err = r.planRecall(cp); err != nil {
-			return err
+	case CheckpointRecovery:
+		if d != DecisionContinue && d != DecisionRecall && d != DecisionStop {
+			return fmt.Errorf("%s illegal at recovery checkpoint (want CONTINUE, RECALL or STOP)", d)
+		}
+	default:
+		if d == DecisionAcceptRequirementChange {
+			return fmt.Errorf("ACCEPT_REQUIREMENT_CHANGE illegal at %s checkpoint (no requirement change open)", kind)
 		}
 	}
-	if d == DecisionAcceptRequirementChange && r.Change == nil {
-		return fmt.Errorf("RecordDecision: no requirement change open for checkpoint %s", checkpointID)
-	}
-
-	cp.Decided = true
-	cp.Decision = d
-	cp.DecidedAt = nowUTC()
-	switch d {
-	case DecisionContinue:
-		r.decidePhase(cp, true)
-		r.Status = StatusActive
-	case DecisionSkip:
-		r.decidePhase(cp, false)
-		r.Status = StatusActive
-	case DecisionDone:
-		r.decidePhase(cp, true)
-		r.Status = StatusPostGamePending // CLOSED only after post-game persists
-	case DecisionRecall:
-		if p := r.phaseForDecision(cp); p != nil && p.Outcome == "" {
-			p.Outcome = "recalled"
-		}
-		r.applyRecallAt(cp, recallIdx)
-	case DecisionReviewOnDemand:
-		r.Status = StatusActive // review request follows via RequestReview
-	case DecisionStop:
-		r.Status = StatusPostGamePending // minimal exit journal is the caller's duty
-	case DecisionAcceptRequirementChange:
-		r.resumeAfterChange() // validated above; restores position, closes loop
-	}
-	return r.Save()
+	return nil
 }
 
-// --- requirement-change loop (spec §1 增补) ----------------------------------
+// restoreRecoveryPrior ends an OUTCOME_UNKNOWN episode: the run returns to
+// the status frozen when the episode started (RecoveryPrior, B4) and the
+// prior is cleared. Empty/invalid priors fall back to ACTIVE.
+func (r *RunState) restoreRecoveryPrior() {
+	switch r.RecoveryPrior {
+	case StatusActive, StatusWaitUser, StatusReviewPending:
+		r.Status = r.RecoveryPrior
+	default:
+		r.Status = StatusActive
+	}
+	r.RecoveryPrior = ""
+}
+
+// RecordDecision applies a user decision to the open checkpoint. The
+// checkpoint must be displayed, its content still byte-identical to the
+// displayed render (B1), and the decision legal for the checkpoint kind.
+// REVIEW_ON_DEMAND records a persisted review obligation instead of
+// authorizing work (B2).
+func (r *RunState) RecordDecision(checkpointID string, d Decision) error {
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusWaitUser, "RecordDecision"); err != nil {
+			return err
+		}
+		// A superseded checkpoint is dead: the re-rendered successor decides.
+		for i := range s.Checkpoints {
+			if s.Checkpoints[i].ID == checkpointID && s.Checkpoints[i].Superseded {
+				return fmt.Errorf("RecordDecision: checkpoint %s was superseded by a requirement change — decide its re-rendered successor instead", checkpointID)
+			}
+		}
+		cp := s.CurrentCheckpoint()
+		if cp == nil || cp.ID != checkpointID {
+			return fmt.Errorf("RecordDecision: %q is not the open checkpoint", checkpointID)
+		}
+		if !cp.Displayed || cp.DisplayDigest == "" {
+			return fmt.Errorf("RecordDecision: checkpoint %s was never displayed — decision rejected", checkpointID)
+		}
+		// B1 display binding: the decision binds the displayed content. If
+		// anything changed since (note, criteria, phase, requirements
+		// version), the render is stale — a new display pass is required.
+		if CheckpointContentDigest(*cp, s.RequirementsVersion) != cp.DisplayDigest {
+			return fmt.Errorf("RecordDecision: checkpoint %s content changed since display — re-render required", checkpointID)
+		}
+		if err := validDecision(d); err != nil {
+			return err
+		}
+		if err := legalDecisionForKind(cp.Kind, d); err != nil {
+			return fmt.Errorf("RecordDecision: %s", err)
+		}
+		// Pre-validate every effect before mutating anything.
+		recallIdx := -1
+		if d == DecisionRecall {
+			var err error
+			if recallIdx, err = s.planRecall(cp); err != nil {
+				return err
+			}
+		}
+		if d == DecisionAcceptRequirementChange && s.Change == nil {
+			return fmt.Errorf("RecordDecision: no requirement change open for checkpoint %s", checkpointID)
+		}
+
+		cp.Decided = true
+		cp.Decision = d
+		cp.DecidedAt = nowUTC()
+		switch d {
+		case DecisionContinue:
+			if cp.Kind == CheckpointRecovery {
+				// Accept the status quo; restore the episode prior (B3).
+				s.restoreRecoveryPrior()
+			} else {
+				s.decidePhase(cp, true)
+				s.Status = StatusActive
+			}
+		case DecisionSkip:
+			s.decidePhase(cp, false)
+			s.Status = StatusActive
+		case DecisionDone:
+			s.decidePhase(cp, true)
+			s.Status = StatusPostGamePending // CLOSED only after post-game persists
+		case DecisionRecall:
+			if p := s.phaseForDecision(cp); p != nil && p.Outcome == "" {
+				p.Outcome = "recalled"
+			}
+			s.applyRecallAt(cp, recallIdx)
+			s.RecoveryPrior = "" // a recall supersedes the episode's restore
+		case DecisionReviewOnDemand:
+			// B2: park the run under a persisted obligation — no work may
+			// open until the matching review is requested and concluded.
+			s.ReviewObligation = &ReviewObligation{
+				SourceCheckpointID: cp.ID,
+				PhaseID:            cp.PhaseID,
+				At:                 nowUTC(),
+			}
+			s.Status = StatusReviewPending
+		case DecisionStop:
+			s.Status = StatusPostGamePending // minimal exit journal is the caller's duty
+			s.RecoveryPrior = ""
+		case DecisionAcceptRequirementChange:
+			if err := s.resumeAfterChange(); err != nil { // validated above
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// --- requirement-change loop (spec §1 增补) ---------------------------------------
 
 func copyDevPosition(p DevPosition) DevPosition {
 	q := p
@@ -867,103 +809,177 @@ func copyDevPosition(p DevPosition) DevPosition {
 // OpenRequirementChange freezes the current DevPosition and enters the
 // CHANGE_OPEN sub-state. Legal from ACTIVE (mid-phase change) and from
 // WAIT_USER (spec §1 增补: 检查点也可显式进入) — a checkpoint-entered change
-// keeps that checkpoint owed. While open, SubmitPhase is refused (no
-// submitting from a half-changed baseline).
+// supersedes that checkpoint (M2): it stays in history, undecidable, and a
+// fresh re-rendered successor re-asks it after the change closes. While
+// open, SubmitPhase is refused (no submitting from a half-changed baseline).
 func (r *RunState) OpenRequirementChange(note string) error {
-	if r.Status != StatusActive && r.Status != StatusWaitUser {
-		return fmt.Errorf("OpenRequirementChange: illegal status %s (want ACTIVE or WAIT_USER)", r.Status)
-	}
-	if r.Change != nil {
-		return errors.New("OpenRequirementChange: a change is already open")
-	}
-	r.Change = &ChangeContext{
-		Note:          note,
-		OpenedAt:      nowUTC(),
-		PriorStatus:   r.Status,
-		SavedPosition: copyDevPosition(r.DevPosition),
-	}
-	return r.Save()
+	return r.commit(func(s *RunState) error {
+		if s.Status != StatusActive && s.Status != StatusWaitUser {
+			return fmt.Errorf("OpenRequirementChange: illegal status %s (want ACTIVE or WAIT_USER)", s.Status)
+		}
+		if s.Change != nil {
+			return errors.New("OpenRequirementChange: a change is already open")
+		}
+		if s.Status == StatusWaitUser {
+			if cp := s.CurrentCheckpoint(); cp != nil {
+				cp.Superseded = true
+			}
+		}
+		s.Change = &ChangeContext{
+			Note:          note,
+			OpenedAt:      nowUTC(),
+			PriorStatus:   s.Status,
+			SavedPosition: copyDevPosition(s.DevPosition),
+		}
+		return nil
+	})
 }
 
 // ApplyRequirementDelta applies an explicit delta: RequirementsVersion bumps,
 // affected ids go stale, untouched accepted results stay valid. It then opens
 // the single-point confirm checkpoint (ACCEPT_REQUIREMENT_CHANGE resumes).
+// Legal from ACTIVE (mid-phase change) and — since M2 — from a WAIT_USER
+// entry, where the superseded checkpoint means nothing is pending and the
+// confirm checkpoint opens as usual.
 func (r *RunState) ApplyRequirementDelta(delta RequirementDelta) (ImpactReport, error) {
-	if err := r.requireStatus(StatusActive, "ApplyRequirementDelta"); err != nil {
-		return ImpactReport{}, err
-	}
-	if r.Change == nil {
-		return ImpactReport{}, errors.New("ApplyRequirementDelta: no requirement change open (OpenRequirementChange first)")
-	}
-	if cp := r.CurrentCheckpoint(); cp != nil {
-		return ImpactReport{}, fmt.Errorf("ApplyRequirementDelta: checkpoint %s is pending — a change-confirm checkpoint is already open", cp.ID)
-	}
-	r.RequirementsVersion++
-	var newly []string
-	for _, id := range append(append([]string(nil), delta.Changed...), delta.Affected...) {
-		if id == "" || containsID(r.Stale, id) {
-			continue
+	var report ImpactReport
+	err := r.commit(func(s *RunState) error {
+		fromWaitUser := s.Change != nil && s.Change.PriorStatus == StatusWaitUser
+		if s.Status != StatusActive && !(s.Status == StatusWaitUser && fromWaitUser) {
+			return fmt.Errorf("ApplyRequirementDelta: illegal status %s (want ACTIVE, or WAIT_USER for a WAIT_USER-entered change)", s.Status)
 		}
-		r.addStale(id)
-		newly = append(newly, id)
-	}
-	var preserved []string
-	for i := range r.Phases {
-		for _, c := range r.Phases[i].AcceptedCriteria {
-			if !containsID(r.Stale, c) && !containsID(preserved, c) {
-				preserved = append(preserved, c)
+		if s.Change == nil {
+			return errors.New("ApplyRequirementDelta: no requirement change open (OpenRequirementChange first)")
+		}
+		if cp := s.CurrentCheckpoint(); cp != nil {
+			return fmt.Errorf("ApplyRequirementDelta: checkpoint %s is pending — a change-confirm checkpoint is already open", cp.ID)
+		}
+		s.RequirementsVersion++
+		var newly []string
+		for _, id := range append(append([]string(nil), delta.Changed...), delta.Affected...) {
+			if id == "" || containsID(s.Stale, id) {
+				continue
+			}
+			s.addStale(id)
+			newly = append(newly, id)
+		}
+		var preserved []string
+		for i := range s.Phases {
+			for _, c := range s.Phases[i].AcceptedCriteria {
+				if !containsID(s.Stale, c) && !containsID(preserved, c) {
+					preserved = append(preserved, c)
+				}
 			}
 		}
-	}
-	phaseID := ""
-	if ph := r.openPhaseState(); ph != nil {
-		phaseID = ph.ID
-	}
-	if _, err := r.addCheckpoint(CheckpointChangeConfirm, phaseID, delta.Note, nil, nil); err != nil {
+		phaseID := ""
+		if ph := s.openPhaseState(); ph != nil {
+			phaseID = ph.ID
+		}
+		if _, err := s.addCheckpoint(CheckpointChangeConfirm, phaseID, delta.Note, nil, nil); err != nil {
+			return err
+		}
+		s.Change.Applied = true
+		s.Status = StatusWaitUser
+		report = ImpactReport{RequirementsVersion: s.RequirementsVersion, NewlyStale: newly, Preserved: preserved}
+		return nil
+	})
+	if err != nil {
 		return ImpactReport{}, err
 	}
-	r.Status = StatusWaitUser
-	if err := r.Save(); err != nil {
-		return ImpactReport{}, err
+	return report, nil
+}
+
+// rerenderCheckpoint re-renders the checkpoint a WAIT_USER-entered
+// requirement change superseded (M2): same kind and phase, fresh nonce, note
+// annotated with the new requirements version, artifact versions and criteria
+// carried over from the superseded original. The owning phase visit is
+// re-linked so a CONTINUE here decides it normally. Returns false when no
+// superseded-undecided checkpoint exists (a WAIT_USER entry with nothing
+// owed — the caller lands ACTIVE).
+func (r *RunState) rerenderCheckpoint() bool {
+	var src *CheckpointState
+	for i := len(r.Checkpoints) - 1; i >= 0; i-- {
+		if r.Checkpoints[i].Superseded && !r.Checkpoints[i].Decided {
+			src = &r.Checkpoints[i]
+			break
+		}
 	}
-	return ImpactReport{RequirementsVersion: r.RequirementsVersion, NewlyStale: newly, Preserved: preserved}, nil
+	if src == nil {
+		return false
+	}
+	nonce, err := r.uniqueNonce()
+	if err != nil {
+		return false // fail-closed: land ACTIVE rather than fabricate a checkpoint
+	}
+	note := src.Note
+	if note != "" {
+		note += " — "
+	}
+	note += fmt.Sprintf("re-rendered after requirement change v%d", r.RequirementsVersion)
+	cp := CheckpointState{
+		ID:               fmt.Sprintf("cp-%d", len(r.Checkpoints)+1),
+		Kind:             src.Kind,
+		PhaseID:          src.PhaseID,
+		Note:             note,
+		Nonce:            nonce,
+		OpenedAt:         nowUTC(),
+		ArtifactVersions: copyArtifactVersions(src.ArtifactVersions),
+		CriteriaIDs:      append([]string(nil), src.CriteriaIDs...),
+	}
+	r.Checkpoints = append(r.Checkpoints, cp)
+	for i := len(r.Phases) - 1; i >= 0; i-- {
+		if r.Phases[i].CheckpointID == src.ID {
+			r.Phases[i].CheckpointID = cp.ID
+			break
+		}
+	}
+	return true
 }
 
 // resumeAfterChange restores the frozen DevPosition and clears CHANGE_OPEN.
-// It refuses whenever any checkpoint awaits decision: a pending confirm
-// checkpoint may only be accepted through RecordDecision(ACCEPT_REQUIREMENT_
-// CHANGE) — the reducer never fabricates a user decision. Because the refusal
-// guarantees no checkpoint is owed at resume time, the landing status is
-// ACTIVE; a WAIT_USER-entered change stays at WAIT_USER through its still-
-// pending checkpoint (resuming it stays refused until that checkpoint is
-// decided), and Change.PriorStatus records what preceded CHANGE_OPEN.
+// It requires an APPLIED delta (M2 kills the open→resume bypass: a change
+// closes only through its single-point confirm) and refuses whenever any
+// checkpoint still awaits decision. The landing status depends on the entry:
+// an ACTIVE-entered change resumes ACTIVE; a WAIT_USER-entered change
+// re-renders the checkpoint it superseded and stays WAIT_USER — the user
+// re-decides the interrupted question against the new baseline (单点闭环:
+// one re-render, not a phase-by-phase reopen).
 func (r *RunState) resumeAfterChange() error {
 	if r.Change == nil {
 		return errors.New("no requirement change open")
+	}
+	if !r.Change.Applied {
+		return errors.New("requirement change has no applied delta — apply the delta and close through the confirm checkpoint (ACCEPT_REQUIREMENT_CHANGE)")
 	}
 	if cp := r.CurrentCheckpoint(); cp != nil {
 		return fmt.Errorf("requirement change cannot resume: checkpoint %s (%s) awaits decision — acceptance only via RecordDecision(ACCEPT_REQUIREMENT_CHANGE)", cp.ID, cp.Kind)
 	}
 	r.DevPosition = r.Change.SavedPosition
+	prior := r.Change.PriorStatus
 	r.Change = nil
-	r.Status = StatusActive
+	if prior == StatusWaitUser && r.rerenderCheckpoint() {
+		r.Status = StatusWaitUser
+	} else {
+		r.Status = StatusActive
+	}
 	return nil
 }
 
-// ResumeAfterChange closes the change loop without a decision checkpoint —
-// the framework-level resume (RecordDecision(ACCEPT_REQUIREMENT_CHANGE) is
-// the platform-anchored path and performs the same resume).
+// ResumeAfterChange is the framework-level resume entry. Since M2 it cannot
+// bypass the confirm checkpoint: without an applied delta it refuses, and
+// with one the pending confirm checkpoint must be accepted through
+// RecordDecision(ACCEPT_REQUIREMENT_CHANGE) — the platform-anchored path that
+// performs the same resume. Kept as the belt that refuses un-applied changes.
 func (r *RunState) ResumeAfterChange() error {
 	if r.Status != StatusActive && r.Status != StatusWaitUser {
 		return fmt.Errorf("ResumeAfterChange: illegal status %s", r.Status)
 	}
-	if err := r.resumeAfterChange(); err != nil {
-		return err
-	}
-	return r.Save()
+	return r.commit(func(s *RunState) error {
+		return s.resumeAfterChange()
+	})
 }
 
-// --- review lifecycle (spec §3) ----------------------------------------------
+// --- review lifecycle (spec §3) ----------------------------------------------------
 
 func envelopeDigest(env Envelope) string {
 	b, err := json.Marshal(env)
@@ -985,13 +1001,18 @@ func (r *RunState) findReview(reviewID string) *ReviewRecord {
 
 // RequestReview registers a review envelope (basic shape checks here; the
 // strict allow-list validation lives in envelope.go, Task 7) and moves the
-// run to REVIEW_PENDING. While a review is PREPARED/RUNNING, the only legal
-// request is re-sending that review's exact envelope (spec §3 崩溃恢复:
-// crash + reconnect must not duplicate the review or rerun the producer —
-// re-spawning the reviewer consumes remaining delegation budget, accounted
-// by the caller). A different envelope or a concluded review id is refused,
-// and a NEW review id requires ACTIVE with nothing in flight.
+// run to REVIEW_PENDING. The status gate comes FIRST (task-2.5 M1a): a NEW
+// review requires ACTIVE (the 终局⑤ path) — or REVIEW_PENDING under a [v]
+// obligation (B2), which the request consumes into the record — and a
+// same-envelope re-send is legal only in REVIEW_PENDING while that review is
+// PREPARED/RUNNING (spec §3 崩溃恢复: crash + reconnect must not duplicate the
+// review or rerun the producer; re-spawning the reviewer consumes remaining
+// delegation budget, accounted by the caller). CLOSED, WAIT_USER and
+// OUTCOME_UNKNOWN refuse everything — a terminal-state re-send never
+// succeeds. A different envelope or a concluded review id is refused, and a
+// new review id with nothing authorizing it is refused.
 func (r *RunState) RequestReview(env Envelope) (string, error) {
+	// Pure input validation first.
 	if env.SchemaVersion == "" {
 		return "", errors.New("RequestReview: envelope schema_version is required")
 	}
@@ -1004,7 +1025,18 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 	if len(env.ArtifactSet) == 0 {
 		return "", errors.New("RequestReview: envelope artifact_set must be non-empty")
 	}
+
+	// M1a status gate before the fast path.
+	if r.Status != StatusActive && r.Status != StatusReviewPending {
+		return "", fmt.Errorf("RequestReview: illegal status %s (want ACTIVE for a new review, or REVIEW_PENDING for a same-envelope re-send / an outstanding [v] obligation)", r.Status)
+	}
+
 	if rv := r.findReview(env.ReviewID); rv != nil {
+		// Re-send of a registered review: only mid-flight, only in
+		// REVIEW_PENDING, only the exact same envelope.
+		if err := r.requireStatus(StatusReviewPending, "RequestReview"); err != nil {
+			return "", err
+		}
 		if rv.Status != ReviewPrepared && rv.Status != ReviewRunning {
 			return "", fmt.Errorf("RequestReview: review %s already concluded (%s) — use a new review id", env.ReviewID, rv.Status)
 		}
@@ -1013,7 +1045,13 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 		}
 		return rv.ReviewID, nil // same envelope: idempotent re-send
 	}
-	if err := r.requireStatus(StatusActive, "RequestReview"); err != nil {
+
+	// New review id: ACTIVE (终局⑤) or REVIEW_PENDING under a [v] obligation (B2).
+	if r.ReviewObligation != nil {
+		if err := r.requireStatus(StatusReviewPending, "RequestReview"); err != nil {
+			return "", err
+		}
+	} else if err := r.requireStatus(StatusActive, "RequestReview"); err != nil {
 		return "", err
 	}
 	for i := range r.Reviews {
@@ -1021,14 +1059,22 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 			return "", fmt.Errorf("RequestReview: review %s still in flight — one review at a time", r.Reviews[i].ReviewID)
 		}
 	}
-	r.Reviews = append(r.Reviews, ReviewRecord{
-		ReviewID:       env.ReviewID,
-		Status:         ReviewPrepared,
-		EnvelopeDigest: envelopeDigest(env),
-		RequestedAt:    nowUTC(),
+	err := r.commit(func(s *RunState) error {
+		rec := ReviewRecord{
+			ReviewID:       env.ReviewID,
+			Status:         ReviewPrepared,
+			EnvelopeDigest: envelopeDigest(env),
+			RequestedAt:    nowUTC(),
+		}
+		if s.ReviewObligation != nil {
+			rec.SourceCheckpointID = s.ReviewObligation.SourceCheckpointID
+			s.ReviewObligation = nil // consumed: the review record now carries it
+		}
+		s.Reviews = append(s.Reviews, rec)
+		s.Status = StatusReviewPending
+		return nil
 	})
-	r.Status = StatusReviewPending
-	if err := r.Save(); err != nil {
+	if err != nil {
 		return "", err
 	}
 	return env.ReviewID, nil
@@ -1039,129 +1085,163 @@ func (r *RunState) RequestReview(env Envelope) (string, error) {
 // uses StartDelegation instead, which binds this transition to the delegation
 // and tool-call counters in ONE Save (review round 2, R1).
 func (r *RunState) MarkReviewRunning(reviewID string) error {
-	if err := r.requireStatus(StatusReviewPending, "MarkReviewRunning"); err != nil {
-		return err
-	}
-	rv := r.findReview(reviewID)
-	if rv == nil {
-		return fmt.Errorf("MarkReviewRunning: unknown review %q", reviewID)
-	}
-	if rv.Status != ReviewPrepared {
-		return fmt.Errorf("MarkReviewRunning: review %s is %s, not PREPARED", reviewID, rv.Status)
-	}
-	rv.Status = ReviewRunning
-	rv.StartedAt = nowUTC()
-	return r.Save()
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusReviewPending, "MarkReviewRunning"); err != nil {
+			return err
+		}
+		rv := s.findReview(reviewID)
+		if rv == nil {
+			return fmt.Errorf("MarkReviewRunning: unknown review %q", reviewID)
+		}
+		if rv.Status != ReviewPrepared {
+			return fmt.Errorf("MarkReviewRunning: review %s is %s, not PREPARED", reviewID, rv.Status)
+		}
+		rv.Status = ReviewRunning
+		rv.StartedAt = nowUTC()
+		return nil
+	})
 }
 
 // StartDelegation consumes one delegation slot atomically: for a reviewer it
 // moves the PREPARED review to RUNNING, and every delegation counts against
 // the delegation budget and the phase tool budget — all validated first,
-// then persisted in ONE Save (review round 2, R1: two separate Saves left a
-// window where RUNNING was on disk but the counter was not, making the
-// review undispatchable and unretryable). A reviewer delegation is legal
-// only in REVIEW_PENDING with that review PREPARED; a worker delegation only
-// in ACTIVE. A failed Save leaves the disk untouched — mutation happens in
-// memory first — so a retry after repair is clean.
+// then persisted in ONE Save (review round 2, R1). The delegation budget is
+// ALSO enforced here (task-2.5 14a): the gate pre-checks it, but direct
+// reducer callers must not be able to exceed the limit either — belt and
+// braces. A reviewer delegation is legal only in REVIEW_PENDING with that
+// review PREPARED; a worker delegation only in ACTIVE. Since M9 the whole
+// transition runs in a commit snapshot: a failed Save leaves memory and disk
+// untouched, so a retry after repair is clean (and the caller must LoadRun
+// before further use — see commit).
 func (r *RunState) StartDelegation(reviewID string, isReviewer bool) error {
-	if isReviewer {
-		if err := r.requireStatus(StatusReviewPending, "StartDelegation"); err != nil {
-			return err
+	return r.commit(func(s *RunState) error {
+		if l := s.Limits.Delegations; l > 0 && s.Counters.Delegations >= l {
+			return fmt.Errorf("StartDelegation: delegation budget exhausted (%d/%d) — only the user can add budget", s.Counters.Delegations, l)
 		}
-		rv := r.findReview(reviewID)
-		if rv == nil {
-			return fmt.Errorf("StartDelegation: unknown review %q", reviewID)
+		if isReviewer {
+			if err := s.requireStatus(StatusReviewPending, "StartDelegation"); err != nil {
+				return err
+			}
+			rv := s.findReview(reviewID)
+			if rv == nil {
+				return fmt.Errorf("StartDelegation: unknown review %q", reviewID)
+			}
+			if rv.Status != ReviewPrepared {
+				return fmt.Errorf("StartDelegation: review %s is %s, not PREPARED", reviewID, rv.Status)
+			}
+			rv.Status = ReviewRunning
+			rv.StartedAt = nowUTC()
+		} else {
+			if err := s.requireStatus(StatusActive, "StartDelegation"); err != nil {
+				return err
+			}
 		}
-		if rv.Status != ReviewPrepared {
-			return fmt.Errorf("StartDelegation: review %s is %s, not PREPARED", reviewID, rv.Status)
-		}
-		rv.Status = ReviewRunning
-		rv.StartedAt = nowUTC()
-	} else {
-		if err := r.requireStatus(StatusActive, "StartDelegation"); err != nil {
-			return err
-		}
-	}
-	r.Counters.Delegations++
-	r.CountToolCall()
-	return r.Save()
+		s.Counters.Delegations++
+		s.CountToolCall()
+		return nil
+	})
 }
 
 // RecordReviewResult concludes the in-flight review and opens a review-result
 // checkpoint (PASS still leaves the run WAIT_USER — spec §3). Enum violations
 // are protocol errors: the review is marked FAILED, the failure routes to a
-// REVIEW_RESULT checkpoint so the run stays recoverable, and an error is
-// returned. NEEDS-FIX consumes run rework budget; BLOCKED does not.
+// REVIEW_RESULT checkpoint so the run stays recoverable, the routing IS
+// persisted, and an error is returned to the caller. BLOCKED and the quality
+// verdict are mutually exclusive (task-2.5 M12): BLOCKED must not pose as a
+// quality conclusion and COMPLETED must not carry a reason code. NEEDS-FIX
+// consumes run rework budget; BLOCKED does not.
 func (r *RunState) RecordReviewResult(res ReviewResult) error {
-	if err := r.requireStatus(StatusReviewPending, "RecordReviewResult"); err != nil {
-		return err
-	}
-	rv := r.findReview(res.ReviewID)
-	if rv == nil {
-		return fmt.Errorf("RecordReviewResult: unknown review %q", res.ReviewID)
-	}
-	if rv.Status != ReviewPrepared && rv.Status != ReviewRunning {
-		return fmt.Errorf("RecordReviewResult: review %s already concluded (%s) — late results must not affect a new generation", res.ReviewID, rv.Status)
-	}
-	problem := ""
-	switch res.RunStatus {
-	case ReviewRunCompleted:
-		if res.Verdict != VerdictPass && res.Verdict != VerdictNeedsFix {
-			problem = fmt.Sprintf("verdict must be %s or %s when run_status is COMPLETED", VerdictPass, VerdictNeedsFix)
-		}
-	case ReviewRunBlocked:
-		if res.ReasonCode == "" {
-			problem = "BLOCKED requires a reason_code"
-		}
-	default:
-		problem = fmt.Sprintf("run_status must be %s or %s", ReviewRunCompleted, ReviewRunBlocked)
-	}
-	if problem != "" {
-		rv.Status = ReviewFailed
-		rv.ConcludedAt = nowUTC()
-		// A protocol error must not brick the run: route it to a checkpoint
-		// a human can still decide (spec §3 review.failed 语义).
-		cp, err := r.addCheckpoint(CheckpointReviewResult, "", "FAILED "+problem, nil, nil)
-		if err != nil {
+	// protocolErr carries the enum problem out AFTER the routing persisted —
+	// returning it from the closure would roll the routing back.
+	var protocolErr error
+	err := r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusReviewPending, "RecordReviewResult"); err != nil {
 			return err
 		}
-		r.Status = StatusWaitUser
-		if err := r.Save(); err != nil {
-			return fmt.Errorf("RecordReviewResult: %s (review %s marked FAILED; save failed: %v)", problem, res.ReviewID, err)
+		rv := s.findReview(res.ReviewID)
+		if rv == nil {
+			return fmt.Errorf("RecordReviewResult: unknown review %q", res.ReviewID)
 		}
-		return fmt.Errorf("RecordReviewResult: %s — review %s marked FAILED, routed to checkpoint %s", problem, res.ReviewID, cp.ID)
-	}
+		if rv.Status != ReviewPrepared && rv.Status != ReviewRunning {
+			return fmt.Errorf("RecordReviewResult: review %s already concluded (%s) — late results must not affect a new generation", res.ReviewID, rv.Status)
+		}
+		problem := ""
+		switch res.RunStatus {
+		case ReviewRunCompleted:
+			switch {
+			case res.Verdict != VerdictPass && res.Verdict != VerdictNeedsFix:
+				problem = fmt.Sprintf("verdict must be %s or %s when run_status is COMPLETED", VerdictPass, VerdictNeedsFix)
+			case res.ReasonCode != "":
+				problem = "reason_code must be empty when run_status is COMPLETED (a completion carries no block reason)"
+			}
+		case ReviewRunBlocked:
+			switch {
+			case res.ReasonCode == "":
+				problem = "BLOCKED requires a reason_code"
+			case res.Verdict != "":
+				problem = fmt.Sprintf("verdict must be empty when run_status is BLOCKED (got %q) — BLOCKED never poses as a quality conclusion", res.Verdict)
+			}
+		default:
+			problem = fmt.Sprintf("run_status must be %s or %s", ReviewRunCompleted, ReviewRunBlocked)
+		}
+		if problem != "" {
+			rv.Status = ReviewFailed
+			rv.ConcludedAt = nowUTC()
+			// A protocol error must not brick the run: route it to a checkpoint
+			// a human can still decide (spec §3 review.failed 语义), persist
+			// that routing, and report the problem to the caller.
+			cp, err := s.addCheckpoint(CheckpointReviewResult, "", "FAILED "+problem, nil, nil)
+			if err != nil {
+				return err
+			}
+			s.Status = StatusWaitUser
+			protocolErr = fmt.Errorf("RecordReviewResult: %s — review %s marked FAILED, routed to checkpoint %s", problem, res.ReviewID, cp.ID)
+			return nil
+		}
 
-	now := nowUTC()
-	rv.ArtifactDigest = res.ArtifactDigest
-	rv.ReasonCode = res.ReasonCode
-	if res.RunStatus == ReviewRunBlocked {
-		rv.Status = ReviewBlocked
-	} else {
-		rv.Status = ReviewReviewed
-		rv.Verdict = res.Verdict
-		if res.Verdict == VerdictNeedsFix {
-			r.Counters.RunRework++
+		now := nowUTC()
+		rv.ArtifactDigest = res.ArtifactDigest
+		rv.ReasonCode = res.ReasonCode
+		if res.RunStatus == ReviewRunBlocked {
+			rv.Status = ReviewBlocked
+		} else {
+			rv.Status = ReviewReviewed
+			rv.Verdict = res.Verdict
+			if res.Verdict == VerdictNeedsFix {
+				s.Counters.RunRework++
+			}
 		}
-	}
-	rv.ConcludedAt = now
-	note := string(res.RunStatus)
-	if res.Verdict != "" {
-		note += " " + res.Verdict
-	}
-	if _, err := r.addCheckpoint(CheckpointReviewResult, "", note, nil, nil); err != nil {
+		rv.ConcludedAt = now
+		note := string(res.RunStatus)
+		if res.ReasonCode != "" {
+			note += " " + res.ReasonCode
+		}
+		// M12: the verdict joins the note only for a COMPLETED run — a
+		// BLOCKED note must never read like a quality conclusion.
+		if res.RunStatus == ReviewRunCompleted && res.Verdict != "" {
+			note += " " + res.Verdict
+		}
+		if _, err := s.addCheckpoint(CheckpointReviewResult, "", note, nil, nil); err != nil {
+			return err
+		}
+		s.Status = StatusWaitUser
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	r.Status = StatusWaitUser
-	return r.Save()
+	return protocolErr
 }
 
-// --- OUTCOME_UNKNOWN recovery (spec §5) --------------------------------------
+// --- OUTCOME_UNKNOWN recovery (spec §5) ---------------------------------------------
 
 // MarkOutcomeUnknown records a tool call whose side effect may have happened
 // but whose result was never persisted (crash window). Idempotent per
-// toolUseID. Mutates in memory only — callers persist via Save; recovery
-// probes never auto-replay mutating actions.
+// toolUseID. When the episode STARTS (status not already OUTCOME_UNKNOWN) it
+// freezes RecoveryPrior — the restore target for the whole batch, so a later
+// episode never inherits an earlier one's prior (task-2.5 B4). Mutates in
+// memory only — callers persist via Save; recovery probes never auto-replay
+// mutating actions.
 func (r *RunState) MarkOutcomeUnknown(toolUseID string) {
 	if toolUseID == "" || r.Status == StatusClosed || r.Status == StatusPostGamePending {
 		return
@@ -1171,71 +1251,119 @@ func (r *RunState) MarkOutcomeUnknown(toolUseID string) {
 			return
 		}
 	}
-	prior := r.Status
-	if prior == StatusOutcomeUnknown && len(r.OutcomeUnknowns) > 0 {
-		prior = r.OutcomeUnknowns[0].PriorStatus
+	episode := 0
+	if n := len(r.OutcomeUnknowns); n > 0 {
+		episode = r.OutcomeUnknowns[n-1].Episode
 	}
-	if prior == StatusOutcomeUnknown {
-		prior = StatusActive
+	if r.Status != StatusOutcomeUnknown {
+		r.RecoveryPrior = r.Status
+		episode++
 	}
 	r.OutcomeUnknowns = append(r.OutcomeUnknowns, OutcomeUnknown{
 		ToolUseID:   toolUseID,
-		PriorStatus: prior,
+		PriorStatus: r.RecoveryPrior,
+		Episode:     episode,
 		RecordedAt:  nowUTC(),
 	})
 	r.Status = StatusOutcomeUnknown
 }
 
+// currentOutcomeEpisode returns the episode number of the latest entry (0
+// when none). Entries of older episodes are fully resolved by construction —
+// an episode only ends when every entry resolved.
+func (r *RunState) currentOutcomeEpisode() int {
+	if n := len(r.OutcomeUnknowns); n > 0 {
+		return r.OutcomeUnknowns[n-1].Episode
+	}
+	return 0
+}
+
 // ResolveOutcome records a probe verdict (accepted|failed|indeterminate) for
-// an OUTCOME_UNKNOWN entry. The run stays OUTCOME_UNKNOWN until the last
-// entry resolves, then returns to its prior status. A late duplicate resolve
-// with the same outcome is an idempotent no-op; a conflicting one is an error.
+// an OUTCOME_UNKNOWN entry. Mid-episode resolves only persist the verdict.
+// When the LAST entry of the episode resolves: all-accepted restores the
+// episode prior directly; any failed/indeterminate opens a recovery
+// checkpoint instead (B3) — the run goes WAIT_USER and the user decides
+// CONTINUE (accept the status quo, restore prior) / RECALL / STOP; a mutating
+// action is never auto-replayed. A late duplicate resolve with the same
+// outcome is an idempotent no-op; a conflicting one is an error.
 func (r *RunState) ResolveOutcome(toolUseID, outcome string) error {
 	switch outcome {
 	case OutcomeAccepted, OutcomeFailed, OutcomeIndeterminate:
 	default:
 		return fmt.Errorf("ResolveOutcome: invalid outcome %q (want accepted|failed|indeterminate)", outcome)
 	}
-	var entry *OutcomeUnknown
-	for i := range r.OutcomeUnknowns {
-		if r.OutcomeUnknowns[i].ToolUseID == toolUseID {
-			entry = &r.OutcomeUnknowns[i]
-			break
+	return r.commit(func(s *RunState) error {
+		var entry *OutcomeUnknown
+		for i := range s.OutcomeUnknowns {
+			if s.OutcomeUnknowns[i].ToolUseID == toolUseID {
+				entry = &s.OutcomeUnknowns[i]
+				break
+			}
 		}
-	}
-	if entry == nil {
-		return fmt.Errorf("ResolveOutcome: unknown tool_use_id %q", toolUseID)
-	}
-	if entry.Resolved {
-		if entry.Outcome == outcome {
-			return nil // late duplicate callback: no-op
+		if entry == nil {
+			return fmt.Errorf("ResolveOutcome: unknown tool_use_id %q", toolUseID)
 		}
-		return fmt.Errorf("ResolveOutcome: %s already resolved as %s (conflicting %s)", toolUseID, entry.Outcome, outcome)
-	}
-	if err := r.requireStatus(StatusOutcomeUnknown, "ResolveOutcome"); err != nil {
-		return err
-	}
-	entry.Resolved = true
-	entry.Outcome = outcome
-	entry.ResolvedAt = nowUTC()
-	for i := range r.OutcomeUnknowns {
-		if !r.OutcomeUnknowns[i].Resolved {
-			return r.Save()
+		if entry.Resolved {
+			if entry.Outcome == outcome {
+				return nil // late duplicate callback: no-op
+			}
+			return fmt.Errorf("ResolveOutcome: %s already resolved as %s (conflicting %s)", toolUseID, entry.Outcome, outcome)
 		}
-	}
-	if entry.PriorStatus != "" && entry.PriorStatus != StatusOutcomeUnknown {
-		r.Status = entry.PriorStatus
-	} else {
-		r.Status = StatusActive
-	}
-	return r.Save()
+		if err := s.requireStatus(StatusOutcomeUnknown, "ResolveOutcome"); err != nil {
+			return err
+		}
+		entry.Resolved = true
+		entry.Outcome = outcome
+		entry.ResolvedAt = nowUTC()
+		for i := range s.OutcomeUnknowns {
+			if !s.OutcomeUnknowns[i].Resolved {
+				return nil // episode still open — nothing to restore yet
+			}
+		}
+		// Episode complete. Any failed/indeterminate verdict (of THIS
+		// episode — older episodes already had their checkpoint) demands a
+		// human recovery decision instead of an automatic restore.
+		episode := s.currentOutcomeEpisode()
+		bad := false
+		for i := range s.OutcomeUnknowns {
+			e := &s.OutcomeUnknowns[i]
+			if e.Episode == episode && (e.Outcome == OutcomeFailed || e.Outcome == OutcomeIndeterminate) {
+				bad = true
+			}
+		}
+		if bad {
+			parts := make([]string, 0, 2)
+			for i := range s.OutcomeUnknowns {
+				e := &s.OutcomeUnknowns[i]
+				if e.Episode == episode {
+					parts = append(parts, fmt.Sprintf("%s=%s", e.ToolUseID, e.Outcome))
+				}
+			}
+			sort.Strings(parts)
+			if _, err := s.addCheckpoint(CheckpointRecovery, "", "outcome probes: "+strings.Join(parts, "; "), nil, nil); err != nil {
+				return err
+			}
+			s.Status = StatusWaitUser // RecoveryPrior stays frozen for the CONTINUE
+		} else {
+			s.restoreRecoveryPrior()
+		}
+		return nil
+	})
 }
 
-// --- budget (spec §5 预算与终止) ----------------------------------------------
+// --- budget (spec §5 预算与终止) ------------------------------------------------------
 
 // CountToolCall records one tool call against the current phase's budget.
-// Mutates in memory only (no error return) — callers persist via Save.
-func (r *RunState) CountToolCall() { r.Counters.PhaseToolCalls++ }
+// With no open phase it is a no-op (task-2.5 M1b): the budget is per phase,
+// and phase-less calls (run start, review dispatch from a concluded run)
+// charge nothing. Mutates in memory only (no error return) — callers persist
+// via Save.
+func (r *RunState) CountToolCall() {
+	if r.openPhaseState() == nil {
+		return
+	}
+	r.Counters.PhaseToolCalls++
+}
 
 // BudgetExhausted reports whether any limit set at run start has been
 // reached, with a reason naming the first exhausted budget. Zero-value

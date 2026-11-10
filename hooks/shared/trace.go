@@ -254,7 +254,10 @@ func AppendEvent(runID, sessionID string, ev TraceEvent) error {
 // traceTail reads the file's last complete line and returns (prev_hash,
 // last seq). A missing file yields the genesis pair: sha256(""), 0. The
 // prev_hash commits to the previous line's canonical bytes, so the tail is
-// re-canonicalized (never trusted raw) before hashing.
+// re-canonicalized (never trusted raw) before hashing. A non-empty file whose
+// last byte is not '\n' is torn or glued JSONL (task-2.5 m3): appending would
+// weld the new event onto the last line, so the write is refused up front —
+// the chain fails closed on a corrupt tail.
 func traceTail(p string) (string, int, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -262,6 +265,9 @@ func traceTail(p string) (string, int, error) {
 			return hashHex(nil), 0, nil
 		}
 		return "", 0, err
+	}
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		return "", 0, fmt.Errorf("trace: %s does not end with a newline (torn or glued JSONL — corrupt); refusing to append", p)
 	}
 	lines := traceLines(b)
 	if len(lines) == 0 {

@@ -349,6 +349,49 @@ func TestVerifyChainMissingFile(t *testing.T) {
 	}
 }
 
+// TestTraceGluedTailRefused pins task-2.5 m3: AppendEvent checks the file's
+// tail byte before writing — a file that does not end in '\n' is torn or
+// glued JSONL (corruption), and appending would weld the next event onto the
+// last line. The write is refused and the file left untouched.
+func TestTraceGluedTailRefused(t *testing.T) {
+	useTraceDir(t)
+	const run = "run-tr-glued"
+	p := traceFileFor(t, run)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// One complete line, then strip its trailing newline (a torn write).
+	mustAppend(t, run, EventWorkflowStarted)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	if err := os.WriteFile(p, b[:len(b)-1], 0o644); err != nil {
+		t.Fatalf("strip trailing newline: %v", err)
+	}
+
+	if err := AppendEvent(run, "sess-1", TraceEvent{Type: EventPhaseStarted, Source: "trace_test"}); err == nil {
+		t.Fatal("append onto a non-newline-terminated tail: want error, got nil")
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("re-read trace: %v", err)
+	}
+	if len(after) != len(b)-1 {
+		t.Fatalf("refused append changed the file: %d bytes, want %d (unchanged)", len(after), len(b)-1)
+	}
+
+	// After repair (restoring the newline), appends chain cleanly again.
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	mustAppend(t, run, EventPhaseStarted)
+	if err := VerifyChain(run); err != nil {
+		t.Fatalf("VerifyChain after repair: %v", err)
+	}
+}
+
 // --- test utilities ------------------------------------------------------------
 
 func mustJSON(t *testing.T, v interface{}) []byte {
