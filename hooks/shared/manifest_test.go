@@ -250,6 +250,9 @@ phases:
     skill:
       default: demo-verify
       alternate: []
+  release:
+    skill:
+      default: none
 `)
 	m, err := LoadRuntimeManifest()
 	if err != nil {
@@ -261,6 +264,7 @@ phases:
 		"diagnosis":    {Default: "project-diagnosis"},
 		"debug":        {Default: "demo-debug", Alternate: []string{"superpowers:systematic-debugging"}},
 		"verify":       {Default: "demo-verify"},
+		"release":      {Default: "none"},
 	}
 	if !reflect.DeepEqual(m.Phases, want) {
 		t.Fatalf("retained bindings = %+v, want %+v", m.Phases, want)
@@ -307,6 +311,9 @@ phases:
 		"empty string form": {
 			`      ""`,
 			"requires a non-empty provider name"},
+		"default none with alternates (validator twin)": {
+			"      default: none\n      alternate: [demo-debug]",
+			"skill none cannot have alternate providers"},
 		"sequence form (no third form)": {
 			"      [demo-debug, demo-other]",
 			"string form or the {default, alternate} mapping"},
@@ -335,6 +342,37 @@ phases:
 `)
 	if m, err := LoadRuntimeManifest(); err == nil || m != nil {
 		t.Fatalf("skill: null must fail closed per the null walk, got (%+v, %v)", m, err)
+	}
+}
+
+// TestLoadRuntimeManifestEmptyPhasesFailsClosed (T17 residual, closed by T11):
+// validate-manifest rejects a manifest whose phases map is empty or absent
+// ("missing_field: phases must be a non-empty capability map") — the runtime
+// loader is its twin and must reject the same shapes, never grant authority
+// the project's own tooling declares invalid. The mapping-form
+// `skill: {default: none}` (no alternates) stays legal in both.
+func TestLoadRuntimeManifestEmptyPhasesFailsClosed(t *testing.T) {
+	for name, content := range map[string]string{
+		"empty phases map": `version: "2"
+project:
+  name: sample-project
+phases: {}
+`,
+		"phases key absent": `version: "2"
+project:
+  name: sample-project
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeProjectManifest(t, content)
+			m, err := LoadRuntimeManifest()
+			if err == nil || m != nil {
+				t.Fatalf("a no-phases manifest is validator-invalid and must fail closed at load, got (%+v, %v)", m, err)
+			}
+			if !strings.Contains(err.Error(), "non-empty capability map") {
+				t.Fatalf("error %q must name the validator's rule (twin phrasing)", err.Error())
+			}
+		})
 	}
 }
 

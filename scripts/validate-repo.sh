@@ -284,7 +284,92 @@ while IFS= read -r f; do
 done < <(ls commands/*.md 2>/dev/null)
 [[ $OVER -eq 0 ]] && ok "byte ceilings respected (skills ≤${CEIL_SKILL}B, commands ≤${CEIL_CMD}B)"
 
-# ------------------------------------ 10. platform parity tripwire (.gemini)
+# ------------------------------------- 10. roster single-default rule (T11)
+# Spec §2 capability→provider 唯一主选: skills/roster.yaml is THE example
+# capability map, so it must model the explicit binding — every capability
+# under phases: (except review, whose provider contract is verification_spec)
+# declares EXACTLY ONE `default:` (zero or multiple → FAIL), a scalar
+# `skill: name` shorthand → FAIL (the roster models default/alternate
+# explicitly), and `default: none` must carry no alternates. Methodology
+# duplication is a review-time audit (references/capability-map.md); this is
+# the mechanical half.
+if python3 - <<'EOF'
+import re, sys
+
+fails = []
+try:
+    lines = open("skills/roster.yaml", encoding="utf-8").read().splitlines()
+except Exception as e:
+    print(f"✗ skills/roster.yaml unreadable: {e}")
+    sys.exit(1)
+
+phase_re = re.compile(r"^  ([a-z][a-z0-9_-]*):\s*(?:#.*)?$")
+phases, order = {}, []
+in_phases, cur = False, None
+for raw in lines:
+    line = raw.rstrip()
+    s = line.strip()
+    if not s or s.startswith("#"):
+        continue
+    if not line.startswith(" "):  # top-level key
+        in_phases = re.match(r"^phases:\s*(?:#.*)?$", line) is not None
+        cur = None
+        continue
+    if not in_phases:
+        continue
+    m = phase_re.match(line)
+    if m:
+        cur = m.group(1)
+        phases[cur] = {"form": None, "defaults": [], "alternates": 0, "spec": False}
+        order.append(cur)
+        continue
+    if cur is None:
+        continue
+    p = phases[cur]
+    if re.match(r"^    skill:\s*$", line):
+        p["form"] = "mapping"
+    elif re.match(r"^    skill:\s*\S", line):
+        p["form"] = "scalar"
+    elif re.match(r"^    verification_spec:", line):
+        p["spec"] = True
+    elif line.startswith("      default:"):
+        p["defaults"].append(line.split(":", 1)[1].strip())
+    elif line.startswith("      alternate:"):
+        p["alternates"] += 1
+
+if not phases:
+    fails.append("skills/roster.yaml: no capabilities found under phases: (the roster must model every capability)")
+for name in order:
+    p = phases[name]
+    if name == "review":
+        if not p["spec"]:
+            fails.append("skills/roster.yaml: phases.review must declare verification_spec (the review capability's provider contract)")
+        if p["form"] is not None:
+            fails.append(f"skills/roster.yaml: phases.review must not bind a skill (verification_spec only)")
+        continue
+    if p["form"] == "scalar":
+        fails.append(f"skills/roster.yaml: phases.{name} uses the scalar `skill: name` form — the roster models the explicit binding (exactly one default, the rest marked alternate)")
+    elif p["form"] is None:
+        fails.append(f"skills/roster.yaml: phases.{name} has no skill binding")
+    else:
+        if len(p["defaults"]) == 0:
+            fails.append(f"skills/roster.yaml: phases.{name} declares zero defaults (exactly one `default:` required)")
+        if len(p["defaults"]) > 1:
+            fails.append(f"skills/roster.yaml: phases.{name} declares {len(p['defaults'])} defaults (exactly one `default:` required)")
+        if p["defaults"] and p["defaults"][0] == "none" and p["alternates"]:
+            fails.append(f"skills/roster.yaml: phases.{name} default `none` cannot carry alternates")
+
+for f in fails:
+    print(f"✗ {f}")
+sys.exit(1 if fails else 0)
+EOF
+then
+  ok "roster capability bindings: exactly one explicit default per capability"
+else
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ------------------------------------ 11. platform parity tripwire (.gemini)
 # P4: .gemini/commands/*.toml are pointers to the canonical files — frozen
 # paraphrases are how the Gemini surface went stale 2026-06→2026-08. Two
 # tripwires: (a) file-count parity with commands/, (b) each TOML actually

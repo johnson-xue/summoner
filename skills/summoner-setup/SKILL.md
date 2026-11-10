@@ -8,103 +8,54 @@ when_to_use:
 allowed-tools:
   - Bash
   - Read
-  - Write
 ---
 
 # Summoner Setup Skill
 
-Run the setup wizard to initialize Summoner for this project.
-
-## What This Does
-
-1. Creates `summoner.yaml` (if not exists) with phase-to-skill mappings
-2. Initializes Memory database for pattern storage
-3. Provides clear next steps for activation
+Thin entry: the setup wizard is the installed script. Run it — do not
+reimplement setup, manifest generation, or memory initialization here.
 
 ## Usage
 
-User can say:
-- "setup summoner for this project"
-- "initialize summoner"
-- "onboard this project to summoner"
-
-Or explicitly invoke: `/summoner:setup`
-
-## Implementation
-
 ```bash
-PLUGIN_ROOT="$HOME/.claude/plugins/summoner"
-
-# Check if plugin installed
-if [ ! -d "$PLUGIN_ROOT" ]; then
-    echo "❌ Summoner plugin not found."
-    echo ""
-    echo "Install via:"
-    echo "  /plugin marketplace add johnson-xue/summoner"
-    echo "  /plugin install summoner@summoner-marketplace"
-    exit 1
-fi
-
-# Run setup script
-if "$PLUGIN_ROOT/scripts/summoner-setup.sh"; then
-    echo ""
-    echo "✅ Summoner setup complete!"
-    echo ""
-    echo "⚠️  **Action Required:** Please restart Claude Code to activate hooks."
-    echo ""
-    echo "After restart, try:"
-    echo "  /summoner:fix \"your bug description\""
-    echo "  /summoner:new \"your feature request\""
-else
-    echo ""
-    echo "❌ Setup failed. Check error messages above."
-    exit 1
-fi
+"${CLAUDE_PLUGIN_ROOT}/scripts/summoner-setup.sh"            # interactive
+"${CLAUDE_PLUGIN_ROOT}/scripts/summoner-setup.sh" --quick    # CI / all defaults
 ```
 
-## Quick Mode
+`CLAUDE_PLUGIN_ROOT` comes from the installed plugin runtime — never a
+hardcoded `~/.claude/plugins/...` path. There is no `/summoner:setup`
+command; this skill IS the setup entry (say "setup summoner" to trigger it).
+After setup, restart Claude Code if the plugin/hooks were newly installed,
+then try `/summoner:fix "your bug description"`.
 
-For CI/automation, use quick mode (all defaults):
+## What the wizard does (v2 semantics)
 
-```bash
-"$PLUGIN_ROOT/scripts/summoner-setup.sh" --quick
-```
+1. Generates a v2 `summoner.yaml` capability map — atomic: the candidate is
+   validated by `scripts/validate-manifest.sh` before rename, so any failure
+   leaves an existing manifest untouched. `--quick` never reads stdin;
+   `--force` replaces explicitly (no legacy merge).
+2. Validates an EXISTING manifest — no silent v1 repair or merge.
+3. Initializes the version-independent memory DB (honors
+   `SUMMONER_MEMORY_DIR`).
+
+Field reference: `references/manifest-spec.md`. Missing-manifest semantics
+(built-in defaults in the same reducer, no auto-init): see
+`references/no-manifest-flow.md` and `skills/auto-setup-summoner/SKILL.md`.
 
 ## Troubleshooting
 
-### Error: "Cannot extract project name"
-
-Check `summoner.yaml` format:
-```yaml
-project:
-  name: "your-project-name"
-```
-
-### Error: "Memory database corrupted"
-
-The script will automatically reinitialize. If issues persist:
-```bash
-rm "${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}/your-project.db"
-./scripts/summoner-setup.sh
-```
-
-### Hooks not working after restart
-
-Verify hooks are compiled:
-```bash
-ls ~/.claude/plugins/summoner/hooks/bin/
-```
-
-Should see: `session-start`, `pretooluse-skill`, `stop`
-
-If missing:
-```bash
-cd ~/.claude/plugins/summoner/hooks
-make build
-```
+- Setup errors: read the wizard's own output — it names the failing step
+  (manifest format, validation, memory init). A v1 file needs explicit
+  migration, not a version bump.
+- Hooks inactive after restart: verify the plugin is installed/enabled; the
+  `hooks/bin/` binaries ship with it (no manual build).
+- A failing memory DB is NOT fixed by deleting it — memory holds run
+  patterns and journals. Address the reported cause and rerun
+  `scripts/init-memory-db.sh`; see `references/memory-chain.md`.
 
 ## Related
 
-- `scripts/summoner-setup.sh` - The actual setup script
-- `scripts/summoner-init.sh` - YAML generation (called by setup)
-- `scripts/init-memory-db.sh` - Memory DB initialization (called by setup)
+- `scripts/summoner-setup.sh` — the wizard (delegates to the single v2
+  emitter `scripts/summoner-bp.sh`)
+- `scripts/summoner-init.sh` — interactive init modes 1/2/3
+- `scripts/init-memory-db.sh` — memory DB initialization

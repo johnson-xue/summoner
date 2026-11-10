@@ -18,9 +18,9 @@ Offer setup without making it a prerequisite for the existing workflow:
   `${CLAUDE_PLUGIN_ROOT}/scripts/summoner-setup.sh --quick` or the interactive
   setup. It creates a v2 capability map and initializes memory.
 - Work with the disclosed built-in inline capabilities in the **same** run.
-  The provider defaults and lack-of-capability rules are in
-  `references/manifest-spec.md`. There is no late implementation menu and no
-  separate execution chain.
+  The provider defaults, layered resolution and lack-of-capability rules are
+  in `references/manifest-spec.md` + `references/capability-map.md`. There
+  is no late implementation menu and no separate execution chain.
 - Stop or pause when project-specific context is necessary. Do not invent a
   capability, silently substitute a missing skill, or claim an unperformed
   check passed.

@@ -96,7 +96,9 @@ type yamlPhase struct {
 // validate-manifest schema (references/summoner.schema.json skill_binding) is
 // the shape authority; there is no third form. Anything else fails closed with
 // an error naming the violated rule (the document walk has already rejected
-// nulls, aliases and duplicate keys by the time this runs).
+// nulls, aliases and duplicate keys by the time this runs). T11 twin rule: a
+// `default: none` carrying alternates is rejected here exactly as
+// validate-manifest rejects it.
 type yamlSkillBinding struct {
 	Default   string
 	Alternate []string
@@ -137,6 +139,12 @@ func (s *yamlSkillBinding) UnmarshalYAML(node *yaml.Node) error {
 		}
 		if s.Default == "" {
 			return fmt.Errorf("phases.<id>.skill line=%d requires a non-empty default (the expanded form names one default provider)", node.Line)
+		}
+		// T17 residual (closed by T11): validate-manifest rejects a `none`
+		// default with alternates ("skill none cannot have alternate
+		// providers") — the loader is its twin and rejects the same shape.
+		if s.Default == "none" && len(s.Alternate) > 0 {
+			return fmt.Errorf("phases.<id>.skill line=%d: skill none cannot have alternate providers", node.Line)
 		}
 		if len(s.Alternate) == 0 {
 			s.Alternate = nil // an empty alternate list is semantically "no alternates"
@@ -193,8 +201,11 @@ type yamlSuggestedBudgets struct {
 // phases.<id>.skill binding accepts BOTH documented forms (string and the
 // {default, alternate} mapping) and retains the parsed binding on
 // RuntimeManifest.Phases — informationally; anything beyond the two forms
-// rejects, and skill-provider semantics (name patterns, none-without-
-// alternates, --skills-dir resolution) remain validate-manifest's authority.
+// rejects, and skill-provider semantics (name patterns, --skills-dir
+// resolution) remain validate-manifest's authority. T11 alignment: the two
+// former divergences are closed — a `default: none` with alternates and an
+// empty/absent phases map are rejected here exactly as the validator rejects
+// them (twins pinned in both suites).
 func LoadRuntimeManifest() (*RuntimeManifest, error) {
 	b, err := os.ReadFile(filepath.Join(ProjectDir(), "summoner.yaml"))
 	if err != nil {
@@ -232,6 +243,14 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 	}
 	if mdoc.Version != "2" {
 		return nil, fmt.Errorf("parse summoner.yaml: version must be \"2\" (got %q) — migrate via references/manifest-spec.md", mdoc.Version)
+	}
+	// T17 residual (closed by T11): validate-manifest requires a non-empty
+	// phases capability map ("missing_field: phases must be a non-empty
+	// capability map"); the loader rejects the same empty/absent shapes — it
+	// never loads as authority a manifest the project's own tooling declares
+	// invalid.
+	if len(mdoc.Phases) == 0 {
+		return nil, errors.New("parse summoner.yaml: missing_field: phases must be a non-empty capability map")
 	}
 	m := &RuntimeManifest{Phases: map[string]SkillBinding{}}
 	for id, p := range mdoc.Phases {

@@ -384,6 +384,9 @@ func TestManifestSuggestedBudgetsProjection(t *testing.T) {
 	writeProjectManifest(t, `version: "2"
 project:
   name: budget-probe
+phases:
+  diagnosis:
+    skill: none
 suggested_budgets:
   phase_tool_calls: 40
   failed_checks: 3
@@ -404,6 +407,9 @@ suggested_budgets:
 	writeProjectManifest(t, `version: "2"
 project:
   name: budget-probe
+phases:
+  diagnosis:
+    skill: none
 suggested_budgets:
   check_timeout_seconds: 120
 `)
@@ -419,6 +425,9 @@ suggested_budgets:
 	writeProjectManifest(t, `version: "2"
 project:
   name: budget-probe
+phases:
+  diagnosis:
+    skill: none
 suggested_budgets:
   delegations: 2
 `)
@@ -434,6 +443,9 @@ suggested_budgets:
 	writeProjectManifest(t, `version: "2"
 project:
   name: budget-probe
+phases:
+  diagnosis:
+    skill: none
 suggested_budgets:
   phaze_tool_calls: 5
 `)
@@ -443,7 +455,7 @@ suggested_budgets:
 
 	// Zero / negative values: the schema floor is 1.
 	for _, bad := range []string{"phase_tool_calls: 0", "delegations: -2"} {
-		writeProjectManifest(t, "version: \"2\"\nproject:\n  name: budget-probe\nsuggested_budgets:\n  "+bad+"\n")
+		writeProjectManifest(t, "version: \"2\"\nproject:\n  name: budget-probe\nphases:\n  diagnosis:\n    skill: none\nsuggested_budgets:\n  "+bad+"\n")
 		if _, err := LoadRuntimeManifest(); err == nil || !strings.Contains(err.Error(), "positive integer") {
 			t.Fatalf("%s must fail closed, got %v", bad, err)
 		}

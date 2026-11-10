@@ -6,7 +6,8 @@ description: 独立代码审查 — verification_spec 路线（manifest phases.r
 
 Standalone review of a change. Review answers "这份变更有哪些问题" — it does
 not decide shipping (that is `/summoner:ship`, which cites review evidence
-without repeating it).
+without repeating it). Thin entry: the boundary and both capability rows are
+canonical in `references/capability-map.md`.
 
 ## Route
 

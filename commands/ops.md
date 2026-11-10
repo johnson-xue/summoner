@@ -11,9 +11,10 @@ Summoner owns the loop around them.
 
 Run-start records the run on the framework route **context → operate** (fixed
 in `hooks/shared/workflow.go`). The manifest maps the CAPABILITY — the
-`phases.operate` skill binding — never topology. Resolve the operate
-capability from `summoner.yaml`; no manifest → built-in default, declared
-「未配置项目专属能力」.
+`phases.ops` skill binding (capability keys name the verb; `operate` is this
+route's internal phase id — never `phases.operate`) — never topology.
+Resolve the operate capability from `summoner.yaml`; no manifest → built-in
+default, declared「未配置项目专属能力」.
 
 ## Rules
 

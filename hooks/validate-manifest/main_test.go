@@ -166,6 +166,26 @@ func TestV2StrictValidation(t *testing.T) {
 	}
 }
 
+// TestV2RejectsEmptyPhasesAndNoneWithAlternates (T11 twins): the runtime
+// loader (hooks/shared/manifest_test.go) rejects these two shapes at load —
+// this pins the CLI authority side so the two can never diverge again.
+func TestV2RejectsEmptyPhasesAndNoneWithAlternates(t *testing.T) {
+	for _, tc := range []struct{ name, yaml string }{
+		{"no-phases-empty-map", "version: \"2\"\nproject:\n  name: sample-project\nphases: {}\n"},
+		{"no-phases-key-absent", "version: \"2\"\nproject:\n  name: sample-project\n"},
+		{"none-default-with-alternates", "version: \"2\"\nproject:\n  name: sample-project\nphases:\n  diagnosis:\n    skill:\n      default: none\n      alternate: [demo-debug]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "summoner.yaml")
+			writeFile(t, path, tc.yaml)
+			rc, out := runOutput(t, path)
+			if rc != 1 {
+				t.Errorf("%s must be INVALID: rc=%d %s", tc.name, rc, out)
+			}
+		})
+	}
+}
+
 func TestSkillsCheckLocalAndQualified(t *testing.T) {
 	dir := fixture(t, "skills")
 	for _, name := range []string{"valid-with-skills.yaml", "valid-plugin-qualified.yaml", "valid-full.yaml"} {

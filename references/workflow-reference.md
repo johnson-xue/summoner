@@ -19,6 +19,11 @@ capability, it never rewrites the order):
 (M) = iron law: in fix/debug, writes are gate-denied until the diagnosis
 phase is ACCEPTED at its checkpoint.
 
+Capability keys ≠ route phase ids: the manifest binds `phases.<capability>`
+(the ops capability key is `phases.ops`), never a route's internal phase id
+(`operate`, `planning`, … live only in `hooks/shared/workflow.go`). Authority
+table: `references/capability-map.md`.
+
 Every phase — including skipped ones — closes at a checkpoint; every arrow is
 a recorded user decision (`references/checkpoint-protocol.md`).
 

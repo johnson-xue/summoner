@@ -74,6 +74,9 @@ phases:
   explicit lack of capability, **not** permission to skip diagnosis or advance
   a checkpoint. A user may choose how to supply the missing capability at the
   existing gate.
+- Provider resolution follows the four-layer order and precedence rules in
+  `references/capability-map.md` (explicit manifest binding authoritative;
+  the layered order is a discovery preference for unbound capabilities only).
 - Providers run inline in the main session. A skill cannot create a second
   orchestration loop, fork context or authorize its own Agent batch. Genuine
   independent work uses the reducer's approved delegation protocol.
@@ -81,6 +84,14 @@ phases:
 The framework routes' phase ids take these capabilities (map order is
 irrelevant; binding a capability never inserts, reorders or repeats a phase —
 the routes live in `hooks/shared/workflow.go`):
+
+**Capability keys are not route phase ids.** A key names a capability; where
+a capability serves one of the seven verbs and carries the same name, the key
+IS the verb (`phases.fix`, `phases.review`, `phases.ops`, `phases.release`) —
+never the route's internal phase id (`operate`, `planning`, `merge`, … belong
+only to `hooks/shared/workflow.go`). The ops capability key is `phases.ops`
+while the ops route's domain phase id is `operate`; `phases.operate` does not
+exist. Authority table: `references/capability-map.md`.
 
 | Capability | Built-in inline provider / meaning |
 |---|---|
@@ -150,11 +161,15 @@ closed as authority. The `phases.<id>.skill` binding loads in BOTH documented
 forms (string and `{default, alternate}`) and the parsed binding is retained
 on the runtime projection for consumers; anything beyond the two forms
 rejects, while provider-name semantics stay the CLI validator's authority.
-Tolerated divergences: `goal`/`scope`/`expected` are not required on
-criteria, `rubric` and the `check_ids` listing are not required, and
-`env_allow` names are not pattern-checked. A missing manifest is the
-no-manifest flow (defaults only); an **unparseable** manifest fails closed on
-every path.
+T11 alignment: two former divergences are closed — the loader rejects a
+`default: none` carrying alternates ("skill none cannot have alternate
+providers") and an empty or absent `phases` map ("missing_field: phases must
+be a non-empty capability map") exactly as the CLI rejects them; the shapes
+are pinned as twins in both suites. Tolerated divergences: `goal`/`scope`/
+`expected` are not required on criteria, `rubric` and the `check_ids` listing
+are not required, and `env_allow` names are not pattern-checked. A missing
+manifest is the no-manifest flow (defaults only); an **unparseable** manifest
+fails closed on every path.
 
 ## Check registry and digest freeze
 

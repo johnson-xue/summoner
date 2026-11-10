@@ -24,7 +24,7 @@
     {
       "name": "auto-setup-summoner",
       "path": "skills/auto-setup-summoner/SKILL.md",
-      "description": "Automatically guide user to initialize Summoner when summoner.yaml is missing. Use when a /summoner:* command is invoked without summoner.yaml, or the SessionStart hook reports the project is not initialized."
+      "description": "Configure a v2 Summoner capability map when the user explicitly requests setup or asks how to resolve a missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration."
     },
     {
       "name": "phase-submit",

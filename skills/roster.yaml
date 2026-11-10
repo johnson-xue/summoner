@@ -1,48 +1,55 @@
 # Summoner v2 capability/provider examples — not a workflow or execution order.
-# A scalar skill names the unique default. Expanded bindings explicitly label
-# default/alternate; alternates are choices, never a chained fallback roster.
-# Projects replace these examples with installed inline domain skills.
+# Every capability declares exactly ONE default provider (validate-repo.sh
+# enforces it); alternates are explicit choices for work within the phase,
+# never a chained fallback and never a second generic methodology copy —
+# duplicates of superpowers/built-in methodology have no row here
+# (references/capability-map.md is the authority table). Projects replace
+# these examples with installed inline domain skills.
 # Review describes WHAT to verify; the independent reviewer decides HOW.
 
 phases:
   requirements:
     skill:
       default: superpowers:brainstorming
-      alternate: [grill-me]
 
   plan:
     skill:
       default: superpowers:writing-plans
-      alternate: [planning-with-files]
 
   implement:
     # Implementation and local tests stay together in the main session.
-    skill: superpowers:executing-plans
+    skill:
+      default: superpowers:executing-plans
 
   fix:
-    skill: superpowers:executing-plans
+    skill:
+      default: superpowers:executing-plans
 
   test:
     skill:
       default: superpowers:test-driven-development
-      alternate: [tdd]
 
   reproduce:
-    skill: superpowers:test-driven-development
+    skill:
+      default: superpowers:test-driven-development
 
   diagnosis:
     # Root cause must be accepted before any repair work starts.
-    skill: superpowers:systematic-debugging
+    skill:
+      default: superpowers:systematic-debugging
 
   verify:
-    skill: superpowers:verification-before-completion
+    skill:
+      default: superpowers:verification-before-completion
 
   regression:
-    skill: superpowers:verification-before-completion
+    skill:
+      default: superpowers:verification-before-completion
 
   ops:
     # No generic deployment provider; configure the project's inline skill.
-    skill: none
+    skill:
+      default: none
 
   review:
     verification_spec:
@@ -54,6 +61,6 @@ phases:
       readable: []
       rubric: plugin:agents/reviewer.md
 
-# --quick selects only the default providers above, not the alternate examples.
-# It emits no budget or tool permission grants. Confirm any later suggestions
-# at the first checkpoint; all capabilities live under the same reducer.
+# --quick selects only the default providers above. It emits no budget or
+# tool permission grants. Confirm any later suggestions at the first
+# checkpoint; all capabilities live under the same reducer.

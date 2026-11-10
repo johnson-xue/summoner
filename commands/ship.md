@@ -37,7 +37,9 @@ four phases). The manifest maps CAPABILITIES, never topology. In practice:
 2. Cite existing review/verification evidence instead of re-running it —
    same-digest artifacts with a still-valid result reuse once.
 3. Rollback plan is MANDATORY before any GO.
-4. review vs ship: review answers「有什么问题」；ship 引用其证据做 GO/NO-GO。
+4. review vs ship: review answers「这份变更有哪些问题」；ship 引用其证据做
+   GO/NO-GO，不重复同一审查（boundary canonical:
+   `references/capability-map.md`）.
 
 ## Post-Game Review
 
