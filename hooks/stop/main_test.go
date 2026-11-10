@@ -10,6 +10,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,6 +352,62 @@ func TestStopSignalEndsTurnKeepsState(t *testing.T) {
 	}
 	if evs := readStopTrace(t, "run-1"); len(evs) != 0 {
 		t.Fatalf("stop signal must append no events, got %v", traceTypesOf(evs))
+	}
+}
+
+// TestStopFullRenderBindsDisplayDespiteMenuLabels — the T10 carry, now T16's:
+// the stop-ack marker regex matched the literal "stop" inside every rendered
+// decision menu, so a last_assistant_message containing the FULL status render
+// (whose menu lines include "stop: 停止——保留状态退出") ACKED the stop and
+// skipped display binding — the checkpoint would then be undecidable forever.
+// The ack match must not be satisfiable by menu labels: pasting the full
+// render (menu labels + paging note included) still binds the display.
+func TestStopFullRenderBindsDisplayDespiteMenuLabels(t *testing.T) {
+	useStopEnv(t)
+	r := startRun(t)
+	cp := waitUserCheckpoint(t, r, "diagnosis")
+
+	// The display-verified render: header, fields, FULL menu, paging note —
+	// the checkpoint id and nonce ride along (hasRenderBlock contract).
+	var b strings.Builder
+	b.WriteString("⚡ SUMMONER STATUS — run run-1 · workflow fix · WAIT_USER\n")
+	fmt.Fprintf(&b, "⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", cp.ID, cp.Nonce, cp.Kind)
+	b.WriteString("phase: diagnosis\nnote: diagnosis done\ncriteria: —\nartifacts: —\nmenu:\n")
+	for _, opt := range shared.DecisionMenuLabels(cp.Kind) {
+		b.WriteString("  " + opt + "\n")
+	}
+	b.WriteString("paged ask (one page per decision question, ≤4 options):\n")
+	for i, pg := range cp.MenuPages {
+		line := fmt.Sprintf("  page %d/%d: %s", i+1, len(cp.MenuPages), strings.Join(pg.Labels, " · "))
+		if pg.NavNext != "" {
+			line += " — " + pg.NavNext
+		}
+		if pg.NavPrev != "" {
+			line += " — " + pg.NavPrev
+		}
+		b.WriteString(line + "\n")
+	}
+	if !strings.Contains(b.String(), "stop:") {
+		t.Fatal("fixture must contain the stop: menu label (the ack-defect trigger)")
+	}
+
+	code, stdout, stderr := callStop(t, stopPayload(t, b.String()))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if blocked, reason := decodeBlock(t, stdout); blocked {
+		t.Fatalf("a full render must allow the stop after binding, got block %q", reason)
+	}
+	disk := reloadRun(t, "run-1")
+	got := currentCheckpoint(t, disk)
+	if !got.Displayed {
+		t.Fatal("menu labels inside the full render must NOT satisfy the stop-ack — display binding must still happen")
+	}
+	if want := shared.CheckpointContentDigest(cp, disk.RequirementsVersion); got.DisplayDigest != want {
+		t.Fatalf("display digest = %s, want canonical content digest %s", got.DisplayDigest, want)
+	}
+	if n := len(eventsOfType(readStopTrace(t, "run-1"), shared.EventCheckpointDisplayed)); n != 1 {
+		t.Fatalf("checkpoint.displayed events = %d, want exactly 1", n)
 	}
 }
 

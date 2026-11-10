@@ -54,8 +54,26 @@ const eventStop = "Stop"
 // explicit stop/halt/abort (English inflections or Chinese 停止/终止) as the
 // dominant intent of last_assistant_message. Stopping must always be possible
 // (§1.6), so a match allows the stop without the render block; the cost of a
-// wrong guess is bounded by the 8-block cap on the opposite error.
+// wrong guess is bounded by the 8-block cap on the opposite error. The regex
+// alone is NOT the ack test — see stopAck: every rendered decision menu
+// contains a "stop: …" line, so the canonical labels are stripped first (T16
+// carry from T10: a full status render must never satisfy the ack).
 var stopAckRe = regexp.MustCompile(`(?i)\b(?:stop(?:ped|ping)?|halt(?:ed|ing)?|abort(?:ed|ing)?)\b|停止|终止`)
+
+// stopAck reports an explicit stop acknowledgment in the message OUTSIDE the
+// canonical decision-menu labels: each label of the pending checkpoint's kind
+// (e.g. "stop: 停止——保留状态退出") is removed before the marker regex runs,
+// so pasting the full render — the display act — can never pose as an ack
+// and skip display binding. A genuine acknowledgment ("Stopped as you
+// asked.") survives the strip untouched.
+func stopAck(msg string, cp *shared.CheckpointState) bool {
+	if cp != nil {
+		for _, label := range shared.DecisionMenuLabels(cp.Kind) {
+			msg = strings.ReplaceAll(msg, label, "")
+		}
+	}
+	return stopAckRe.MatchString(msg)
+}
 
 // stopInput is the parsed Stop payload: exactly the typed fields the hook
 // needs (ruling 2). stop_hook_active is carried for documentation — this hook
@@ -154,12 +172,9 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 	}
 	run := live[0]
 
-	// The stop-acknowledgment marker: stopping is always possible (§1.6).
-	ack := stopAckRe.MatchString(in.LastAssistantMessage)
-
 	if run.Status == shared.StatusWaitUser {
 		if cp := run.CurrentCheckpoint(); cp != nil && !cp.Displayed {
-			if ack {
+			if stopAck(in.LastAssistantMessage, cp) {
 				return 0 // explicit stop signal: allow, keep state, emit nothing
 			}
 			if hasRenderBlock(in.LastAssistantMessage, cp) {
@@ -176,7 +191,7 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 	// POST_GAME_PENDING …): allow, keep state. A non-emergency stop of a live
 	// run owes the post-game review — remind, delete nothing (the mandatory
 	// questionnaire wiring itself lands in T8/T13).
-	if !ack {
+	if !stopAck(in.LastAssistantMessage, run.CurrentCheckpoint()) {
 		fmt.Fprintf(errW, "\n⚡ Summoner: run %s is still %s (not CLOSED) — the post-game review is still owed; run state was kept and can be resumed in a later session.\n\n",
 			run.RunID, run.Status)
 	}

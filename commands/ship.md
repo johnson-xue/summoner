@@ -12,9 +12,9 @@ returns only if an evaluation proves net benefit).
 
 ## Route
 
-Run-start records the run (ship has no framework-owned phase sequence yet —
-the route comes from the manifest mapping; the manifest check registry task
-formalizes it). In practice:
+Run-start records the run on the framework route **prepare → review → merge →
+decide** (fixed in `hooks/shared/workflow.go`; the four steps below ARE the
+four phases). The manifest maps CAPABILITIES, never topology. In practice:
 
 1. **Prepare** — freeze the diff baseline (base + snapshot, or file digests
    without Git), assemble the verification_spec (criteria from the project's

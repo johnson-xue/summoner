@@ -427,6 +427,7 @@ func (r *RunState) addCheckpoint(kind CheckpointKind, phaseID, note string, arti
 		OpenedAt:         nowUTC(),
 		ArtifactVersions: artifactVersionMap(artifacts),
 		CriteriaIDs:      append([]string(nil), criteria...),
+		MenuPages:        MenuProjection(kind),
 	}
 	r.Checkpoints = append(r.Checkpoints, cp)
 	return cp, nil
@@ -1056,6 +1057,7 @@ func (r *RunState) rerenderCheckpoint() bool {
 		OpenedAt:         nowUTC(),
 		ArtifactVersions: copyArtifactVersions(src.ArtifactVersions),
 		CriteriaIDs:      append([]string(nil), src.CriteriaIDs...),
+		MenuPages:        MenuProjection(src.Kind),
 	}
 	r.Checkpoints = append(r.Checkpoints, cp)
 	for i := len(r.Phases) - 1; i >= 0; i-- {

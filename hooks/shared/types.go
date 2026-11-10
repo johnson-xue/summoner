@@ -261,6 +261,12 @@ type CheckpointState struct {
 	// replay-idempotency key of RecordDecision — a replayed callback with the
 	// same id is a no-op, a different id never overwrites (task 4).
 	DecisionToolUseID string `json:"decision_tool_use_id,omitempty"`
+	// MenuPages is the persisted paged-menu projection (T16): pages of ≤4
+	// option labels a decision question may offer at once (the platform caps
+	// 4 options/question), set at checkpoint open and never rewritten. The
+	// render shows the FULL menu plus a paging note; the gate pins any
+	// nonce-carrying question's offered labels to one page exactly.
+	MenuPages []MenuPage `json:"menu_pages,omitempty"`
 }
 
 // ReviewObligation is the persisted [v] (REVIEW_ON_DEMAND) obligation

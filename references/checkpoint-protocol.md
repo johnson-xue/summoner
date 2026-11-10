@@ -49,7 +49,13 @@ artifacts:
   - {path} @{digest[0:12]}          (or: artifacts: —)
 menu:
   {one line per legal option, labels below}
+paged ask (one page per decision question, ≤4 options):
+  page 1/2: continue · skip · done · stop — more: 查看其余选项
+  page 2/2: continue · recall · review · stop — back: 返回上一页
 ```
+
+(The `paged ask` block appears only when the kind's menu pages — single-page
+kinds omit it. The `menu:` block always shows the FULL legal menu.)
 
 Field rules:
 
@@ -60,7 +66,8 @@ Field rules:
 | `note` | The submitted phase summary (or, for REVIEW_RESULT, `COMPLETED PASS` / `COMPLETED NEEDS-FIX` / `BLOCKED {reason}` / `FAILED {problem}`). |
 | `criteria` | The exact criterion list the user is accepting or rejecting — never trimmed, never invented. |
 | `artifacts` | The checkpoint-frozen versions; artifacts changing after this invalidate reviews of them. |
-| `menu` | Exactly the legal options for the kind (below), in the binary's order. |
+| `menu` | Exactly the legal options for the kind (below), in the binary's order — the FULL menu, always visible. |
+| `paged ask` | The persisted page projection (`menu_pages` in run state): pages of ≤4 options, each page anchoring `continue`+`stop` plus two kind-relevant actions; `more:`/`back:` are navigation labels, not options. |
 
 Example (fix, diagnosis submitted):
 
@@ -78,17 +85,42 @@ menu:
   recall: 回城——回到指定历史阶段重做
   review: [v] 对本阶段产物发起独立审查
   stop: 停止——保留状态退出
+paged ask (one page per decision question, ≤4 options):
+  page 1/2: continue: 继续下一阶段 · skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS） · done: 完成——进入收尾（post-game） · stop: 停止——保留状态退出 — more: 查看其余选项
+  page 2/2: continue: 继续下一阶段 · recall: 回城——回到指定历史阶段重做 · review: [v] 对本阶段产物发起独立审查 · stop: 停止——保留状态退出 — back: 返回上一页
 ```
 
-## The decision channel (AskUserQuestion)
+## The decision channel (AskUserQuestion) — TWO-TURN by construction
 
-After pasting the render, ask ONE question:
+The protocol is **two-turn**: turn N pastes the render and **ENDS the turn**
+— the Stop hook verifies the display and binds it (checkpoint id + nonce +
+content digest; that binding is the sole `Displayed` setter). Turn N+1 asks
+the decision question. A nonce-carrying ask in the render turn itself is
+DENIED by the gate (exit 2, two-turn instruction), and a same-turn answer is
+always `decision_rejected` — the display binding does not exist yet. UX cost,
+stated plainly: every checkpoint costs one nudge turn between render and ask.
+This is deliberate — display verification must bind BEFORE any answer can,
+otherwise nothing the user was shown constrains what they decided.
+
+After the display is bound, ask ONE question:
 
 - **Question text carries the nonce**, e.g.
   `Checkpoint cp-2 (nonce 1a2b3c4d): 如何推进？`
-- **Options = the rendered menu verbatim.** Every label STARTS with the exact
-  decision keyword — the platform recorder maps the lowercased leading word;
-  any other leading word means the decision is REJECTED:
+- **Options = ONE PAGE of the rendered menu, verbatim** — at most 4 (the
+  platform caps 4 options per question). The gate rejects any offered set
+  that is not EXACTLY one persisted page (subset, superset, foreign label,
+  hand-paraphrased label — all denied). Both pages of a full menu are legal
+  to offer; start with page 1.
+- **Navigation (`more:` / `back:`) is content feedback, not a decision.**
+  When the user asks for the other page, re-ask the decision question with
+  that page's labels — nothing is recorded for navigation (no state change,
+  no event; the page validation is the enforcement).
+- **Exactly ONE nonce-carrying question per call**: two or more fail closed
+  (`decision_rejected`, nothing recorded) — the answers map would be
+  ambiguous.
+- Every label STARTS with the exact decision keyword — the platform recorder
+  maps the lowercased leading word; any other leading word means the
+  decision is REJECTED:
 
 | Keyword | Decision | Meaning |
 |---------|----------|---------|

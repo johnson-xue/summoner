@@ -853,3 +853,188 @@ func TestEndToEndNonSummonerPromptNoOp(t *testing.T) {
 		t.Errorf("non-Summoner prompt must leave no events, got %v", eventTypes(evs))
 	}
 }
+
+// --- T16: two-turn decision surface over the real binaries -------------------------
+
+// stopRenderPayload builds a Stop payload whose last_assistant_message is the
+// given render text (the display act).
+func stopRenderPayload(t *testing.T, lastMsg string) string {
+	t.Helper()
+	return mustJSON(t, map[string]interface{}{
+		"hook_event_name":        "Stop",
+		"session_id":             contractSession,
+		"stop_hook_active":       false,
+		"last_assistant_message": lastMsg,
+	})
+}
+
+// askQuestionPayload builds a PreToolUse AskUserQuestion payload whose single
+// question carries the nonce and offers exactly the given labels.
+func askQuestionPayload(t *testing.T, toolUseID, nonce string, labels []string) string {
+	t.Helper()
+	opts := make([]interface{}, 0, len(labels))
+	for _, l := range labels {
+		opts = append(opts, map[string]interface{}{"label": l, "description": "decision option"})
+	}
+	qtext := "Checkpoint decision (nonce " + nonce + "): how should the run proceed?"
+	return mustJSON(t, map[string]interface{}{
+		"session_id":  contractSession,
+		"tool_name":   "AskUserQuestion",
+		"tool_use_id": toolUseID,
+		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
+			"question":    qtext,
+			"header":      "Checkpoint",
+			"options":     opts,
+			"multiSelect": false,
+		}}},
+	})
+}
+
+// askQuestionText returns the question text askQuestionPayload builds (the
+// answers map key of the platform-injected tool_response).
+func askQuestionText(nonce string) string {
+	return "Checkpoint decision (nonce " + nonce + "): how should the run proceed?"
+}
+
+// renderMessageFor builds the assistant message of the render turn: the
+// checkpoint header (id + nonce — what display verification binds) plus the
+// FULL menu and paging note the status render carries.
+func renderMessageFor(cp *shared.CheckpointState) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", cp.ID, cp.Nonce, cp.Kind)
+	b.WriteString("phase: " + cp.PhaseID + "\nmenu:\n")
+	for _, opt := range shared.DecisionMenuLabels(cp.Kind) {
+		b.WriteString("  " + opt + "\n")
+	}
+	if len(cp.MenuPages) > 1 {
+		b.WriteString("paged ask (one page per decision question, ≤4 options):\n")
+		for i, pg := range cp.MenuPages {
+			fmt.Fprintf(&b, "  page %d/%d: %s — %s — %s\n", i+1, len(cp.MenuPages),
+				strings.Join(pg.Labels, " · "), pg.NavNext, pg.NavPrev)
+		}
+	}
+	return b.String()
+}
+
+// TestEndToEndTwoTurnDecisionReviewRoute — T16's runtime contract over the
+// REAL binaries in the REAL event order: a review run starts; phase-submit
+// auto-opens the route's first phase (context); the SAME-TURN nonce ask is
+// denied with the two-turn instruction; the Stop hook binds display off the
+// pasted render (menu labels notwithstanding); the NEXT-turn ask passes only
+// with the persisted page's exact labels; PostToolUse records the decision.
+func TestEndToEndTwoTurnDecisionReviewRoute(t *testing.T) {
+	useContractEnv(t)
+
+	// Run start (typed /summoner:review prompt) — the ONLY run starter.
+	code, _, stderr := runBinary(t, "userpromptsubmit", upsPayload(t, "/summoner:review the recent change"), nil)
+	if code != 0 {
+		t.Fatalf("userpromptsubmit exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	files := runStateFiles(t)
+	if len(files) != 1 {
+		t.Fatalf("run state files = %d, want 1", len(files))
+	}
+	runID := strings.TrimSuffix(filepath.Base(files[0]), ".json")
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Workflow != "review" {
+		t.Fatalf("workflow = %q, want review", run.Workflow)
+	}
+
+	// Phase-submit for the route's first phase auto-opens it (no Skill call).
+	code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-ps-1", map[string]interface{}{
+		"skill": "summoner:phase-submit",
+		"args":  `{"phase_id":"context","summary":"verification criteria frozen"}`,
+	}), nil)
+	if code != 0 {
+		t.Fatalf("phase-submit(context) exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusWaitUser || len(run.Phases) != 1 || run.Phases[0].ID != "context" {
+		t.Fatalf("after submit: status %s phases %+v", run.Status, run.Phases)
+	}
+	cp := run.CurrentCheckpoint()
+	if cp == nil || len(cp.MenuPages) == 0 {
+		t.Fatalf("checkpoint must carry the persisted menu projection: %+v", cp)
+	}
+	if cp.Displayed {
+		t.Fatal("fixture must be undisplayed (never pre-seed Displayed)")
+	}
+
+	// SAME-TURN ask (display not yet bound): denied with the two-turn
+	// instruction — the turn must end with the render first.
+	code, _, stderr = runBinary(t, "pretooluse-gate",
+		askQuestionPayload(t, "tu-ask-early", cp.Nonce, cp.MenuPages[0].Labels), nil)
+	if code != 2 || !strings.Contains(stderr, "two-turn") {
+		t.Fatalf("same-turn ask: (code, stderr) = (%d, %q), want exit 2 + two-turn instruction", code, stderr)
+	}
+
+	// Render turn: the pasted render IS the display act — the Stop hook binds
+	// it (menu labels inside the render must not satisfy the stop-ack).
+	code, _, stderr = runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil)
+	if code != 0 {
+		t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp = run.CurrentCheckpoint()
+	if !cp.Displayed {
+		t.Fatal("the Stop hook must bind the display off the pasted render")
+	}
+
+	// Offered-set mismatch while displayed: denied.
+	code, _, stderr = runBinary(t, "pretooluse-gate",
+		askQuestionPayload(t, "tu-ask-bad", cp.Nonce, cp.MenuPages[0].Labels[:3]), nil)
+	if code != 2 || !strings.Contains(stderr, "menu page") {
+		t.Fatalf("offered-set mismatch: (code, stderr) = (%d, %q), want exit 2 + menu-page pin", code, stderr)
+	}
+
+	// Next-turn ask with the persisted page's exact labels: allowed.
+	code, _, stderr = runBinary(t, "pretooluse-gate",
+		askQuestionPayload(t, "tu-ask-1", cp.Nonce, cp.MenuPages[0].Labels), nil)
+	if code != 0 {
+		t.Fatalf("page-pinned ask exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// The platform-injected tool_response records the decision (PostToolUse).
+	// The tool_input carries the SAME offered options the gate validated.
+	qtext := askQuestionText(cp.Nonce)
+	answer := cp.MenuPages[0].Labels[0]
+	opts := make([]interface{}, 0, len(cp.MenuPages[0].Labels))
+	for _, l := range cp.MenuPages[0].Labels {
+		opts = append(opts, map[string]interface{}{"label": l, "description": "decision option"})
+	}
+	code, _, stderr = runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "AskUserQuestion",
+		"tool_use_id":     "tu-ask-1",
+		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
+			"question": qtext, "header": "Checkpoint", "options": opts, "multiSelect": false,
+		}}},
+		"tool_response": map[string]interface{}{
+			"questions": []interface{}{map[string]interface{}{"question": qtext}},
+			"answers":   map[string]interface{}{qtext: answer},
+		},
+	}), nil)
+	if code != 0 {
+		t.Fatalf("posttooluse decision exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusActive {
+		t.Fatalf("status = %s, want ACTIVE after CONTINUE", run.Status)
+	}
+	if got := run.Checkpoints[0]; !got.Decided || got.Decision != shared.DecisionContinue || got.DecisionToolUseID != "tu-ask-1" {
+		t.Fatalf("decision = %+v, want decided CONTINUE bound to tu-ask-1", got)
+	}
+}

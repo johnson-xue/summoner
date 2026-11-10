@@ -443,13 +443,94 @@ func TestRenderAwaitingFields(t *testing.T) {
 // route from the run's own visits instead of failing.
 func TestRenderUnknownWorkflowRoute(t *testing.T) {
 	useStatusEnv(t)
-	r, err := shared.StartRun("run-1", sess, "ship", shared.BudgetLimits{})
+	r, err := shared.StartRun("run-1", sess, "custom", shared.BudgetLimits{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := renderStatus(r, "L2")
 	if !strings.Contains(out, "route: (no framework sequence; visits: none yet)") {
 		t.Fatalf("unknown-workflow route line:\n%s", out)
+	}
+}
+
+// TestRenderFrameworkRouteLines: every framework-routed workflow renders its
+// fixed sequence (T16 seven-verb routes).
+func TestRenderFrameworkRouteLines(t *testing.T) {
+	want := map[string]string{
+		"review":  "route: context → review",
+		"ship":    "route: prepare → review → merge → decide",
+		"ops":     "route: context → operate",
+		"release": "route: planning → changelog → publish",
+	}
+	for wf, line := range want {
+		useStatusEnv(t)
+		r, err := shared.StartRun("run-1", sess, wf, shared.BudgetLimits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := renderStatus(r, "L2")
+		if !strings.Contains(out, line) {
+			t.Errorf("%s render missing %q:\n%s", wf, line, out)
+		}
+	}
+}
+
+// TestRenderPagesNote (T16): while a checkpoint is pending, the render keeps
+// the FULL menu visible and adds the paging note — the persisted pages, their
+// labels, and the more:/back: navigation labels the decision question's
+// offered set is pinned to. Single-page kinds carry no paging note.
+func TestRenderPagesNote(t *testing.T) {
+	useStatusEnv(t)
+	r := newRun(t)
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := renderStatus(r, "L1（未配置沙箱）")
+
+	// Full six-action menu stays visible.
+	for _, kw := range []string{"continue:", "skip:", "done:", "recall:", "review:", "stop:"} {
+		if !strings.Contains(out, "  "+kw) {
+			t.Errorf("render missing full-menu label %q:\n%s", kw, out)
+		}
+	}
+	// Paging note: pages, their labels, and navigation.
+	if !strings.Contains(out, "paged ask") {
+		t.Fatalf("render missing the paging note:\n%s", out)
+	}
+	for _, want := range []string{
+		"page 1/2:", "page 2/2:",
+		shared.MenuNavNext, shared.MenuNavPrev,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("paging note missing %q:\n%s", want, out)
+		}
+	}
+	for _, l := range cp.MenuPages[0].Labels {
+		if !strings.Contains(out, l) {
+			t.Errorf("paging note missing page-1 label %q:\n%s", l, out)
+		}
+	}
+
+	// Single-page kind: no paging note.
+	useStatusEnv(t)
+	r2 := newRun(t)
+	r2.DevPosition = shared.DevPosition{CurrentTask: "t"}
+	if err := r2.OpenRequirementChange("rename field"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r2.ApplyRequirementDelta(shared.RequirementDelta{Changed: []string{"crit-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	out2 := renderStatus(r2, "L2")
+	if strings.Contains(out2, "paged ask") {
+		t.Errorf("single-page kind must not carry a paging note:\n%s", out2)
+	}
+	if !strings.Contains(out2, "  accept:") || !strings.Contains(out2, "  stop:") {
+		t.Errorf("change-confirm menu must offer accept+stop:\n%s", out2)
 	}
 }
 

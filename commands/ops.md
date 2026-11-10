@@ -9,17 +9,19 @@ Summoner owns the loop around them.
 
 ## Route
 
-Run-start records the run (ops has no framework-owned phase sequence yet —
-the route comes from the manifest mapping; the manifest check registry task
-formalizes it). Resolve `phases.ops` from `summoner.yaml`; no manifest →
-built-in defaults, declared 「未配置项目专属能力」.
+Run-start records the run on the framework route **context → operate** (fixed
+in `hooks/shared/workflow.go`). The manifest maps the CAPABILITY — the
+`phases.operate` skill binding — never topology. Resolve the operate
+capability from `summoner.yaml`; no manifest → built-in default, declared
+「未配置项目专属能力」.
 
 ## Rules
 
 1. The ops skill's internal staging (e.g. its own 5-step run) is the skill's
    business — Summoner does not re-orchestrate it. The framework loop wraps
-   it: submit each batch via `summoner:phase-submit`, close at checkpoints,
-   decisions via AskUserQuestion (`references/checkpoint-protocol.md`).
+   it: the operate phase closes ONCE at its checkpoint (single acceptance
+   gate per operate phase) via `summoner:phase-submit`; decisions via
+   AskUserQuestion (`references/checkpoint-protocol.md`).
 2. Mutating ops steps are exactly where OUTCOME_UNKNOWN bites: a crashed
    deploy/tag/write surfaces as a recovery checkpoint — run the capability's
    read-only probe, then let the user decide retry / recall / stop. Mutating

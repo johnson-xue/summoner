@@ -226,9 +226,10 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	return b.String()
 }
 
-// routeLine renders the phase route: the framework's per-workflow sequence, or
-// the run's own visits when the workflow has no framework sequence yet
-// (review/ship/ops/release open per the project manifest — T9).
+// routeLine renders the phase route: the framework's per-workflow sequence
+// (all seven verbs are routed — hooks/shared/workflow.go), or the run's own
+// visits when the workflow has no framework sequence (forward-compat for
+// unlisted workflows).
 func routeLine(run *shared.RunState) string {
 	seq, err := shared.WorkflowPhases(run.Workflow)
 	if err == nil {
@@ -437,38 +438,13 @@ func budgetLine(run *shared.RunState) string {
 		lim(run.Limits.Delegations, run.Counters.Delegations))
 }
 
-// menuForKind mirrors shared.legalDecisionForKind: every label LEADS with the
-// exact decision keyword (PostToolUse maps the leading word; any other leading
-// word = decision rejected). review-result checkpoints take the full default
-// set — their note text (verdict) guides which options make sense.
-func menuForKind(kind shared.CheckpointKind) []string {
-	switch kind {
-	case shared.CheckpointChangeConfirm:
-		return []string{
-			"accept: 接受变更并恢复开发",
-			"stop: 停止——保留状态退出",
-		}
-	case shared.CheckpointRecovery:
-		return []string{
-			"continue: 接受现状，恢复运行",
-			"recall: 回城——回到指定历史阶段重做",
-			"stop: 停止——保留状态退出",
-		}
-	default: // PHASE, REVIEW_RESULT
-		return []string{
-			"continue: 继续下一阶段",
-			"skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）",
-			"done: 完成——进入收尾（post-game）",
-			"recall: 回城——回到指定历史阶段重做",
-			"review: [v] 对本阶段产物发起独立审查",
-			"stop: 停止——保留状态退出",
-		}
-	}
-}
-
 // checkpointBlock renders the pending checkpoint (id, nonce, kind, phase,
-// note, criteria, artifact versions, decision menu) — the block the model
-// embeds verbatim; the Stop hook binds the display off its id + nonce.
+// note, criteria, artifact versions, FULL decision menu, paging note) — the
+// block the model embeds verbatim; the Stop hook binds the display off its
+// id + nonce. The menu is shared.DecisionMenuLabels (the canonical labels the
+// paged projection persists); the paging note prints the persisted pages the
+// decision question's offered set is pinned to (T16) — the full menu stays
+// visible for reading, pages bound only what one question may offer.
 func checkpointBlock(run *shared.RunState, cp shared.CheckpointState) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", cp.ID, cp.Nonce, cp.Kind)
@@ -503,8 +479,21 @@ func checkpointBlock(run *shared.RunState, cp shared.CheckpointState) string {
 		}
 	}
 	b.WriteString("menu:\n")
-	for _, opt := range menuForKind(cp.Kind) {
+	for _, opt := range shared.DecisionMenuLabels(cp.Kind) {
 		b.WriteString("  " + opt + "\n")
+	}
+	if len(cp.MenuPages) > 1 {
+		b.WriteString("paged ask (one page per decision question, ≤4 options):\n")
+		for i, pg := range cp.MenuPages {
+			fmt.Fprintf(&b, "  page %d/%d: %s", i+1, len(cp.MenuPages), strings.Join(pg.Labels, " · "))
+			if pg.NavNext != "" {
+				b.WriteString(" — " + pg.NavNext)
+			}
+			if pg.NavPrev != "" {
+				b.WriteString(" — " + pg.NavPrev)
+			}
+			b.WriteString("\n")
+		}
 	}
 	_ = run // checkpoint self-carries everything the block renders
 	return b.String()

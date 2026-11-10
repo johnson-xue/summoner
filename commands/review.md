@@ -16,10 +16,10 @@ scope, rubric pointer. The project defines WHAT to verify; the reviewer, in a
 fresh restricted context, works out HOW (spec §3; envelope contract in
 `agents/reviewer.md`).
 
-Run-start records the run (review workflows have no framework-owned phase
-sequence yet — the phase route comes from the manifest mapping; the manifest
-check registry task formalizes it). User gates, trace and post-game flow
-through the same reducer as every workflow.
+Run-start records the run on the framework route **context → review** (fixed
+in `hooks/shared/workflow.go`). The manifest maps the CAPABILITY — the
+`phases.review` verification_spec binding — never topology. User gates, trace
+and post-game flow through the same reducer as every workflow.
 
 ## Rules
 

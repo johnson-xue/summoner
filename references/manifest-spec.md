@@ -8,6 +8,11 @@ same Go reducer owns checkpoints, authorization, evidence and budgets. A plan
 can describe tasks, dependencies and acceptance criteria, never executable
 manifest topology.
 
+The manifest supplies **capabilities ONLY — never topology**: all seven
+framework verbs (`fix`/`new`/`debug`/`review`/`ship`/`ops`/`release`) own
+fixed phase routes in `hooks/shared/workflow.go`; a manifest entry binds what
+a phase uses, never whether, when or how often it runs.
+
 The schema is `references/summoner.schema.json`. The inline validator in
 `hooks/validate-manifest/main.go` additionally checks unique ids, provider
 selection, registry references and recomputed check-definition digests.
@@ -73,7 +78,9 @@ phases:
   orchestration loop, fork context or authorize its own Agent batch. Genuine
   independent work uses the reducer's approved delegation protocol.
 
-The fixed routes use these capability ids (map order is irrelevant):
+The framework routes' phase ids take these capabilities (map order is
+irrelevant; binding a capability never inserts, reorders or repeats a phase —
+the routes live in `hooks/shared/workflow.go`):
 
 | Capability | Built-in inline provider / meaning |
 |---|---|

@@ -136,18 +136,30 @@ type decisionQuestion struct {
 }
 
 // findDecisionQuestion locates the question whose text contains the current
-// checkpoint's nonce. When none does, it returns a reject reason that
-// distinguishes a wrong-checkpoint binding (some question carries ANOTHER
-// checkpoint's nonce) from a payload carrying no nonce at all.
+// checkpoint's nonce. T16 multi-nonce rule: exactly ONE nonce-carrying
+// question per call — two or more would make the answers map ambiguous
+// (which question binds the decision?), so the whole callback fails closed
+// with a rejection and nothing is recorded. When no question carries the
+// nonce, the reject reason distinguishes a wrong-checkpoint binding (some
+// question carries ANOTHER checkpoint's nonce) from a payload carrying no
+// nonce at all.
 func findDecisionQuestion(run *shared.RunState, cp *shared.CheckpointState, toolInput map[string]interface{}) (*decisionQuestion, string) {
 	qs, _ := toolInput[fieldQuestions].([]interface{})
+	var bound []map[string]interface{}
 	for _, raw := range qs {
 		m, _ := raw.(map[string]interface{})
 		text, _ := m[fieldQuestion].(string)
 		if text != "" && strings.Contains(text, cp.Nonce) {
-			options, _ := m[fieldOptions].([]interface{})
-			return &decisionQuestion{text: text, options: options}, ""
+			bound = append(bound, m)
 		}
+	}
+	if len(bound) > 1 {
+		return nil, fmt.Sprintf("call carries %d questions with the current checkpoint %s nonce %s — exactly ONE decision question per call (fail-closed, nothing recorded)", len(bound), cp.ID, cp.Nonce)
+	}
+	if len(bound) == 1 {
+		options, _ := bound[0][fieldOptions].([]interface{})
+		text, _ := bound[0][fieldQuestion].(string)
+		return &decisionQuestion{text: text, options: options}, ""
 	}
 	for _, raw := range qs {
 		m, _ := raw.(map[string]interface{})

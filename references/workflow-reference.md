@@ -4,21 +4,17 @@
 
 ## Workflow Definitions (single-loop phase routes)
 
-Framework-owned sequences (fixed order; the manifest maps each phase to a
-project skill, it never rewrites the order):
+Framework-owned sequences — ALL seven verbs (fixed order in
+`hooks/shared/workflow.go`; the manifest maps each phase to a project
+capability, it never rewrites the order):
 
 - `/summoner:fix`: context → diagnosis(M) → reproduce → fix → regression → review
 - `/summoner:new`: context → requirements → plan → implement → verify → review
 - `/summoner:debug`: context → diagnosis（止于诊断检查点，不改码）
-
-Manifest-routed workflows (run-start records the run; the phase route comes
-from the project manifest — the manifest check registry task formalizes the
-mapping; user gates, trace and post-game flow through the same reducer):
-
-- `/summoner:review`: verification_spec route (manifest `phases.review`) — one independent reviewer answers「这份变更有哪些问题」
-- `/summoner:ship`: one fresh reviewer over the full rubric → merge report → GO/NO-GO
-- `/summoner:ops`: project ops capability runs the domain steps
-- `/summoner:release`: version-plan → changelog → release-execution (framework-internal; implementation in skills/summoner-release/SKILL.md)
+- `/summoner:review`: context → review（manifest `phases.review` verification_spec; one independent reviewer answers「这份变更有哪些问题」）
+- `/summoner:ship`: prepare → review → merge → decide（GO/NO-GO；commands/ship.md steps 1-4 verbatim）
+- `/summoner:ops`: context → operate（ops 能力承担领域步骤；operate 单验收门，批次编排是 skill 自己的事）
+- `/summoner:release`: planning → changelog → publish（framework-internal; implementation in skills/summoner-release/SKILL.md）
 
 (M) = iron law: in fix/debug, writes are gate-denied until the diagnosis
 phase is ACCEPTED at its checkpoint.
@@ -77,8 +73,11 @@ Both re-enter earlier ground, but they answer different failures (spec §1
 - ✗ Advancing past a checkpoint without a recorded AskUserQuestion decision
 - ✗ Hand-writing a checkpoint/status render instead of pasting the
   summoner-status output (display verification binds id + nonce)
-- ✗ AskUserQuestion at a checkpoint whose question text lacks the nonce, or
-  whose option labels do not LEAD with the decision keyword
+- ✗ AskUserQuestion at a checkpoint whose question text lacks the nonce, whose
+  option labels do not LEAD with the decision keyword, or whose offered set
+  is not exactly one persisted menu page
+- ✗ Asking the decision question in the render turn itself (the protocol is
+  two-turn: render ends turn N, ask on turn N+1)
 - ✗ Misreading content feedback as CONTINUE (e.g. "方案漏了边界" → revise and re-ask)
 - ✗ Writes before diagnosis acceptance in fix/debug (the gate's exit-2 deny
   IS the iron law, not an error to work around)

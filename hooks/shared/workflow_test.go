@@ -8,13 +8,18 @@ import (
 // workflow_test.go pins the fixed workflow phase sequences (Task 3 ruling 3:
 // phase opening is sequence-driven — the gate cannot know project skill names
 // until manifest v2, so the framework owns the order and the gate derives the
-// next expected phase from it).
+// next expected phase from it). T16 adds the four remaining verbs: the seven
+// slash commands the run starter already recognizes all get framework routes.
 
 func TestWorkflowPhasesTable(t *testing.T) {
 	want := map[string][]string{
-		"fix":   {"context", "diagnosis", "reproduce", "fix", "regression", "review"},
-		"new":   {"context", "requirements", "plan", "implement", "verify", "review"},
-		"debug": {"context", "diagnosis"},
+		"fix":     {"context", "diagnosis", "reproduce", "fix", "regression", "review"},
+		"new":     {"context", "requirements", "plan", "implement", "verify", "review"},
+		"debug":   {"context", "diagnosis"},
+		"review":  {"context", "review"},
+		"ship":    {"prepare", "review", "merge", "decide"},
+		"ops":     {"context", "operate"},
+		"release": {"planning", "changelog", "publish"},
 	}
 	for wf, seq := range want {
 		got, err := WorkflowPhases(wf)
@@ -28,7 +33,7 @@ func TestWorkflowPhasesTable(t *testing.T) {
 }
 
 func TestWorkflowPhasesUnknownWorkflow(t *testing.T) {
-	for _, wf := range []string{"", "review", "ship", "ops", "release", "FIX"} {
+	for _, wf := range []string{"", "custom", "refix", "FIX", "Review", "releases"} {
 		if got, err := WorkflowPhases(wf); err == nil {
 			t.Errorf("WorkflowPhases(%q) = %v, want error", wf, got)
 		}

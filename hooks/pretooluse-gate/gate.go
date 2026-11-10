@@ -345,11 +345,15 @@ func decideAgent(in *gateInput, run *shared.RunState) decision {
 	return allow(eff)
 }
 
-// decideAskUser — ruling 8: gated only while WAIT_USER, where the question
-// text must carry the current checkpoint's nonce so the platform-injected
-// tool_response can bind the coming answer to that checkpoint. Elsewhere it
-// is ordinary Q&A: it advances nothing (PostToolUse records decisions only
-// for pending checkpoints).
+// decideAskUser — ruling 8 + the T16 two-turn/page contract: gated only
+// while WAIT_USER, where the decision question must (1) carry the current
+// checkpoint's nonce, (2) arrive on the turn AFTER the render (S1: the
+// display the Stop hook binds at turn end is a precondition of
+// RecordDecision — a same-turn answer is always decision_rejected), and (3)
+// offer exactly ONE persisted menu page (S2: the offered label set is pinned
+// to CheckpointState.MenuPages; navigation is nonce-free content feedback,
+// never a question channel). Elsewhere it is ordinary Q&A: it advances
+// nothing (PostToolUse records decisions only for pending checkpoints).
 func decideAskUser(in *gateInput, run *shared.RunState) decision {
 	if run.Status != shared.StatusWaitUser {
 		return allow(nil)
@@ -358,16 +362,49 @@ func decideAskUser(in *gateInput, run *shared.RunState) decision {
 	if cp == nil {
 		return deny("Summoner gate: WAIT_USER with no open checkpoint — run state is inconsistent, denying (fail-closed).")
 	}
+	if len(cp.MenuPages) == 0 {
+		return deny(fmt.Sprintf(
+			"Summoner gate: checkpoint %s carries no persisted menu projection — state predates the paged menu; re-render the checkpoint so the page set is rebuilt.",
+			cp.ID))
+	}
 	qs, _ := in.ToolInput["questions"].([]interface{})
+	var nonceQs []map[string]interface{}
 	for _, q := range qs {
 		m, _ := q.(map[string]interface{})
 		if strings.Contains(stringField(m, "question"), cp.Nonce) {
-			return allow(nil)
+			nonceQs = append(nonceQs, m)
 		}
 	}
-	return deny(fmt.Sprintf(
-		"Summoner gate: AskUserQuestion while WAIT_USER must carry the current checkpoint's nonce in a question text (checkpoint %s, nonce %s) — otherwise the answer cannot bind to the checkpoint.",
-		cp.ID, cp.Nonce))
+	if len(nonceQs) == 0 {
+		return deny(fmt.Sprintf(
+			"Summoner gate: AskUserQuestion while WAIT_USER must carry the current checkpoint's nonce in a question text (checkpoint %s, nonce %s) — otherwise the answer cannot bind to the checkpoint.",
+			cp.ID, cp.Nonce))
+	}
+	// S1 two-turn guard: the display binding the Stop hook writes at turn end
+	// is the sole Displayed setter; without it the answer can only ever be
+	// decision_rejected — deny at the door with the instruction.
+	if !cp.Displayed {
+		return deny(fmt.Sprintf(
+			"Summoner gate: the checkpoint decision question is asked in the SAME turn as the render — the protocol is two-turn: paste the checkpoint render (checkpoint %s, nonce %s) and END the turn so the Stop hook binds the display, then ask the nonce-carrying question on the NEXT turn.",
+			cp.ID, cp.Nonce))
+	}
+	// S2 offered-set pinning: every nonce-carrying question's options must
+	// equal one persisted page exactly (both pages of a full menu are legal;
+	// any subset, superset or foreign label is not).
+	for _, m := range nonceQs {
+		options, _ := m["options"].([]interface{})
+		offered := make([]string, 0, len(options))
+		for _, raw := range options {
+			om, _ := raw.(map[string]interface{})
+			offered = append(offered, stringField(om, "label"))
+		}
+		if cp.MenuPageFor(offered) == nil {
+			return deny(fmt.Sprintf(
+				"Summoner gate: the decision question's options must equal one persisted menu page of checkpoint %s exactly (the offered set matches no page) — copy the current page's labels verbatim from the render's paging note; more:/back: navigation is nonce-free content feedback, not an option.",
+				cp.ID))
+		}
+	}
+	return allow(nil)
 }
 
 // apply executes the effect plan. Two orderings, by path (review I6/I8):

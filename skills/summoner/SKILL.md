@@ -68,7 +68,8 @@ straight there; pure Q&A → answer directly.
    satisfies it by construction. Format authority:
    `references/checkpoint-protocol.md`.
 5. **Decide** — ask via **AskUserQuestion**: the question text carries the
-   checkpoint's nonce; the options are the rendered menu verbatim. Every
+   checkpoint's nonce; the options are ONE PAGE of the rendered menu
+   verbatim (≤4 options — see "Two-turn decision surface" below). Every
    option label STARTS with the decision keyword (continue/skip/done/recall/
    review/stop/accept) — any other leading word is rejected. The platform's
    injected tool_response is the ONLY advancement source; the PostToolUse
@@ -157,6 +158,27 @@ files — undoing code is a separate explicit operation.
   增量处理、原地恢复——两者预算与 stale 传播不同，边界表见
   `references/workflow-reference.md`。
 
+## Two-turn decision surface (paged menus)
+
+Every checkpoint decision is **two-turn**: turn N pastes the render
+(summoner-status output) and ENDS the turn — the Stop hook binds the display
+(id + nonce + content digest; the sole `Displayed` setter). Turn N+1 asks the
+decision question. The gate DENIES a nonce-carrying ask in the render turn
+itself, and a same-turn answer is always `decision_rejected`. Cost, stated
+plainly: one nudge turn per checkpoint — deliberate, because display
+verification must bind before any answer can.
+
+AskUserQuestion caps 4 options per question, so each checkpoint PERSISTS a
+paged menu projection (run state `menu_pages`): every page anchors
+`continue`+`stop` plus two kind-relevant actions (full menus page in 2;
+accept/recall kinds are single-page). The render shows the FULL menu plus a
+`paged ask` note with the pages and `more:`/`back:` labels. Offer the current
+page's labels verbatim — the gate rejects any offered set that is not exactly
+one persisted page. `more:`/`back:` are navigation, not decisions: a page
+request is nonce-free content feedback — record nothing, re-ask with the
+other page. Exactly ONE nonce-carrying question per call: two or more fail
+closed (decision_rejected, nothing recorded).
+
 ## Phase 0 memory (the `context` phase)
 
 Before first domain work in any workflow: read `project.name` from
@@ -173,15 +195,15 @@ closes at its checkpoint like any other.
 | `/summoner:fix` | context → diagnosis(M) → reproduce → fix → regression → review |
 | `/summoner:new` | context → requirements → plan → implement → verify → review |
 | `/summoner:debug` | context → diagnosis（止于诊断检查点） |
-| `/summoner:review` | verification_spec 路线（manifest `phases.review`） |
-| `/summoner:ship` | 单 reviewer 全 rubric → merge 报告 → GO/NO-GO |
-| `/summoner:ops` | 项目 ops 能力承担领域步骤；用户门/trace/复盘走同一 reducer |
-| `/summoner:release` | 版本计划 → changelog → 发布执行（自含，T13 维护） |
+| `/summoner:review` | context → review（单 reviewer 黑盒重查「有什么问题」） |
+| `/summoner:ship` | prepare → review → merge → decide（GO/NO-GO 决策） |
+| `/summoner:ops` | context → operate（ops 能力承担领域步骤，单验收门） |
+| `/summoner:release` | planning → changelog → publish（自含，T13 维护） |
 | `/summoner:status` | 只读状态视图（不改状态） |
 
-(M) = iron law. Framework phase sequences cover fix/new/debug today;
-review/ship/ops/release runs record via run-start and take their phase route
-from the project manifest (manifest check registry task formalizes it).
+(M) = iron law. All seven verbs run framework-owned routes
+(`hooks/shared/workflow.go`); the manifest maps each phase's CAPABILITY
+(`phases.<id>`), never topology.
 
 ## References
 

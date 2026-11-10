@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -673,7 +672,7 @@ func TestDelegationBudgetExhausted(t *testing.T) {
 	}
 }
 
-// --- AskUserQuestion nonce binding (ruling 8) --------------------------------------
+// --- AskUserQuestion nonce binding (ruling 8 + T16 two-turn/page contract) --------
 
 func TestAskUserMissingNonce(t *testing.T) {
 	useGateEnv(t)
@@ -686,22 +685,34 @@ func TestAskUserMissingNonce(t *testing.T) {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
 
+	// No nonce: the answer cannot bind — unchanged deny.
 	code, stderr := callGate(t, toolPayload(t, "AskUserQuestion", askInput("Continue to the next phase?")))
 	wantExit2(t, code, stderr, "nonce")
 
-	code, _ = callGate(t, toolPayload(t, "AskUserQuestion", askInput(
-		fmt.Sprintf("Checkpoint %s (nonce %s): continue?", cp.ID, cp.Nonce))))
-	if code != 0 {
-		t.Fatalf("nonce-bearing question: exit %d, want 0", code)
-	}
+	// T16 two-turn: a nonce-carrying ask in the RENDER turn itself (display
+	// not yet bound by the Stop hook) is denied with the two-turn
+	// instruction — even with the persisted page's exact labels.
+	code, stderr = callGate(t, toolPayload(t, "AskUserQuestion",
+		askPageInput(cp.Nonce, cp.MenuPages[0].Labels)))
+	wantExit2(t, code, stderr, "two-turn")
 
-	// In ACTIVE the same tool is ordinary Q&A — never gated. (The decision
-	// itself is recorded by PostToolUse, not here; decide via the reducer.)
+	// Display bound (the Stop hook's transition), then the page-pinned ask
+	// passes.
 	cur := reloadRun(t, "run-1")
 	cpNow := cur.CurrentCheckpoint()
 	if err := cur.MarkDisplayed(cpNow.ID, shared.CheckpointContentDigest(*cpNow, cur.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
 	}
+	code, _ = callGate(t, toolPayload(t, "AskUserQuestion",
+		askPageInput(cp.Nonce, cpNow.MenuPages[0].Labels)))
+	if code != 0 {
+		t.Fatalf("nonce-bearing page-pinned question after display: exit %d, want 0", code)
+	}
+
+	// In ACTIVE the same tool is ordinary Q&A — never gated. (The decision
+	// itself is recorded by PostToolUse, not here; decide via the reducer.)
+	cur = reloadRun(t, "run-1")
+	cpNow = cur.CurrentCheckpoint()
 	if err := cur.RecordDecision(cpNow.ID, shared.DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision: %v", err)
 	}
@@ -747,9 +758,21 @@ func TestBudgetExhaustionBlocks(t *testing.T) {
 	if cp == nil {
 		t.Fatal("phase-submit must have opened the checkpoint")
 	}
-	code, _ = callGate(t, toolPayload(t, "AskUserQuestion", askInput(fmt.Sprintf("nonce %s: continue?", cp.Nonce))))
+	// T16 two-turn: the decision question is denied until the display is
+	// bound (render turn first)…
+	code, stderr = callGate(t, toolPayload(t, "AskUserQuestion",
+		askPageInput(cp.Nonce, cp.MenuPages[0].Labels)))
+	wantExit2(t, code, stderr, "two-turn")
+	// …then binds and passes with the persisted page's labels (the display
+	// transition the Stop hook performs at turn end).
+	cur := reloadRun(t, "run-1")
+	if err := cur.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, cur.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	code, _ = callGate(t, toolPayload(t, "AskUserQuestion",
+		askPageInput(cp.Nonce, cp.MenuPages[0].Labels)))
 	if code != 0 {
-		t.Fatalf("AskUserQuestion under exhausted budget: exit %d, want 0", code)
+		t.Fatalf("AskUserQuestion under exhausted budget (displayed, page-pinned): exit %d, want 0", code)
 	}
 }
 
