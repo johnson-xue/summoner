@@ -21,7 +21,25 @@ context → requirements → plan → implement → verify → review → post-g
 Phase capabilities come from the project manifest (`summoner.yaml` `phases.*`);
 the mapping (including capability variants) is the manifest's job — this
 command hardcodes no project skill. 无 manifest → 内置默认能力，明示「未配置项目专属能力」。
-需求管理 and 开发交付 are two capability roles over ONE run state — 拆能力不拆上下文。
+
+## Capability split (需求管理 vs 开发交付)
+
+ONE run entry, TWO capability roles (spec §1 增补), each independently
+bindable to a project skill via the manifest:
+
+- **需求管理 (requirements)** — requirements + plan phases: definition,
+  exit criteria, plan freeze; ALSO the delta + impact assessment when a
+  requirement change opens mid-run (the assessment method is the bound
+  skill's, the framework only carries the conclusion).
+- **开发交付 (delivery)** — implement + verify phases: building and testing
+  in this session, plus context/review as usual.
+
+拆能力，不拆上下文，不拆状态: both roles share the ONE run state and the
+main session's context — this is a capability binding split, not a second
+execution mode. A requirement change mid-delivery opens the change loop
+(`skills/change/SKILL.md`), freezes the development position, and resumes in
+place after the single-point confirm — it never restarts the pipeline or
+re-enters requirements/plan wholesale.
 
 ## Rules
 

@@ -124,17 +124,30 @@ wrong/misses/should/redo (EN). When in doubt, re-ask — never advance.
 
 ## CHANGE_CONFIRM checkpoint (requirement-change close)
 
-A requirement change (CHANGE_OPEN) closes through ONE confirm checkpoint.
-Today's render carries the delta note (the checkpoint's `note:` — what
-changed) and the status view's unmet-criteria list (newly-stale ids); the
-fuller impact presentation — requirements-version bump, preserved results,
-frozen development position — is wired with the change-loop task and will
-join this render then. The menu is exactly `accept: 接受变更并恢复开发` /
-`stop: 停止——保留状态退出`. Choosing `accept:` restores the frozen
-development position and resumes in place — no phase-by-phase reopen, no
-re-ask of untouched phases. If the change was entered from a checkpoint, that
-checkpoint was superseded and its re-rendered successor asks the interrupted
-question again after the confirm.
+A requirement change (CHANGE_OPEN) closes through ONE confirm checkpoint —
+the single-point close of spec §1 增补 (变更闭环). The checkpoint opens when
+the delta is applied (`Skill(summoner:change, apply)` — the gate records
+`change.delta_applied`); its render presents the impact assessment for the
+user to confirm:
+
+- `note:` — the delta statement (what changed this time);
+- the status view's change block — the SAVED development position that
+  `accept:` restores (`saved position: current_task … · test_progress … ·
+  pending_verifications …`) and the bumped `requirements version`;
+- the status view's unmet-criteria list — the newly-stale ids (含 stale 标注),
+  i.e. what the change invalidated; untouched accepted results stay valid and
+  are NOT re-asked.
+
+The menu is exactly `accept: 接受变更并恢复开发` / `stop: 停止——保留状态退出`
+— the label LEADS with `accept` (→ ACCEPT_REQUIREMENT_CHANGE). The confirm
+question text carries the checkpoint nonce like every decision. Choosing
+`accept:` restores the frozen development position and resumes in place —
+no phase-by-phase reopen, no re-run of the pipeline (`change.resumed` is
+recorded after the decision); when the change touched a public interface or
+an architectural premise, the impact assessment's mandated re-planning is
+presented AT this confirm point, never left to the user to remember. If the
+change was entered from a checkpoint, that checkpoint was superseded and its
+re-rendered successor asks the interrupted question again after the confirm.
 
 ## RECOVERY checkpoint
 

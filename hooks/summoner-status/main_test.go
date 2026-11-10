@@ -204,6 +204,58 @@ func TestRenderWaitUser(t *testing.T) {
 	}
 }
 
+// TestRenderChangeOpen pins the CHANGE_OPEN render (T10): with a requirement
+// change open and its delta applied (change-confirm pending), the render
+// carries the SAVED development position (the freeze the loop restores), the
+// requirements version the delta bumped, the stale-criteria list, and a
+// 「等待变更确认」 waiting-on line — plus the CHANGE_CONFIRM checkpoint block.
+func TestRenderChangeOpen(t *testing.T) {
+	useStatusEnv(t)
+	useSandboxSettings(t, false)
+	stubProbe(t, false)
+	r := newRun(t)
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	// Mid-phase change: the freeze captures the live position at open.
+	r.DevPosition = shared.DevPosition{
+		CurrentTask:          "diagnosis: nil deref at login.go:88",
+		TestProgress:         "repro test drafted, not yet run",
+		PendingVerifications: []string{"reproduce run", "root-cause evidence digest"},
+	}
+	if err := r.OpenRequirementChange("user wants logout flow covered too"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := r.ApplyRequirementDelta(shared.RequirementDelta{
+		Note:    "scope: login → login+logout",
+		Changed: []string{"crit-root"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RequirementsVersion != 2 {
+		t.Fatalf("requirements version after delta = %d, want 2", report.RequirementsVersion)
+	}
+
+	out := renderStatus(r, "L1（未配置沙箱）")
+	for _, want := range []string{
+		"requirement change (CHANGE_OPEN):",
+		"note: user wants logout flow covered too",
+		"saved position: current_task: diagnosis: nil deref at login.go:88",
+		"test_progress: repro test drafted, not yet run",
+		"pending_verifications: reproduce run, root-cause evidence digest",
+		"requirements version: 2",
+		"- crit-root (stale)",
+		"awaiting: 等待变更确认",
+		"CHANGE_CONFIRM",
+		"accept: 接受变更并恢复开发",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("CHANGE_OPEN render missing %q\n--- render ---\n%s", want, out)
+		}
+	}
+}
+
 // TestRenderUnlimitedBudget: zero-value limits render as unlimited.
 func TestRenderUnlimitedBudget(t *testing.T) {
 	useStatusEnv(t)

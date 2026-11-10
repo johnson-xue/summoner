@@ -917,7 +917,33 @@ func copyDevPosition(p DevPosition) DevPosition {
 // supersedes that checkpoint (M2): it stays in history, undecidable, and a
 // fresh re-rendered successor re-asks it after the change closes. While
 // open, SubmitPhase is refused (no submitting from a half-changed baseline).
+// The runtime channel (summoner:change) has no DevPosition writer of its
+// own, so this form freezes whatever the live state carries — direct callers
+// that can supply a real position use OpenRequirementChangeAt.
 func (r *RunState) OpenRequirementChange(note string) error {
+	return r.openRequirementChange(note, r.DevPosition)
+}
+
+// OpenRequirementChangeAt opens a requirement change with an EXPLICIT
+// development position — the form the summoner:change Skill payload drives:
+// the position is model-proposed CONTENT, never authorization (status
+// legality is unchanged). A non-empty current_task is required — the freeze
+// is the change loop's whole restore story, and an always-empty position
+// (what the live DevPosition is in real runs today) would freeze nothing.
+// The supplied position is deep-copied and captured together with the
+// open/supersede in ONE commit snapshot: a failed Save leaves memory and
+// disk unchanged (T10 controller addendum).
+func (r *RunState) OpenRequirementChangeAt(note string, position DevPosition) error {
+	if position.CurrentTask == "" {
+		return errors.New("OpenRequirementChangeAt: position.current_task is required — freeze a real development position, not an empty one")
+	}
+	return r.openRequirementChange(note, position)
+}
+
+// openRequirementChange is the shared open path: legality checks, the
+// checkpoint supersede for a WAIT_USER entry, and the change context with
+// the deep-copied position — all inside a single commit.
+func (r *RunState) openRequirementChange(note string, position DevPosition) error {
 	return r.commit(func(s *RunState) error {
 		if s.Status != StatusActive && s.Status != StatusWaitUser {
 			return fmt.Errorf("OpenRequirementChange: illegal status %s (want ACTIVE or WAIT_USER)", s.Status)
@@ -934,7 +960,7 @@ func (r *RunState) OpenRequirementChange(note string) error {
 			Note:          note,
 			OpenedAt:      nowUTC(),
 			PriorStatus:   s.Status,
-			SavedPosition: copyDevPosition(s.DevPosition),
+			SavedPosition: copyDevPosition(position),
 		}
 		return nil
 	})

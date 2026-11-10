@@ -7,6 +7,7 @@ package main
 // without process-global state beyond the env-overridden roots.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,13 @@ import (
 )
 
 const skillPhaseSubmit = "summoner:phase-submit"
+
+// skillChange is the requirement-change micro-skill (spec §1 增补 + T10
+// ruling): subcommand `open` freezes the development position and enters
+// CHANGE_OPEN; `apply` submits the delta + impact assessment. It is the ONLY
+// Skill call the gate allows while WAIT_USER (the explicit checkpoint entry
+// into the change loop).
+const skillChange = "summoner:change"
 
 // decision is decide()'s verdict: allow with an effect plan, or deny with a
 // human-readable reason (the exit-2 stderr text). A deny may also carry a
@@ -38,10 +46,19 @@ type submitReject struct {
 // except phase-submit reducer rejections, which also trace
 // phase_submitted.rejected per ruling 6).
 type effects struct {
-	openPhase     string                  // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
-	submit        *shared.PhaseSubmission // SubmitPhase payload (ruling 6)
-	delegation    string                  // subagent_type — StartDelegation + delegation.started
-	delegateRevID string                  // review_id bound to the delegation, when reviewer
+	openPhase     string                   // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
+	submit        *shared.PhaseSubmission  // SubmitPhase payload (ruling 6)
+	delegation    string                   // subagent_type — StartDelegation + delegation.started
+	delegateRevID string                   // review_id bound to the delegation, when reviewer
+	changeOpen    *changeOpenEffect        // OpenRequirementChangeAt + change.opened (summoner:change open)
+	changeApply   *shared.RequirementDelta // ApplyRequirementDelta + change.delta_applied (summoner:change apply)
+}
+
+// changeOpenEffect is the summoner:change `open` payload: the note (what the
+// user wants changed) and the model-proposed development position to freeze.
+type changeOpenEffect struct {
+	note     string
+	position shared.DevPosition
 }
 
 func deny(reason string) decision { return decision{allow: false, reason: reason} }
@@ -100,6 +117,22 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		return deny("Summoner gate: Skill call without a skill name — cannot be verified, denying (fail-closed).")
 	}
 
+	// WAIT_USER discipline: while a checkpoint is pending, the ONLY Skill
+	// calls through are summoner:change (the explicit checkpoint entry into
+	// the change loop, spec §1 增补 — it supersedes the pending checkpoint)
+	// and summoner:phase-submit, which owns its own WAIT_USER rejection path
+	// (SubmitPhase refuses it and the rejection is traced as
+	// phase_submitted.rejected). Every other skill waits for the decision.
+	if run.Status == shared.StatusWaitUser && skill != skillChange && skill != skillPhaseSubmit {
+		return deny(fmt.Sprintf(
+			"Summoner gate: Skill(%s) is blocked while the run waits for a user decision (WAIT_USER) — only summoner:change (the change-loop entry) may run there; present the checkpoint and wait for the decision.",
+			skill))
+	}
+
+	if skill == skillChange {
+		return decideChangeSkill(in, run)
+	}
+
 	if skill == skillPhaseSubmit {
 		args, ok := in.ToolInput["args"].(string)
 		if !ok {
@@ -142,6 +175,95 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		}
 	}
 	return allow(eff)
+}
+
+// --- summoner:change payload (strict decode; T10) -----------------------------
+
+// changeOpenArgs / changeApplyArgs are the per-subcommand strict payload
+// shapes (unknown fields are rejected — the same fail-closed principle as the
+// known-tool shape validation). position is a POINTER: `open` requires the
+// object present (null/absent both fail).
+type changeOpenArgs struct {
+	Subcommand string              `json:"subcommand"`
+	Note       string              `json:"note"`
+	Position   *shared.DevPosition `json:"position"`
+}
+
+type changeApplyArgs struct {
+	Subcommand string   `json:"subcommand"`
+	Note       string   `json:"note"`
+	Changed    []string `json:"changed"`
+	Affected   []string `json:"affected"`
+}
+
+// strictUnmarshal decodes bytes into v rejecting unknown fields — a malformed
+// payload for a KNOWN tool is a fail-closed deny, never an observe-and-allow.
+func strictUnmarshal(data []byte, v interface{}) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+// decideChangeSkill maps Skill(summoner:change) onto the change loop: `open`
+// → OpenRequirementChangeAt (legal from ACTIVE and WAIT_USER — the explicit
+// checkpoint entry); `apply` → ApplyRequirementDelta (legal only in
+// CHANGE_OPEN; the reducer is the authority). Payload-shape failures and
+// illegal states are exit-2 denials ONLY — untraced (standing ruling:
+// non-phase-submit denials are untraced). The budget check already ran in
+// decide(), before any counting.
+func decideChangeSkill(in *gateInput, run *shared.RunState) decision {
+	args, ok := in.ToolInput["args"].(string)
+	if !ok {
+		return deny("Summoner gate: summoner:change requires args — a JSON string carrying {subcommand: open|apply, …} (skills/change/SKILL.md).")
+	}
+	// One JSON object first (validates the whole string), then a strict
+	// per-subcommand decode so unknown fields fail closed per shape.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &probe); err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:change args is not valid JSON: %v", err))
+	}
+	var sub string
+	if raw, ok := probe["subcommand"]; ok {
+		if err := json.Unmarshal(raw, &sub); err != nil {
+			return deny("Summoner gate: summoner:change subcommand must be a string (open|apply).")
+		}
+	}
+	switch sub {
+	case "open":
+		var a changeOpenArgs
+		if err := strictUnmarshal([]byte(args), &a); err != nil {
+			return deny(fmt.Sprintf("Summoner gate: summoner:change open payload is malformed (unknown or mistyped field): %v", err))
+		}
+		if a.Note == "" {
+			return deny("Summoner gate: summoner:change open requires note — what the user wants changed.")
+		}
+		if a.Position == nil {
+			return deny("Summoner gate: summoner:change open requires position — {current_task, test_progress, pending_verifications} (the development position to freeze).")
+		}
+		// Status/change-open legality mirrors the reducer (belt: the reducer
+		// re-validates inside its commit; a mismatch denies before any trace).
+		if run.Status != shared.StatusActive && run.Status != shared.StatusWaitUser {
+			return deny(fmt.Sprintf("Summoner gate: summoner:change open requires ACTIVE or WAIT_USER, status is %s.", run.Status))
+		}
+		if run.Change != nil {
+			return deny("Summoner gate: summoner:change open refused — a requirement change is already open (apply its delta, then close at the confirm checkpoint).")
+		}
+		return allow(&effects{changeOpen: &changeOpenEffect{note: a.Note, position: *a.Position}})
+	case "apply":
+		var a changeApplyArgs
+		if err := strictUnmarshal([]byte(args), &a); err != nil {
+			return deny(fmt.Sprintf("Summoner gate: summoner:change apply payload is malformed (unknown or mistyped field): %v", err))
+		}
+		if a.Note == "" {
+			return deny("Summoner gate: summoner:change apply requires note — the delta statement (what changed this time).")
+		}
+		if run.Change == nil {
+			return deny("Summoner gate: summoner:change apply refused — no requirement change open (CHANGE_OPEN); open the change loop first.")
+		}
+		return allow(&effects{changeApply: &shared.RequirementDelta{Note: a.Note, Changed: a.Changed, Affected: a.Affected}})
+	default:
+		return deny(fmt.Sprintf("Summoner gate: summoner:change subcommand must be open or apply, got %q.", sub))
+	}
 }
 
 // decideWrite — the write-eligibility matrix (ruling 4). POST_GAME_PENDING
@@ -327,6 +449,81 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 			})
 		if err := appendAll(events); err != nil {
 			return err // state already moved (WAIT_USER) — deny fail-closed
+		}
+		run.CountToolCall()
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+			return err
+		}
+		return nil
+	}
+
+	// --- change path (summoner:change): reducer first, like the submit path
+	// — a reducer rejection (illegal status, change already open, empty
+	// position) consumes nothing, leaves NO trace (standing ruling:
+	// non-phase-submit denials untraced) and denies with its reason. On
+	// success the intent record and the change event are appended, then the
+	// budget counter.
+	if eff != nil && eff.changeOpen != nil {
+		if err := run.OpenRequirementChangeAt(eff.changeOpen.note, eff.changeOpen.position); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: summoner:change open rejected — %v\n", err)
+			return err
+		}
+		events := []shared.TraceEvent{
+			{
+				Type:    shared.EventToolStarted,
+				Payload: map[string]interface{}{"tool_name": in.ToolName},
+			},
+			{
+				Type: shared.EventChangeOpened,
+				Payload: map[string]interface{}{
+					"note": eff.changeOpen.note,
+					"position": map[string]interface{}{
+						"current_task":          eff.changeOpen.position.CurrentTask,
+						"test_progress":         eff.changeOpen.position.TestProgress,
+						"pending_verifications": eff.changeOpen.position.PendingVerifications,
+					},
+				},
+			},
+		}
+		if err := appendAll(events); err != nil {
+			return err // state already moved (CHANGE_OPEN) — deny fail-closed
+		}
+		run.CountToolCall()
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+			return err
+		}
+		return nil
+	}
+	if eff != nil && eff.changeApply != nil {
+		report, err := run.ApplyRequirementDelta(*eff.changeApply)
+		if err != nil {
+			fmt.Fprintf(errW, "Summoner gate: summoner:change apply rejected — %v\n", err)
+			return err
+		}
+		payload := map[string]interface{}{
+			"note":                 eff.changeApply.Note,
+			"requirements_version": report.RequirementsVersion,
+		}
+		if len(report.NewlyStale) > 0 {
+			payload["newly_stale"] = report.NewlyStale
+		}
+		if len(report.Preserved) > 0 {
+			payload["preserved"] = report.Preserved
+		}
+		events := []shared.TraceEvent{
+			{
+				Type:    shared.EventToolStarted,
+				Payload: map[string]interface{}{"tool_name": in.ToolName},
+			},
+			{
+				Type:    shared.EventChangeDeltaApplied,
+				Payload: payload,
+			},
+		}
+		if err := appendAll(events); err != nil {
+			return err // state already moved (WAIT_USER at the confirm checkpoint) — deny fail-closed
 		}
 		run.CountToolCall()
 		if err := run.Save(); err != nil {

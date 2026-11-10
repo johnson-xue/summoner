@@ -1376,3 +1376,354 @@ func TestDebugWorkflowSequence(t *testing.T) {
 		t.Fatalf("Edit after diagnosis accepted: exit %d, want 0", code)
 	}
 }
+
+// --- summoner:change (requirement-change channel, T10) ---------------------------
+
+const skillChangeUnderTest = "summoner:change"
+
+// changeOpenInput builds the Skill(summoner:change) tool_input for subcommand
+// open: note (what the user wants changed) + position (the model-proposed
+// development-position freeze).
+func changeOpenInput(t *testing.T, note, currentTask, testProgress string, pending []string) map[string]interface{} {
+	t.Helper()
+	return map[string]interface{}{
+		"skill": skillChangeUnderTest,
+		"args": mustJSONStr(t, map[string]interface{}{
+			"subcommand": "open",
+			"note":       note,
+			"position": map[string]interface{}{
+				"current_task":          currentTask,
+				"test_progress":         testProgress,
+				"pending_verifications": pending,
+			},
+		}),
+	}
+}
+
+func changeApplyInput(t *testing.T, note string, changed, affected []string) map[string]interface{} {
+	t.Helper()
+	return map[string]interface{}{
+		"skill": skillChangeUnderTest,
+		"args": mustJSONStr(t, map[string]interface{}{
+			"subcommand": "apply",
+			"note":       note,
+			"changed":    changed,
+			"affected":   affected,
+		}),
+	}
+}
+
+// openMidPhaseChange drives the gate through an ACTIVE mid-phase change open
+// and returns the reloaded run.
+func openMidPhaseChange(t *testing.T) *shared.RunState {
+	t.Helper()
+	r := startFixRun(t, shared.BudgetLimits{})
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	code, stderr := callGate(t, toolPayload(t, "Skill", changeOpenInput(t,
+		"user wants logout flow covered too",
+		"diagnosis: nil deref at login.go:88",
+		"repro test drafted, not yet run",
+		[]string{"reproduce run", "root-cause evidence digest"})))
+	if code != 0 {
+		t.Fatalf("change open: exit %d, want 0 (stderr %q)", code, stderr)
+	}
+	return reloadRun(t, "run-1")
+}
+
+func containsIDStr(ids []string, id string) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestChangeOpenFreezesPayloadPosition: the open payload's position — not a
+// pre-seeded RunState.DevPosition — is what gets frozen (the runtime channel
+// has no other position writer); the gate traces tool.started +
+// change.opened with the note and the frozen position.
+func TestChangeOpenFreezesPayloadPosition(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stderr := callGate(t, toolPayload(t, "Skill", changeOpenInput(t,
+		"user wants logout flow covered too",
+		"diagnosis: nil deref at login.go:88",
+		"repro test drafted, not yet run",
+		[]string{"reproduce run", "root-cause evidence digest"})))
+	if code != 0 {
+		t.Fatalf("change open: exit %d, want 0 (stderr %q)", code, stderr)
+	}
+
+	after := reloadRun(t, "run-1")
+	if after.Change == nil {
+		t.Fatal("change open must set Change (CHANGE_OPEN)")
+	}
+	pos := after.Change.SavedPosition
+	if pos.CurrentTask != "diagnosis: nil deref at login.go:88" ||
+		pos.TestProgress != "repro test drafted, not yet run" ||
+		len(pos.PendingVerifications) != 2 || pos.PendingVerifications[0] != "reproduce run" {
+		t.Fatalf("SavedPosition = %+v, want the position FROM THE PAYLOAD (non-empty, not pre-seeded state)", pos)
+	}
+	if after.DevPosition.CurrentTask != "" {
+		t.Fatalf("run DevPosition = %+v — the At-freeze must not overwrite the live field", after.DevPosition)
+	}
+	evs := readGateTrace(t, "run-1")
+	got := traceTypes(evs)
+	want := []string{shared.EventToolStarted, shared.EventChangeOpened}
+	if len(got) != len(want) {
+		t.Fatalf("trace types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("trace types = %v, want %v", got, want)
+		}
+	}
+	opened := evs[1]
+	if opened.Payload["note"] != "user wants logout flow covered too" {
+		t.Errorf("change.opened payload = %v, want the note", opened.Payload)
+	}
+	posPayload, _ := opened.Payload["position"].(map[string]interface{})
+	if posPayload == nil || posPayload["current_task"] != "diagnosis: nil deref at login.go:88" {
+		t.Errorf("change.opened payload position = %v, want the frozen position", opened.Payload["position"])
+	}
+}
+
+// TestChangeOpenFromWaitUserCarveOut: summoner:change is the ONLY Skill call
+// the gate allows while WAIT_USER (the explicit checkpoint entry, spec §1
+// 增补) — it supersedes the pending checkpoint; an ordinary skill stays
+// rejected there.
+func TestChangeOpenFromWaitUserCarveOut(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"}); err != nil {
+		t.Fatal(err)
+	}
+	if reloadRun(t, "run-1").Status != shared.StatusWaitUser {
+		t.Fatal("fixture must sit at WAIT_USER")
+	}
+
+	// Ordinary skill while WAIT_USER: rejected.
+	code, stderr := callGate(t, toolPayload(t, "Skill", skillInput("project-diagnosis-skill", "")))
+	wantExit2(t, code, stderr, "WAIT_USER")
+
+	// summoner:change open while WAIT_USER: the carve-out — allowed, and the
+	// pending checkpoint is superseded (M2).
+	code, stderr = callGate(t, toolPayload(t, "Skill", changeOpenInput(t,
+		"checkpoint-time scope change", "context review", "n/a", nil)))
+	if code != 0 {
+		t.Fatalf("change open from WAIT_USER: exit %d, want 0 (stderr %q)", code, stderr)
+	}
+	after := reloadRun(t, "run-1")
+	if after.Change == nil || after.Change.PriorStatus != shared.StatusWaitUser {
+		t.Fatalf("change = %+v, want PriorStatus WAIT_USER", after.Change)
+	}
+	if cp := after.Checkpoints[0]; !cp.Superseded {
+		t.Fatalf("the pending checkpoint must be superseded by the change, got %+v", cp)
+	}
+}
+
+// TestChangeApplyOpensConfirmCheckpoint: apply runs ApplyRequirementDelta
+// (CHANGE_OPEN only), bumps the requirements version, marks the delta ids
+// stale and opens the single-point confirm checkpoint; the trace carries
+// change.delta_applied with the impact (requirements_version + newly stale).
+func TestChangeApplyOpensConfirmCheckpoint(t *testing.T) {
+	useGateEnv(t)
+	openMidPhaseChange(t)
+
+	code, stderr := callGate(t, toolPayload(t, "Skill", changeApplyInput(t,
+		"scope: login → login+logout", []string{"crit-root", "crit-repro"}, []string{"crit-evid"})))
+	if code != 0 {
+		t.Fatalf("change apply: exit %d, want 0 (stderr %q)", code, stderr)
+	}
+	after := reloadRun(t, "run-1")
+	if after.RequirementsVersion != 2 {
+		t.Fatalf("requirements version = %d, want 2", after.RequirementsVersion)
+	}
+	for _, id := range []string{"crit-root", "crit-repro", "crit-evid"} {
+		if !containsIDStr(after.Stale, id) {
+			t.Fatalf("Stale = %v, want %s staled by the delta", after.Stale, id)
+		}
+	}
+	if after.Status != shared.StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER at the change-confirm checkpoint", after.Status)
+	}
+	cp := after.CurrentCheckpoint()
+	if cp == nil || cp.Kind != shared.CheckpointChangeConfirm || !after.Change.Applied {
+		t.Fatalf("confirm checkpoint = %+v change = %+v, want CHANGE_CONFIRM + applied", cp, after.Change)
+	}
+
+	evs := readGateTrace(t, "run-1")
+	got := traceTypes(evs)
+	want := []string{
+		shared.EventToolStarted, shared.EventChangeOpened, // open
+		shared.EventToolStarted, shared.EventChangeDeltaApplied, // apply
+	}
+	if len(got) != len(want) {
+		t.Fatalf("trace types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("trace types = %v, want %v", got, want)
+		}
+	}
+	applied := evs[3]
+	if v, _ := applied.Payload["requirements_version"].(float64); v != 2 {
+		t.Errorf("delta_applied requirements_version = %v, want 2", applied.Payload["requirements_version"])
+	}
+	stale, _ := applied.Payload["newly_stale"].([]interface{})
+	if len(stale) != 3 {
+		t.Errorf("delta_applied newly_stale = %v, want the 3 delta ids", applied.Payload["newly_stale"])
+	}
+}
+
+// TestChangeChannelRejectsUntraced: malformed payloads and illegal states are
+// exit-2 denials ONLY — no trace event (standing ruling: non-phase-submit
+// denials are untraced), no state change.
+func TestChangeChannelRejectsUntraced(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) *shared.RunState
+		input map[string]interface{}
+		want  string
+	}{
+		{
+			name:  "args absent",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest},
+			want:  "args",
+		},
+		{
+			name:  "args not JSON",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": "not-json{"},
+			want:  "not valid JSON",
+		},
+		{
+			name:  "unknown subcommand",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"close","note":"x"}`},
+			want:  "subcommand",
+		},
+		{
+			name:  "open missing position",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"open","note":"x"}`},
+			want:  "position",
+		},
+		{
+			name:  "open null position",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"open","note":"x","position":null}`},
+			want:  "position",
+		},
+		{
+			name:  "open empty note",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"open","note":"","position":{"current_task":"t"}}`},
+			want:  "note",
+		},
+		{
+			name:  "open unknown field (strict decode)",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"open","note":"x","position":{"current_task":"t"},"changed":["c"]}`},
+			want:  "unknown field",
+		},
+		{
+			name:  "open position unknown field",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"open","note":"x","position":{"current_task":"t","bogus":1}}`},
+			want:  "unknown field",
+		},
+		{
+			name:  "open empty current_task (reducer rejects)",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"open","note":"x","position":{"current_task":"","test_progress":"","pending_verifications":[]}}`},
+			want:  "current_task",
+		},
+		{
+			name: "open while change already open",
+			setup: func(t *testing.T) *shared.RunState {
+				r := startFixRun(t, shared.BudgetLimits{})
+				r.DevPosition = shared.DevPosition{CurrentTask: "t"}
+				if err := r.OpenRequirementChange("first"); err != nil {
+					t.Fatal(err)
+				}
+				return r
+			},
+			input: changeOpenInput(t, "second change", "t2", "", nil),
+			want:  "already open",
+		},
+		{
+			name:  "apply with no change open",
+			setup: func(t *testing.T) *shared.RunState { return startFixRun(t, shared.BudgetLimits{}) },
+			input: changeApplyInput(t, "delta", []string{"crit-1"}, nil),
+			want:  "no requirement change open",
+		},
+		{
+			name: "apply unknown field",
+			setup: func(t *testing.T) *shared.RunState {
+				r := startFixRun(t, shared.BudgetLimits{})
+				r.DevPosition = shared.DevPosition{CurrentTask: "t"}
+				if err := r.OpenRequirementChange("opened"); err != nil {
+					t.Fatal(err)
+				}
+				return r
+			},
+			input: map[string]interface{}{"skill": skillChangeUnderTest, "args": `{"subcommand":"apply","note":"d","changed":["c"],"position":{"current_task":"t"}}`},
+			want:  "unknown field",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useGateEnv(t)
+			tc.setup(t)
+			code, stderr := callGate(t, toolPayload(t, "Skill", tc.input))
+			wantExit2(t, code, stderr, tc.want)
+			if evs := readGateTrace(t, "run-1"); len(evs) != 0 {
+				t.Fatalf("change-channel denials must stay untraced, got %v", traceTypes(evs))
+			}
+		})
+	}
+}
+
+// TestChangeRequiresRun: summoner:change with no live run is denied like
+// summoner:phase-submit — the protocol channel cannot run without a run.
+func TestChangeRequiresRun(t *testing.T) {
+	useGateEnv(t)
+	code, stderr := callGate(t, toolPayload(t, "Skill", changeOpenInput(t, "note", "task", "", nil)))
+	wantExit2(t, code, stderr, "requires an active run")
+}
+
+// TestWaitUserSkillDenyKeepsSubmitPath: while WAIT_USER, phase-submit keeps
+// its own rejection path (SubmitPhase refuses it, traced as
+// phase_submitted.rejected) — the WAIT_USER skill deny must not shadow it.
+func TestWaitUserSkillDenyKeepsSubmitPath(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"}); err != nil {
+		t.Fatal(err)
+	}
+	if reloadRun(t, "run-1").Status != shared.StatusWaitUser {
+		t.Fatal("fixture must sit at WAIT_USER")
+	}
+
+	code, stderr := callGate(t, toolPayload(t, "Skill", skillInput("summoner:phase-submit", submitArgs(t, "diagnosis"))))
+	wantExit2(t, code, stderr, "")
+	evs := readGateTrace(t, "run-1")
+	if got := traceTypes(evs); got[len(got)-1] != shared.EventPhaseSubmittedRejected {
+		t.Fatalf("WAIT_USER phase-submit must end with phase_submitted.rejected, got %v", got)
+	}
+}

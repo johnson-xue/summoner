@@ -215,6 +215,7 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	b.WriteString(visitLines(run))
 	b.WriteString(artifactLines(run))
 	b.WriteString(unmetLines(run))
+	b.WriteString(changeLines(run))
 	fmt.Fprintf(&b, "awaiting: %s\n", awaitingLine(run))
 	fmt.Fprintf(&b, "default recall: %s\n", defaultRecallLine(run))
 	fmt.Fprintf(&b, "budget: %s\n", budgetLine(run))
@@ -329,10 +330,50 @@ func unmetLines(run *shared.RunState) string {
 	return "unmet criteria:\n" + strings.Join(lines, "\n") + "\n"
 }
 
+// changeLines renders the CHANGE_OPEN sub-state (spec §1 增补, T10): why the
+// change opened, the SAVED development position the loop restores on accept,
+// and the requirements version the delta bumped. Rendered while a change is
+// open (before and after its delta is applied); nothing once it closed.
+func changeLines(run *shared.RunState) string {
+	if run.Change == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("requirement change (CHANGE_OPEN):\n")
+	note := run.Change.Note
+	if note == "" {
+		note = "—"
+	}
+	fmt.Fprintf(&b, "  note: %s\n", note)
+	p := run.Change.SavedPosition
+	task := p.CurrentTask
+	if task == "" {
+		task = "—"
+	}
+	progress := p.TestProgress
+	if progress == "" {
+		progress = "—"
+	}
+	pending := "—"
+	if len(p.PendingVerifications) > 0 {
+		pending = strings.Join(p.PendingVerifications, ", ")
+	}
+	fmt.Fprintf(&b, "  saved position: current_task: %s · test_progress: %s · pending_verifications: %s\n", task, progress, pending)
+	fmt.Fprintf(&b, "  requirements version: %d\n", run.RequirementsVersion)
+	return b.String()
+}
+
 // awaitingLine names who or what the run currently waits for (当前等待谁).
 func awaitingLine(run *shared.RunState) string {
 	if run.Change != nil && !run.Change.Applied {
 		return "requirement change open (CHANGE_OPEN) — the model owes delta + impact assessment, then the single-point confirm"
+	}
+	if run.Change != nil {
+		// Applied: WAIT_USER at the single-point confirm checkpoint.
+		if cp := run.CurrentCheckpoint(); cp != nil {
+			return fmt.Sprintf("等待变更确认 — user decision at change-confirm checkpoint %s (nonce %s)", cp.ID, cp.Nonce)
+		}
+		return "等待变更确认 (change-confirm checkpoint)"
 	}
 	switch run.Status {
 	case shared.StatusWaitUser:

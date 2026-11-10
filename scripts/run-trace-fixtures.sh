@@ -46,6 +46,13 @@ valid-p0-clean.jsonl|PASS|SKIP|PASS|PASS|SKIP|PASS|PASS
 invalid-build-error.jsonl|FAIL|SKIP|PASS|SKIP|SKIP|SKIP|PASS
 invalid-lint-error.jsonl|SKIP|SKIP|PASS|FAIL|SKIP|SKIP|PASS
 invalid-tests-fail.jsonl|SKIP|SKIP|PASS|SKIP|SKIP|FAIL|PASS
+# T10 change-loop fixture: a v2 single-loop trace (change.opened →
+# change.delta_applied → checkpoint.decided(ACCEPT_REQUIREMENT_CHANGE) →
+# change.resumed). No chain/graph events exist for the legacy scorers, so they
+# SKIP; verifier-checklist-check iterates handoff envelopes and its
+# zero-iteration default is PASS (observed, deterministic). T12's
+# user-gate-check scorer will assert the change-loop semantics themselves.
+valid-change-loop.jsonl|SKIP|SKIP|SKIP|SKIP|SKIP|SKIP|PASS
 "
 
 SCORERS=(build-check handoff-contract-check iron-law-check lint-check review-isolation-check test-pass-rate verifier-checklist-check)

@@ -30,6 +30,11 @@
       "name": "phase-submit",
       "path": "skills/phase-submit/SKILL.md",
       "description": "ONLY to submit a completed phase result — invoke when a phase's work is done; never for anything else. Not user-invocable; it is the main session's single submission channel to the checkpoint protocol."
+    },
+    {
+      "name": "change",
+      "path": "skills/change/SKILL.md",
+      "description": "ONLY to open or apply a requirement change in a live Summoner run; never for anything else. Not user-invocable; it is the main session's single channel into the requirement-change loop (open freezes the development position, apply submits the delta + impact)."
     }
   ],
   "agents": [

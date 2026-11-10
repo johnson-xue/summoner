@@ -41,6 +41,25 @@ the user confirms; a skipped phase is marked UNVERIFIED/UNREVIEWED):
 <!-- canonical:auto-skip-table — commands reference this table; inlining a
      variant elsewhere is a lint error (scripts/validate-repo.sh). -->
 
+## Requirement Change vs Recall (canonical boundary table)
+
+Both re-enter earlier ground, but they answer different failures (spec §1
+增补: 变更闭环 vs §4 recall). Pick by what went wrong, not by convenience:
+
+| | recall（方向错了回城重做） | requirement change（基线移动增量恢复） |
+|---|---|---|
+| What went wrong | The work answered the WRONG question — direction itself is wrong | The question MOVED — the baseline changed under correct direction |
+| Entry | `recall:` option at any checkpoint (default: latest accepted prior phase) | Free-text change request at any moment (incl. mid-phase), or explicitly at a checkpoint — via `Skill(summoner:change)` (spec §1 增补) |
+| Runtime effect | Appends a FRESH visit of the target phase; history kept, downstream accepted criteria go stale | Freezes the development position (task, test progress, pending verifications) → CHANGE_OPEN; delta + impact assessment → single-point confirm `accept:` |
+| Recovery shape | Redo the recalled phase and everything downstream (checkpoint per phase) | In-place resume at the frozen position after ONE confirm — no phase-by-phase reopen, untouched accepted results stay valid |
+| RequirementsVersion | Unchanged | Bumped by every applied delta |
+| Stale propagation | Every later visit's criteria go stale (recursively from the target) | Only the delta's `changed`/`affected` ids go stale — 未受影响的已接受结果保持有效 |
+| Budget 口径 | A redone phase gets a fresh phase tool budget (recall = rework) | Change open/apply are control-plane calls on the SAME budget; no rework counter unless a review later returns NEEDS-FIX |
+| Risk if confused | Treating a moved baseline as a wrong direction wastes every accepted result (重跑流水线) | Treating a wrong direction as a change silently keeps building on a bad premise (只有影响评估说了算的重新规划会被跳过) |
+
+<!-- canonical:change-vs-recall-table — the boundary table lives here;
+     commands and skills point at this section, never inline a variant. -->
+
 ## Common Rationalizations
 
 | AI thinks... | Reality |

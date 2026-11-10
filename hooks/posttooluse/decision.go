@@ -111,6 +111,20 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	}, errW); err != nil {
 		return 2
 	}
+	// The change loop's single-point close (T10): a successful
+	// ACCEPT_REQUIREMENT_CHANGE resumes the run in place — record the resume
+	// AFTER the decision it belongs to (change.opened → change.delta_applied
+	// → checkpoint.decided → change.resumed).
+	if d == shared.DecisionAcceptRequirementChange {
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type: shared.EventChangeResumed,
+			Payload: map[string]interface{}{
+				"checkpoint_id": cp.ID,
+			},
+		}, errW); err != nil {
+			return 2
+		}
+	}
 	return 0
 }
 

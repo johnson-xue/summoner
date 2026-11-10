@@ -2006,3 +2006,109 @@ func TestFrozenAcceptanceViewPersistence(t *testing.T) {
 		t.Fatalf("AcceptanceView = %+v, want the two collapsed entries", got.Requirements)
 	}
 }
+
+// --- requirement-change runtime channel (T10) --------------------------------------
+
+// TestOpenRequirementChangeAt pins the runtime channel's freeze: the EXPLICIT
+// position (the summoner:change payload's model-proposed content — content,
+// never authorization) is captured non-empty, deep-copied into the change
+// context, and persisted in ONE commit — while the legacy
+// OpenRequirementChange(note) API keeps freezing the live DevPosition
+// (existing TestRequirementChangeLoop covers that path).
+func TestOpenRequirementChangeAt(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	pos := DevPosition{
+		CurrentTask:          "diagnosis: nil deref at login.go:88",
+		TestProgress:         "repro test drafted, not yet run",
+		PendingVerifications: []string{"reproduce run", "root-cause evidence digest"},
+	}
+	if err := r.OpenRequirementChangeAt("user wants logout flow covered too", pos); err != nil {
+		t.Fatalf("OpenRequirementChangeAt: %v", err)
+	}
+	if r.Change == nil {
+		t.Fatal("no change opened")
+	}
+	if r.Change.SavedPosition.CurrentTask != pos.CurrentTask ||
+		r.Change.SavedPosition.TestProgress != pos.TestProgress {
+		t.Fatalf("SavedPosition = %+v, want the SUPPLIED position", r.Change.SavedPosition)
+	}
+	// Deep copy: the freeze must not alias the caller's slice.
+	pos.PendingVerifications[0] = "mutated-after-open"
+	if r.Change.SavedPosition.PendingVerifications[0] != "reproduce run" {
+		t.Fatalf("SavedPosition.PendingVerifications = %v — must be deep-copied", r.Change.SavedPosition.PendingVerifications)
+	}
+	// The live DevPosition is NOT overwritten by the At form (restore owns it).
+	if r.DevPosition.CurrentTask != "" {
+		t.Fatalf("DevPosition = %+v — the At-freeze must not touch the live field", r.DevPosition)
+	}
+	// One commit: memory == disk.
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if disk.Change == nil || disk.Change.SavedPosition.CurrentTask != "diagnosis: nil deref at login.go:88" ||
+		len(disk.Change.SavedPosition.PendingVerifications) != 2 {
+		t.Fatalf("disk change = %+v, want the supplied position persisted", disk.Change)
+	}
+}
+
+// TestOpenRequirementChangeAtRequiresPosition: an explicit open with an empty
+// current_task is refused (a real freeze is the channel's whole point); the
+// legacy API keeps accepting the live — possibly empty — position.
+func TestOpenRequirementChangeAtRequiresPosition(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	if err := r.OpenRequirementChangeAt("no task", DevPosition{TestProgress: "x"}); err == nil {
+		t.Fatal("empty current_task must be rejected")
+	}
+	if r.Change != nil {
+		t.Fatal("a rejected open must leave no change in memory")
+	}
+	if disk, err := LoadRun("run-1"); err != nil || disk.Change != nil {
+		t.Fatalf("a rejected open must leave disk unchanged (disk %+v, err %v)", disk.Change, err)
+	}
+	// Legacy API behavior is kept: freezes the live (here empty) position.
+	if err := r.OpenRequirementChange("legacy empty position"); err != nil {
+		t.Fatalf("legacy OpenRequirementChange: %v", err)
+	}
+	if r.Change == nil || r.Change.SavedPosition.CurrentTask != "" {
+		t.Fatalf("legacy freeze = %+v, want the live DevPosition frozen", r.Change)
+	}
+}
+
+// TestOpenRequirementChangeAtSaveFailureAtomic: the position freeze and the
+// change open persist in a SINGLE commit — a failed Save leaves memory AND
+// disk unchanged (no set-position Save followed by another Save).
+func TestOpenRequirementChangeAtSaveFailureAtomic(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block writes")
+	}
+	r := startTestRun(t, BudgetLimits{})
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	pos := DevPosition{CurrentTask: "mid-change task", PendingVerifications: []string{"v1"}}
+	if err := r.OpenRequirementChangeAt("blocked save", pos); err == nil {
+		t.Fatal("OpenRequirementChangeAt with an unwritable state dir must fail")
+	}
+	if r.Change != nil {
+		t.Fatalf("memory after failed Save: change = %+v — commit must roll back", r.Change)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod repair: %v", err)
+	}
+	if err := r.OpenRequirementChangeAt("blocked save", pos); err != nil {
+		t.Fatalf("retry after repair: %v", err)
+	}
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if disk.Change == nil || disk.Change.SavedPosition.CurrentTask != "mid-change task" ||
+		len(disk.Change.SavedPosition.PendingVerifications) != 1 {
+		t.Fatalf("disk after retry = %+v — the retry must persist the position for real", disk.Change)
+	}
+}

@@ -132,13 +132,30 @@ files — undoing code is a separate explicit operation.
 - Escape hatch (un-brick only): `SUMMONER_HOOKS_DISABLE=1` — using it on a
   live run is recorded as a contract violation.
 
-## Requirement changes vs recall (pointer)
+## 需求变更闭环 (requirement-change loop)
 
-自由文本提出需求调整 = 开变更子环（CHANGE_OPEN：冻结开发位置 → delta → 影响评估 →
-单点确认「接受变更并恢复开发」），增量恢复、不重跑流水线——与 recall（方向错了回城
-重做）是两条不同的路。边界全文（触发、stale 传播、预算口径）落在变更协议文档
-(spec §1 需求变更闭环；runtime wiring 后续任务接线)。检查点期间提出变更会 supersede
-当前检查点，确认后以其重渲染版重新询问。
+业务开发中需求频繁调整——流程必须单点闭环：实现/测试进行中可立刻进入需求调整，
+调整后增量恢复，不重跑流水线（spec §1 增补）。
+
+- **触发**：任意时刻（含 ACTIVE 实现阶段）自由文本提出需求调整——它是内容反馈，
+  开启变更子环，**不是推进通道**（自由文本永远不授予推进）；检查点期间也可显式
+  进入（supersede 当前检查点，确认后以其重渲染版重新询问）。
+- **runtime channel**：`Skill(summoner:change, args=<JSON>)`
+  (`skills/change/SKILL.md`)——`open` 冻结开发位置并进入 CHANGE_OPEN（合法于
+  ACTIVE 与 WAIT_USER；WAIT_USER 下它是 gate 唯一放行的 Skill 调用）；
+  `apply` 提交 delta {note, changed[], affected[]} 并开单点确认检查点。
+  CHANGE_OPEN 期间 phase-submit 被拒（防半变更状态提交）。
+- **闭环五步**：冻结开发位置（当前任务、测试进度、未决验证项）→ 明确 delta →
+  影响评估（哪些需求/标准/产物/任务/测试受影响——**方法由所选需求/计划 skill
+  承担**，框架不另造方法论）→ 单点确认「接受变更并恢复开发」
+  （`ACCEPT_REQUIREMENT_CHANGE`）→ 原地恢复：RequirementsVersion++、受影响
+  criterion/验证/审查结果标 **stale**、未受影响的已接受结果保持有效。不重走
+  P1-P2，不重复询问未受影响阶段，旧检查点不逐一重开。
+- **边界**：变更触及公共接口/架构前提时，必要的重新规划不可省——由影响评估结论
+  决定并在确认点呈现，不由用户手动判断。
+- **变更 vs recall**：recall = 方向错了回城重做（§4 语义）；需求变更 = 基线移动、
+  增量处理、原地恢复——两者预算与 stale 传播不同，边界表见
+  `references/workflow-reference.md`。
 
 ## Phase 0 memory (the `context` phase)
 
@@ -175,3 +192,4 @@ from the project manifest (manifest check registry task formalizes it).
 - `references/memory-chain.md` — memory retrieval/write protocols
 - `references/manifest-spec.md` — summoner.yaml fields
 - `skills/phase-submit/SKILL.md` — the submission payload contract
+- `skills/change/SKILL.md` — the requirement-change channel payload contract

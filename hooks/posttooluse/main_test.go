@@ -837,3 +837,139 @@ func TestPostToolUseFailureEmptyErrorFailsClosed(t *testing.T) {
 		t.Fatalf("refused payload must record nothing, got %v", traceTypesOf(evs))
 	}
 }
+
+// --- change.resumed (T10: the change loop's single-point close) --------------------
+
+// openAppliedChange drives a run into the change-confirm checkpoint: a
+// mid-phase change opened (position frozen from the live DevPosition) and a
+// delta applied — WAIT_USER at a DISPLAYED CHANGE_CONFIRM checkpoint.
+func openAppliedChange(t *testing.T, r *shared.RunState) shared.CheckpointState {
+	t.Helper()
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	r.DevPosition = shared.DevPosition{
+		CurrentTask:          "diagnosis: nil deref at login.go:88",
+		TestProgress:         "repro test drafted, not yet run",
+		PendingVerifications: []string{"reproduce run"},
+	}
+	if err := r.OpenRequirementChange("user wants logout flow covered too"); err != nil {
+		t.Fatalf("OpenRequirementChange: %v", err)
+	}
+	if _, err := r.ApplyRequirementDelta(shared.RequirementDelta{
+		Note:    "scope: login → login+logout",
+		Changed: []string{"crit-root"},
+	}); err != nil {
+		t.Fatalf("ApplyRequirementDelta: %v", err)
+	}
+	cp := r.CurrentCheckpoint()
+	if cp == nil || cp.Kind != shared.CheckpointChangeConfirm {
+		t.Fatalf("fixture must sit at a CHANGE_CONFIRM checkpoint, got %+v", cp)
+	}
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed(%s): %v", cp.ID, err)
+	}
+	return *cp
+}
+
+// TestChangeResumedAfterAcceptDecision: a successful
+// RecordDecision(ACCEPT_REQUIREMENT_CHANGE) appends change.resumed AFTER
+// checkpoint.decided (source posttooluse, the decision's tool_use_id) — the
+// single-point close of the change loop: position restored, CHANGE_OPEN gone.
+func TestChangeResumedAfterAcceptDecision(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp := openAppliedChange(t, r)
+
+	q, qtext := cpQuestion(cp.Nonce, false,
+		"accept: 接受变更并恢复开发", "stop: 停止——保留状态退出")
+	code, stderr := callHook(t, askDecision(t, "toolu-acc-1", q, qtext, "accept: 接受变更并恢复开发", nil))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	disk := reloadRun(t, "run-1")
+	if disk.Change != nil {
+		t.Fatalf("change = %+v, want CHANGE_OPEN closed by the accept", disk.Change)
+	}
+	if disk.DevPosition.CurrentTask != "diagnosis: nil deref at login.go:88" ||
+		disk.DevPosition.TestProgress != "repro test drafted, not yet run" ||
+		len(disk.DevPosition.PendingVerifications) != 1 {
+		t.Fatalf("DevPosition = %+v, want the frozen position restored", disk.DevPosition)
+	}
+	if disk.Status != shared.StatusActive {
+		t.Fatalf("status = %s, want ACTIVE (mid-phase entry resumes in place)", disk.Status)
+	}
+
+	evs := readHookTrace(t, "run-1")
+	decided := eventsOfType(evs, shared.EventCheckpointDecided)
+	resumed := eventsOfType(evs, shared.EventChangeResumed)
+	if len(decided) != 1 || len(resumed) != 1 {
+		t.Fatalf("events: %d decided / %d resumed, want exactly 1 each (trace %v)",
+			len(decided), len(resumed), traceTypesOf(evs))
+	}
+	// Order: checkpoint.decided first, change.resumed second.
+	di, ri := -1, -1
+	for i, ev := range evs {
+		switch ev.Type {
+		case shared.EventCheckpointDecided:
+			di = i
+		case shared.EventChangeResumed:
+			ri = i
+		}
+	}
+	if di >= ri {
+		t.Fatalf("change.resumed must follow checkpoint.decided, trace %v", traceTypesOf(evs))
+	}
+	if resumed[0].Source != "posttooluse" || resumed[0].ToolUseID != "toolu-acc-1" {
+		t.Errorf("change.resumed source/tool_use_id = %q/%q, want posttooluse/toolu-acc-1",
+			resumed[0].Source, resumed[0].ToolUseID)
+	}
+	if resumed[0].Payload["checkpoint_id"] != cp.ID {
+		t.Errorf("change.resumed payload = %v, want checkpoint_id %s", resumed[0].Payload, cp.ID)
+	}
+	if n := len(eventsOfType(evs, shared.EventCheckpointDecisionRejected)); n != 0 {
+		t.Errorf("valid accept must leave no decision_rejected events, got %d", n)
+	}
+}
+
+// TestChangeResumedNotEmittedForOtherDecisions: change.resumed is exclusive
+// to a successful ACCEPT_REQUIREMENT_CHANGE — an ordinary phase CONTINUE (and
+// a rejected attempt) never emits it.
+func TestChangeResumedNotEmittedForOtherDecisions(t *testing.T) {
+	t.Run("plain phase continue", func(t *testing.T) {
+		useHookEnv(t)
+		r := startRun(t)
+		cp := openDisplayedCheckpoint(t, r, "diagnosis")
+		q, qtext := cpQuestion(cp.Nonce, false, decisionLabels...)
+		code, stderr := callHook(t, askDecision(t, "toolu-cont-1", q, qtext, "Continue: accept and proceed", nil))
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		if evs := readHookTrace(t, "run-1"); len(eventsOfType(evs, shared.EventChangeResumed)) != 0 {
+			t.Fatalf("CONTINUE must not emit change.resumed, trace %v", traceTypesOf(evs))
+		}
+	})
+	t.Run("rejected decision at the confirm checkpoint", func(t *testing.T) {
+		useHookEnv(t)
+		r := startRun(t)
+		cp := openAppliedChange(t, r)
+		// Free-form typed answer: rejected as content feedback, never recorded.
+		q, qtext := cpQuestion(cp.Nonce, false,
+			"accept: 接受变更并恢复开发", "stop: 停止——保留状态退出")
+		code, stderr := callHook(t, askDecision(t, "toolu-rej-1", q, qtext, "accept: 接受变更并恢复开发",
+			map[string]interface{}{"response": "wait, actually…"}))
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 — a rejection is not a hook error (stderr: %q)", code, stderr)
+		}
+		evs := readHookTrace(t, "run-1")
+		if len(eventsOfType(evs, shared.EventChangeResumed)) != 0 {
+			t.Fatalf("a rejected decision must not emit change.resumed, trace %v", traceTypesOf(evs))
+		}
+		wantRejected(t, evs, cp.ID, "free-form") // rejection recorded, nothing resumed
+		disk := reloadRun(t, "run-1")
+		if disk.Change == nil || disk.Status != shared.StatusWaitUser {
+			t.Fatalf("state after rejected accept = %s %+v, want still CHANGE_OPEN/WAIT_USER", disk.Status, disk.Change)
+		}
+	})
+}
