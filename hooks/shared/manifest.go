@@ -35,6 +35,20 @@ type RuntimeManifest struct {
 	// CheckRegistry is the manifest's check_registry decoded into the
 	// canonical CheckDef (digest field names shared with the JSON form).
 	CheckRegistry []CheckDef
+	// Phases retains each declared phase's parsed skill binding in either
+	// documented form (fix-round N1) — informational for consumers; the
+	// runtime's authority is review scope + the check registry, and no routing
+	// is built on it here.
+	Phases map[string]SkillBinding
+}
+
+// SkillBinding is one phases.<id>.skill binding in either documented form
+// (references/manifest-spec.md): the string form (`skill: name`, including the
+// explicit `none`) sets Default only; the expanded mapping form sets Default
+// plus the explicitly selected Alternate providers.
+type SkillBinding struct {
+	Default   string
+	Alternate []string
 }
 
 // yamlCheckDef mirrors CheckDef with YAML tags (manifest v2 key names).
@@ -67,8 +81,64 @@ type yamlVerificationSpec struct {
 
 // yamlPhase is one phases.<id> entry.
 type yamlPhase struct {
-	Skill            string                `yaml:"skill"`
+	Skill            *yamlSkillBinding     `yaml:"skill"`
 	VerificationSpec *yamlVerificationSpec `yaml:"verification_spec"`
+}
+
+// yamlSkillBinding decodes BOTH documented skill forms (fix-round N1): the
+// string form (`skill: name`, including the explicit `none`) and the expanded
+// mapping form (`skill: {default: name, alternate: [names]}`) — the
+// validate-manifest schema (references/summoner.schema.json skill_binding) is
+// the shape authority; there is no third form. Anything else fails closed with
+// an error naming the violated rule (the document walk has already rejected
+// nulls, aliases and duplicate keys by the time this runs).
+type yamlSkillBinding struct {
+	Default   string
+	Alternate []string
+}
+
+func (s *yamlSkillBinding) UnmarshalYAML(node *yaml.Node) error {
+	const form = "skill binding must be the string form or the {default, alternate} mapping form"
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.Tag != "!!str" || node.Value == "" {
+			return fmt.Errorf("phases.<id>.skill line=%d requires a non-empty provider name (the string form or the mapping form)", node.Line)
+		}
+		s.Default = node.Value
+		return nil
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key, val := node.Content[i], node.Content[i+1]
+			switch key.Value {
+			case "default":
+				if val.Kind != yaml.ScalarNode || val.Tag != "!!str" || val.Value == "" {
+					return fmt.Errorf("phases.<id>.skill.default line=%d must be a string (a non-empty provider name, or none)", val.Line)
+				}
+				s.Default = val.Value
+			case "alternate":
+				if val.Kind != yaml.SequenceNode {
+					return fmt.Errorf("phases.<id>.skill.alternate line=%d must be a list of provider names (alternates are choices, never a sequence to execute)", val.Line)
+				}
+				s.Alternate = make([]string, 0, len(val.Content))
+				for _, entry := range val.Content {
+					if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" || entry.Value == "" {
+						return fmt.Errorf("phases.<id>.skill.alternate line=%d entries must be non-empty strings", entry.Line)
+					}
+					s.Alternate = append(s.Alternate, entry.Value)
+				}
+			default:
+				return fmt.Errorf("unknown key %q in phases.<id>.skill line=%d — the mapping form is exactly {default, alternate}", key.Value, key.Line)
+			}
+		}
+		if s.Default == "" {
+			return fmt.Errorf("phases.<id>.skill line=%d requires a non-empty default (the expanded form names one default provider)", node.Line)
+		}
+		if len(s.Alternate) == 0 {
+			s.Alternate = nil // an empty alternate list is semantically "no alternates"
+		}
+		return nil
+	}
+	return fmt.Errorf("phases.<id>.skill line=%d: %s", node.Line, form)
 }
 
 // runtimeManifestDoc is the subset of summoner.yaml the runtime reads.
@@ -102,7 +172,12 @@ type runtimeManifestDoc struct {
 // runtime consumes depends on them): goal/scope/expected are not required on
 // criteria, verification_spec.rubric is not required, the check_ids listing
 // is not required (mechanical citations are checked against the registry
-// itself), and env_allow names are not pattern-checked.
+// itself), and env_allow names are not pattern-checked. Fix-round N1: the
+// phases.<id>.skill binding accepts BOTH documented forms (string and the
+// {default, alternate} mapping) and retains the parsed binding on
+// RuntimeManifest.Phases — informationally; anything beyond the two forms
+// rejects, and skill-provider semantics (name patterns, none-without-
+// alternates, --skills-dir resolution) remain validate-manifest's authority.
 func LoadRuntimeManifest() (*RuntimeManifest, error) {
 	b, err := os.ReadFile(filepath.Join(ProjectDir(), "summoner.yaml"))
 	if err != nil {
@@ -141,7 +216,12 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 	if mdoc.Version != "2" {
 		return nil, fmt.Errorf("parse summoner.yaml: version must be \"2\" (got %q) — migrate via references/manifest-spec.md", mdoc.Version)
 	}
-	m := &RuntimeManifest{}
+	m := &RuntimeManifest{Phases: map[string]SkillBinding{}}
+	for id, p := range mdoc.Phases {
+		if p.Skill != nil {
+			m.Phases[id] = SkillBinding{Default: p.Skill.Default, Alternate: p.Skill.Alternate}
+		}
+	}
 	registry := make(map[string]bool, len(mdoc.CheckRegistry))
 	for i, y := range mdoc.CheckRegistry {
 		def := CheckDef{

@@ -146,9 +146,13 @@ additions); anything else is a traced `phase_submitted.rejected`. Dev routes
 (fix round): retired keys, aliases, nulls, duplicate keys, exact CheckDef
 entry shape, unique check ids, trust enum, recomputed digests, and the
 mechanical/judgment citation split — a validator-invalid manifest fails
-closed as authority. Tolerated divergences: `goal`/`scope`/`expected` are not
-required on criteria, `rubric` and the `check_ids` listing are not required,
-and `env_allow` names are not pattern-checked. A missing manifest is the
+closed as authority. The `phases.<id>.skill` binding loads in BOTH documented
+forms (string and `{default, alternate}`) and the parsed binding is retained
+on the runtime projection for consumers; anything beyond the two forms
+rejects, while provider-name semantics stay the CLI validator's authority.
+Tolerated divergences: `goal`/`scope`/`expected` are not required on
+criteria, `rubric` and the `check_ids` listing are not required, and
+`env_allow` names are not pattern-checked. A missing manifest is the
 no-manifest flow (defaults only); an **unparseable** manifest fails closed on
 every path.
 

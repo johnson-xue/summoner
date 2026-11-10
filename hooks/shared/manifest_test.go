@@ -6,6 +6,7 @@ package shared
 // defaults), an unparseable one is a fail-closed error.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -183,6 +184,157 @@ func TestLoadRuntimeManifestBaseline(t *testing.T) {
 	}
 	if m == nil || !reflect.DeepEqual(m.ReviewCriteriaIDs, []string{"crit-extra"}) || len(m.CheckRegistry) != 1 {
 		t.Fatalf("baseline projection = %+v", m)
+	}
+}
+
+// --- fix-round 2 (N1): documented expanded skill binding ---------------------------
+
+// TestLoadRuntimeManifestGoldenFixtureLoads is the re-reviewer's exact repro:
+// the golden fixture tests/fixtures/manifests/valid-full.yaml — pinned VALID by
+// validate-manifest's own suite — declares the expanded mapping skill form and
+// must LOAD through the runtime loader (round 1 died with "cannot unmarshal
+// !!map into string", denying every phase-submit on review/ship and every
+// review-submit for a fully-valid manifest).
+func TestLoadRuntimeManifestGoldenFixtureLoads(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "tests", "fixtures", "manifests", "valid-full.yaml"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	writeProjectManifest(t, string(b))
+	m, err := LoadRuntimeManifest()
+	if err != nil {
+		t.Fatalf("the validate-manifest-pinned VALID golden fixture must load, got: %v", err)
+	}
+	if m == nil {
+		t.Fatal("a present manifest must load")
+	}
+	if !reflect.DeepEqual(m.ReviewCriteriaIDs, []string{"unit-tests", "behavior"}) {
+		t.Fatalf("review criteria ids = %v, want [unit-tests behavior]", m.ReviewCriteriaIDs)
+	}
+	if len(m.CheckRegistry) != 1 || m.CheckRegistry[0].CheckID != "unit" {
+		t.Fatalf("check registry = %+v, want the fixture's unit entry", m.CheckRegistry)
+	}
+	// The parsed bindings are retained in BOTH documented forms.
+	if got := m.Phases["diagnosis"]; got.Default != "none" || len(got.Alternate) != 0 {
+		t.Fatalf("diagnosis binding = %+v, want the string form's default %q", got, "none")
+	}
+	if got := m.Phases["debug"]; got.Default != "demo-debug" || !reflect.DeepEqual(got.Alternate, []string{"superpowers:systematic-debugging"}) {
+		t.Fatalf("debug binding = %+v, want default demo-debug + the declared alternate", got)
+	}
+	if _, ok := m.Phases["review"]; ok {
+		t.Fatalf("phases[%q] = %+v — the review phase declares verification_spec, no skill; nothing to retain", "review", m.Phases["review"])
+	}
+}
+
+// TestLoadRuntimeManifestMixedSkillForms: both documented forms coexist in one
+// manifest — string (`skill: name` / `skill: none`) and mapping (`default` +
+// optional `alternate`, empty alternate list legal) — and the parsed bindings
+// are retained per phase.
+func TestLoadRuntimeManifestMixedSkillForms(t *testing.T) {
+	writeProjectManifest(t, `version: "2"
+project:
+  name: sample-project
+phases:
+  requirements:
+    skill: superpowers:brainstorming
+  ops:
+    skill: none
+  diagnosis:
+    skill:
+      default: project-diagnosis
+  debug:
+    skill:
+      default: demo-debug
+      alternate: [superpowers:systematic-debugging]
+  verify:
+    skill:
+      default: demo-verify
+      alternate: []
+`)
+	m, err := LoadRuntimeManifest()
+	if err != nil {
+		t.Fatalf("a manifest using both documented skill forms must load: %v", err)
+	}
+	want := map[string]SkillBinding{
+		"requirements": {Default: "superpowers:brainstorming"},
+		"ops":          {Default: "none"},
+		"diagnosis":    {Default: "project-diagnosis"},
+		"debug":        {Default: "demo-debug", Alternate: []string{"superpowers:systematic-debugging"}},
+		"verify":       {Default: "demo-verify"},
+	}
+	if !reflect.DeepEqual(m.Phases, want) {
+		t.Fatalf("retained bindings = %+v, want %+v", m.Phases, want)
+	}
+}
+
+// TestLoadRuntimeManifestMalformedSkillBindingFailsClosed: everything beyond
+// the two documented forms rejects with a DISTINCT error naming the shape
+// rule — the fail-closed posture of fix-round I2 is preserved.
+func TestLoadRuntimeManifestMalformedSkillBindingFailsClosed(t *testing.T) {
+	const base = `version: "2"
+project:
+  name: sample-project
+phases:
+  debug:
+    skill:
+%s
+`
+	cases := map[string]struct {
+		skill      string
+		wantSubstr string
+	}{
+		"unknown mapping key": {
+			"      default: demo-debug\n      extra: nope",
+			"unknown key"},
+		"non-string default": {
+			"      default: 3",
+			"skill.default line=7 must be a string"},
+		"missing default": {
+			"      alternate: [demo-debug]",
+			"requires a non-empty default"},
+		"empty mapping": {
+			"      {}",
+			"requires a non-empty default"},
+		"alternate not a list": {
+			"      default: demo-debug\n      alternate: demo-other",
+			"must be a list of provider names"},
+		"alternate entry not a string": {
+			"      default: demo-debug\n      alternate: [3]",
+			"entries must be non-empty strings"},
+		"alternate entry empty string": {
+			`      default: demo-debug` + "\n" + `      alternate: [""]`,
+			"entries must be non-empty strings"},
+		"empty string form": {
+			`      ""`,
+			"requires a non-empty provider name"},
+		"sequence form (no third form)": {
+			"      [demo-debug, demo-other]",
+			"string form or the {default, alternate} mapping"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			writeProjectManifest(t, fmt.Sprintf(base, tc.skill))
+			m, err := LoadRuntimeManifest()
+			if err == nil || m != nil {
+				t.Fatalf("a malformed skill binding must fail closed, got (%+v, %v)", m, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q must name the distinct rule %q", err.Error(), tc.wantSubstr)
+			}
+		})
+	}
+
+	// skill: null is rejected by the document walk (nulls at any depth), pinned
+	// here alongside the shape rules.
+	writeProjectManifest(t, `version: "2"
+project:
+  name: sample-project
+phases:
+  debug:
+    skill:
+`)
+	if m, err := LoadRuntimeManifest(); err == nil || m != nil {
+		t.Fatalf("skill: null must fail closed per the null walk, got (%+v, %v)", m, err)
 	}
 }
 
