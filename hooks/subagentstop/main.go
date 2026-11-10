@@ -265,6 +265,21 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 	if len(res.EvidenceToolCallIDs) > 0 {
 		payload["evidence_tool_call_ids"] = res.EvidenceToolCallIDs
 	}
+	// Digest mirror (T12 fix-back 2, split ruling A): the digests the reducer
+	// just wrote onto the review record are mirrored so the trace carries the
+	// verdict's envelope/artifact identity — digests-in-trace is established
+	// §7 precedent (tool.result carries response_sha256, never content).
+	// envelope_digest is set at registration (always present on a concluded
+	// record); artifact_digest records the claimed artifact set (empty for a
+	// reason-code BLOCKED) — each mirrors only when non-empty.
+	if rec := reviewRecord(run, res.ReviewID); rec != nil {
+		if rec.EnvelopeDigest != "" {
+			payload["envelope_digest"] = rec.EnvelopeDigest
+		}
+		if rec.ArtifactDigest != "" {
+			payload["artifact_digest"] = rec.ArtifactDigest
+		}
+	}
 	if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
 		Type:    shared.EventReviewVerdict,
 		Source:  subagentStopSource,
@@ -312,6 +327,16 @@ func reviewStatus(run *shared.RunState, reviewID string) shared.ReviewState {
 		}
 	}
 	return ""
+}
+
+// reviewRecord returns one review record by id (nil when absent).
+func reviewRecord(run *shared.RunState, reviewID string) *shared.ReviewRecord {
+	for i := range run.Reviews {
+		if run.Reviews[i].ReviewID == reviewID {
+			return &run.Reviews[i]
+		}
+	}
+	return nil
 }
 
 // inFlightReview returns the run's unconcluded review (RUNNING, or PREPARED —

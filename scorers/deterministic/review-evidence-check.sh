@@ -198,10 +198,23 @@ if open_reviews:
     sys.exit(3)
 
 # --- 同 digest 复用 legitimacy ----------------------------------------------------
+# Digest source per review: the prepared envelope enrichment when traced,
+# else the verdict payload's artifact_digest (the runtime mirrors the
+# record's digest there — T12 fix-back 2 — so real-thin traces, whose
+# review.prepared carries only the review id, activate this audit too). The
+# content triple (criteria/scope) stays prepared-side enrichment; the
+# reducer's envelope validation is the enforcement authority for content.
+verdict_payloads = {}  # review_id -> verdict payload
+for seq, pl in verdicts:
+    rid = pl.get("review_id")
+    if rid not in verdict_payloads:
+        verdict_payloads[rid] = pl
 reuse = {}
 for _, rid in prepared_order:
     _, pl = prepared[rid]
     digest = pl.get("artifact_digest")
+    if not digest:
+        digest = verdict_payloads.get(rid, {}).get("artifact_digest")
     if not digest:
         continue
     triple = (digest,

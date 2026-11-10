@@ -1409,6 +1409,13 @@ func TestEndToEndReviewSubmitRoundTrip(t *testing.T) {
 		// end-to-end — transcript tool_use → ReconcileEvidence join →
 		// reducer record → review.verdict payload.
 		t.Errorf("review.verdict evidence_tool_call_ids = %#v, want [toolu-rev-1] mirrored end-to-end", verdicts[0].Payload["evidence_tool_call_ids"])
+	} else if verdicts[0].Payload["artifact_digest"] != "d-1" {
+		// T12 fix-back 2 (split ruling A): the record's digests mirror
+		// end-to-end too — artifact identity exactly, envelope identity
+		// present (opaque content digest).
+		t.Errorf("review.verdict artifact_digest = %#v, want d-1", verdicts[0].Payload["artifact_digest"])
+	} else if env, ok := verdicts[0].Payload["envelope_digest"].(string); !ok || env == "" {
+		t.Errorf("review.verdict envelope_digest = %#v, want a non-empty digest", verdicts[0].Payload["envelope_digest"])
 	}
 	if err := shared.VerifyChain(runID); err != nil {
 		t.Errorf("VerifyChain: %v", err)
@@ -1712,6 +1719,10 @@ func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
 		t.Errorf("review.verdict events = %+v, want exactly one for rev-1", verdicts)
 	} else if ids, ok := verdicts[0].Payload["evidence_tool_call_ids"].([]interface{}); !ok || len(ids) != 1 || ids[0] != "toolu-rev-1" {
 		t.Errorf("namespaced review.verdict evidence_tool_call_ids = %#v, want [toolu-rev-1] mirrored end-to-end", verdicts[0].Payload["evidence_tool_call_ids"])
+	} else if verdicts[0].Payload["artifact_digest"] != "d-1" {
+		t.Errorf("namespaced review.verdict artifact_digest = %#v, want d-1", verdicts[0].Payload["artifact_digest"])
+	} else if env, ok := verdicts[0].Payload["envelope_digest"].(string); !ok || env == "" {
+		t.Errorf("namespaced review.verdict envelope_digest = %#v, want a non-empty digest", verdicts[0].Payload["envelope_digest"])
 	}
 	if err := shared.VerifyChain(runID); err != nil {
 		t.Errorf("VerifyChain: %v", err)

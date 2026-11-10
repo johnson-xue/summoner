@@ -340,6 +340,15 @@ func TestSubagentStopBackfillsReview(t *testing.T) {
 			if ids, ok := verdicts[0].Payload["evidence_tool_call_ids"].([]interface{}); !ok || len(ids) != 1 || ids[0] != "toolu-rev-1" {
 				t.Fatalf("review.verdict evidence_tool_call_ids = %#v, want [toolu-rev-1]", verdicts[0].Payload["evidence_tool_call_ids"])
 			}
+			// T12 fix-back 2 (split ruling A): the record's digests mirror
+			// too — artifact identity exactly, envelope identity non-empty
+			// (opaque content digest, presence is the contract).
+			if verdicts[0].Payload["artifact_digest"] != "dd-1" {
+				t.Fatalf("review.verdict artifact_digest = %#v, want dd-1", verdicts[0].Payload["artifact_digest"])
+			}
+			if env, ok := verdicts[0].Payload["envelope_digest"].(string); !ok || env == "" {
+				t.Fatalf("review.verdict envelope_digest = %#v, want a non-empty digest", verdicts[0].Payload["envelope_digest"])
+			}
 		})
 	}
 
