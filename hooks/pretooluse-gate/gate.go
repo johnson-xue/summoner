@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
 )
@@ -37,15 +38,29 @@ const skillChange = "summoner:change"
 // any checkpoint remains the separate on-demand path (spec §4).
 const skillReviewSubmit = "summoner:review-submit"
 
+// skillProbeSubmit is the OUTCOME_UNKNOWN resolution micro-skill (T19, spec §5
+// OUTCOME_UNKNOWN 与副作用恢复): its args are the whole resolution batch
+// {unknown_tool_use_ids[], outcome, probe_tool_use_ids[]} — one OBSERVED
+// read-class Bash probe per unknown, equal lengths. The gate validates the
+// ENTIRE batch against the run's trace (every probe: read-class Bash, observed
+// result, recorded after the unknown's marking event, not failed, never
+// reused) before any transition; the reducer then resolves each entry with its
+// own durable probe receipt. Legal only while OUTCOME_UNKNOWN.
+const skillProbeSubmit = "summoner:probe-submit"
+
 // decision is decide()'s verdict: allow with an effect plan, or deny with a
 // human-readable reason (the exit-2 stderr text). A deny may also carry a
 // submission rejection to trace: phase_submitted.rejected is the record of
 // EVERY submission-path failure during an active run (ruling 6 + review I8).
+// denyEvents are trace events a DENIAL itself owes (T19: an honest BLOCKED
+// check.result when the ladder refuses to execute a check — the refusal is an
+// outcome, not silence); main() appends them on the deny path.
 type decision struct {
-	allow  bool
-	reason string
-	eff    *effects      // nil = allowed, nothing to mutate
-	reject *submitReject // non-nil: trace phase_submitted.rejected on deny
+	allow      bool
+	reason     string
+	eff        *effects      // nil = allowed, nothing to mutate
+	reject     *submitReject // non-nil: trace phase_submitted.rejected on deny
+	denyEvents []shared.TraceEvent
 }
 
 // submitReject marks a denial that must persist phase_submitted.rejected.
@@ -56,15 +71,18 @@ type submitReject struct {
 // effects is the ordered side-effect plan apply() executes. It never mixes:
 // a denied call carries no effects (its only record is the exit-2 stderr —
 // except phase-submit reducer rejections, which also trace
-// phase_submitted.rejected per ruling 6).
+// phase_submitted.rejected per ruling 6, and T19's denyEvents).
 type effects struct {
 	openPhase     string                   // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
 	submit        *shared.PhaseSubmission  // SubmitPhase payload (ruling 6)
+	l1Checks      []shared.CheckDef        // T19: framework-adapter refs of the submit, run in-gate
 	delegation    string                   // subagent_type — StartDelegation + delegation.started
 	delegateRevID string                   // review_id bound to the delegation, when reviewer
 	reviewSubmit  *shared.Envelope         // RequestReview + review.prepared (summoner:review-submit)
 	changeOpen    *changeOpenEffect        // OpenRequirementChangeAt + change.opened (summoner:change open)
 	changeApply   *shared.RequirementDelta // ApplyRequirementDelta + change.delta_applied (summoner:change apply)
+	probeSubmit   *probeSubmitEffect       // ResolveOutcomeProbed + tool.resolved (summoner:probe-submit)
+	bashClass     *bashClassEffect         // T19: read-class Bash markers on tool.started
 }
 
 // changeOpenEffect is the summoner:change `open` payload: the note (what the
@@ -74,7 +92,56 @@ type changeOpenEffect struct {
 	position shared.DevPosition
 }
 
+// bashClassEffect is the T19 admission record for a READ-CLASS Bash call: the
+// markers apply() writes on its tool.started. read_class is the crash-scan
+// class (a Bash intent without it is write-class by definition); probe marks
+// the in-band sandbox-probe channel (only the anchored invocation shape gets
+// it); l2 carries the admitted project check whose result posttooluse joins.
+// At most one of probe/l2 is set (the shapes are mutually exclusive: the probe
+// invocation has no operands, an exact-match check line is a fixed command).
+type bashClassEffect struct {
+	readClass bool
+	probe     bool
+	l2        *shared.CheckDef
+}
+
+// probeSubmitEffect is the validated resolution batch of summoner:probe-submit
+// — decide() already verified every pair against the trace; apply() replays
+// the validation findings into reducer receipts.
+type probeSubmitEffect struct {
+	outcome string
+	pairs   []probePair // positionally joined: unknown ↔ its own probe
+}
+
+type probePair struct {
+	unknownID string
+	probeID   string
+	replay    bool // entry already resolved with this exact pair: idempotent no-op
+}
+
 func deny(reason string) decision { return decision{allow: false, reason: reason} }
+
+// denyWithEvent denies while tracing the events the denial itself owes — T19's
+// honest BLOCKED check.results: when the ladder refuses to execute a check
+// (no/declined sandbox proof, network class), the refusal is an observed
+// outcome the trace must carry, never silence.
+func denyWithEvent(reason string, evs ...shared.TraceEvent) decision {
+	return decision{allow: false, reason: reason, denyEvents: evs}
+}
+
+// blockedCheckResult builds the BLOCKED check.result event of a ladder refusal
+// (status "blocked" + a reason code; NO tier claim — a blocked result never
+// asserts a trust basis it did not earn).
+func blockedCheckResult(def shared.CheckDef, reason string) shared.TraceEvent {
+	payload := map[string]interface{}{
+		"check_id": def.CheckID,
+		"trust":    def.Trust,
+		"status":   shared.CheckStatusBlocked,
+		"reason":   reason,
+		"digest":   shared.CheckDefDigest(def),
+	}
+	return shared.TraceEvent{Type: shared.EventCheckResult, Payload: payload}
+}
 
 // denySubmit is a deny that also records phase_submitted.rejected — every
 // submission-path failure during an active run leaves that trace (I8).
@@ -107,10 +174,26 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	case "Edit", "Write", "NotebookEdit":
 		return decideWrite(run, in.ToolName)
 	case "Bash":
-		if isWriteClassCommand(stringField(in.ToolInput, "command")) {
+		command := stringField(in.ToolInput, "command")
+		// T19 ladder order (spec §3 Bash 副作用信任阶梯): the probe channel,
+		// then the write matrix, then L2 admission, then ordinary reads.
+		if shared.IsSandboxProbeInvocation(command) {
+			// The in-band sandbox probe — read-class by shape, marker recorded
+			// for posttooluse's observation join (see bashClassEffect).
+			return allow(&effects{bashClass: &bashClassEffect{readClass: true, probe: true}})
+		}
+		if isWriteClassCommand(command) {
+			// A write-class command never earns L2 admission even when it
+			// byte-matches a registered check: checks must be read-class to be
+			// creditable (mutating checks stay ordinary writes).
 			return decideWrite(run, "Bash")
 		}
-		return allow(nil) // read-class Bash: observed only
+		if def, ok := matchProjectCheck(command); ok {
+			return decideL2Check(run, def)
+		}
+		// Ordinary read-class Bash: observed only, class persisted for the
+		// crash scan (a Bash intent without read_class is write-class).
+		return allow(&effects{bashClass: &bashClassEffect{readClass: true}})
 	case "Agent":
 		return decideAgent(in, run)
 	case "AskUserQuestion":
@@ -119,6 +202,58 @@ func decide(in *gateInput, run *shared.RunState) decision {
 		// Unknown/unmodeled tools (Read, Grep, …) are observed, not gated.
 		return allow(nil)
 	}
+}
+
+// matchProjectCheck resolves an exact-match project check definition for a
+// read-class Bash command (T19 L2 admission, spec §3). The manifest load is
+// deliberately LENIENT here: a missing manifest (nil) means no registry → no
+// match (an ordinary read); a CORRUPT manifest also fails open for ordinary
+// reads — the authority paths fail closed independently (admission without a
+// registry is impossible, and posttooluse's result join skips on a corrupt
+// manifest, so no check.result credit can ever arise from this leniency;
+// bricking every read-class command over a torn summoner.yaml would only
+// prevent the model from repairing it).
+func matchProjectCheck(command string) (shared.CheckDef, bool) {
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil || m == nil {
+		return shared.CheckDef{}, false
+	}
+	return shared.MatchProjectCheck(command, m.CheckRegistry)
+}
+
+// decideL2Check admits ONE exact-match project check execution (T19, spec §3
+// L2). Requirements: the definition is not network-class (L3 → honest BLOCKED
+// l3_unsupported, never executed, never downgraded to "just run it"), and the
+// LATEST in-band sandbox-probe observation in the run's trace is "refused" —
+// the fresh exclusive write the sandbox must refuse, observed in-band (a hook
+// child is never inside the sandbox, so nothing hook-side can substitute). No
+// or declined probe → honest BLOCKED sandbox_unproven. Byte-exact match with
+// the registered line IS the sandbox-bypass check on the actual Bash input:
+// nothing can ride along an exact match.
+func decideL2Check(run *shared.RunState, def shared.CheckDef) decision {
+	if shared.IsNetworkCheckCommand(def) {
+		return denyWithEvent(fmt.Sprintf(
+			"Summoner gate: check %s (%s) is network-class (L3) — the sandbox cannot isolate a network check, so the ladder refuses to run it (BLOCKED l3_unsupported; 不降级为\"跑了吧\"). Use an L1 framework adapter or cite the observed BLOCKED result.",
+			def.CheckID, def.Command), blockedCheckResult(def, "l3_unsupported"))
+	}
+	evs, err := shared.LoadRunEvents(run.RunID)
+	if err != nil {
+		return deny(fmt.Sprintf(
+			"Summoner gate: cannot read the run's trace to verify the sandbox-probe pairing for check %s — denying (fail-closed): %v",
+			def.CheckID, err))
+	}
+	probeID, refused, found := shared.LatestSandboxProbe(evs, 0)
+	if !found {
+		return denyWithEvent(fmt.Sprintf(
+			"Summoner gate: check %s needs a paired in-band sandbox probe before it may run — no probe observed in this run (BLOCKED sandbox_unproven). Run %s first (the adapter prints its wrapper; its refused fresh write proves the sandbox at that point in time), then re-run the exact check line.",
+			def.CheckID, shared.SandboxProbeBin), blockedCheckResult(def, "sandbox_unproven"))
+	}
+	if !refused {
+		return denyWithEvent(fmt.Sprintf(
+			"Summoner gate: check %s is BLOCKED sandbox_unproven — the latest in-band probe (%s) did not prove the sandbox (write succeeded or unproven effect). L2 needs a refused probe; re-run %s and then the exact check line.",
+			def.CheckID, probeID, shared.SandboxProbeBin), blockedCheckResult(def, "sandbox_unproven"))
+	}
+	return allow(&effects{bashClass: &bashClassEffect{readClass: true, l2: &def}})
 }
 
 // budgetControlExempt names the HUMAN-CONTROL budget escapes (T18, spec §5
@@ -144,7 +279,10 @@ func decide(in *gateInput, run *shared.RunState) decision {
 //   - Write/Edit of the run's FIXED post-game journal path while
 //     POST_GAME_PENDING — closure observations are owed regardless of budget;
 //   - read-class Bash while OUTCOME_UNKNOWN — recovery probes must be able to
-//     resolve the episode (write-class probes stay budget-gated).
+//     resolve the episode (write-class probes stay budget-gated);
+//   - summoner:probe-submit while OUTCOME_UNKNOWN (T19) — the resolution
+//     channel of the recovery episode: an exhausted run must still be able to
+//     carry its unknowns to verdicts and back to a decidable state.
 func budgetControlExempt(in *gateInput, run *shared.RunState, isSubmit bool) bool {
 	if isSubmit {
 		return true
@@ -154,6 +292,9 @@ func budgetControlExempt(in *gateInput, run *shared.RunState, isSubmit bool) boo
 		(run.Status == shared.StatusWaitUser || run.Status == shared.StatusPostGamePending):
 		return true
 	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillChange:
+		return true
+	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillProbeSubmit &&
+		run.Status == shared.StatusOutcomeUnknown:
 		return true
 	case in.ToolName == "Bash" && isStatusInvocation(stringField(in.ToolInput, "command")):
 		return true
@@ -195,6 +336,10 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		return decideReviewSubmit(in, run)
 	}
 
+	if skill == skillProbeSubmit {
+		return decideProbeSubmit(in, run)
+	}
+
 	if skill == skillPhaseSubmit {
 		args, ok := in.ToolInput["args"].(string)
 		if !ok {
@@ -218,7 +363,17 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 				return denySubmit(sub.PhaseID, reason)
 			}
 		}
-		eff := &effects{submit: &sub}
+		// T19: check refs — every ref must name a registered check the ladder
+		// can actually credit, and the submission must not carry the manifest
+		// itself (definitions inside reviewed artifacts get no mechanical
+		// authority). L1 framework refs come back as defs to run in-gate; L2
+		// project refs must already have a PASSING observed result under the
+		// CURRENT definition digest.
+		l1, reason := validateCheckRefs(run, &sub)
+		if reason != "" {
+			return denySubmit(sub.PhaseID, reason)
+		}
+		eff := &effects{submit: &sub, l1Checks: l1}
 		// Ruling 3 fallback: with no open phase, auto-open the payload's
 		// phase iff it is the next expected one (protects skill-less phases,
 		// e.g. a read-only P0 with no Skill call). Only attempted where
@@ -491,6 +646,253 @@ func checkReviewScopeCriteria(ids []string) string {
 	return ""
 }
 
+// --- T19: check refs (the ladder at submit) ------------------------------------
+
+// validateCheckRefs vets a submission's CheckRefs against the project registry
+// and the run's observed results (T19; spec §3 check registry — a producer's
+// citation never manufactures credit):
+//
+//   - the submission's own artifacts must not include summoner.yaml — a check
+//     definition inside the artifacts under review carries no mechanical
+//     authority (the ref would be verified against a definition the producer
+//     could still edit);
+//   - every ref must parse (check://<id>[/<pointer>]) and name a REGISTERED
+//     check; duplicate ids collapse to one evaluation;
+//   - trust framework (L1): the definition's command must be one of the three
+//     shipped adapter ops — the defs come back for apply() to execute
+//     in-gate (bounded, never exec'd);
+//   - trust project (L2): the newest observed check.result for that id must
+//     EXIST, be a PASS, and carry the CURRENT recomputed definition digest —
+//     a stale digest (definition changed since) or a missing/blocked/failed
+//     result gives the citation no credit;
+//   - network-class project checks (L3) can never earn credit: refuse the ref
+//     outright (they only ever produce BLOCKED l3_unsupported).
+//
+// A missing manifest is the no-manifest flow: any check ref is then unknown
+// and refused. An unparseable manifest fails CLOSED.
+func validateCheckRefs(run *shared.RunState, sub *shared.PhaseSubmission) ([]shared.CheckDef, string) {
+	if len(sub.CheckRefs) == 0 {
+		return nil, ""
+	}
+	for _, a := range sub.Artifacts {
+		if a.Path == "summoner.yaml" || strings.HasSuffix(a.Path, "/summoner.yaml") {
+			return nil, "Summoner gate: summoner:phase-submit check refs are refused — the submission's artifacts include summoner.yaml, and check definitions inside the artifacts under review carry no mechanical authority (definitions must come from the reviewed-and-committed manifest, not the submission)."
+		}
+	}
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil {
+		return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit cannot verify check refs — the project manifest is unreadable (fail-closed): %v", err)
+	}
+	if m == nil {
+		return nil, "Summoner gate: summoner:phase-submit check refs are refused — this project declares no summoner.yaml check_registry, so no mechanical check citation can be verified."
+	}
+	byID := make(map[string]shared.CheckDef, len(m.CheckRegistry))
+	for _, def := range m.CheckRegistry {
+		byID[def.CheckID] = def
+	}
+	var l1 []shared.CheckDef
+	seen := make(map[string]bool, len(sub.CheckRefs))
+	var evs []shared.TraceEvent
+	haveEvents := false
+	for _, ref := range sub.CheckRefs {
+		id, perr := shared.ParseCheckRef(ref)
+		if perr != nil {
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit check ref %q is malformed: %v", ref, perr)
+		}
+		if seen[id] {
+			continue // duplicate citation: one evaluation per check id
+		}
+		seen[id] = true
+		def, ok := byID[id]
+		if !ok {
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit check ref %q names no check in the project's check_registry — a citation can only reference registered checks.", ref)
+		}
+		switch def.Trust {
+		case "framework":
+			switch def.Command {
+			case shared.CheckOpFileContains, shared.CheckOpDigestMatch, shared.CheckOpGrepCount:
+			default:
+				return nil, fmt.Sprintf(
+					"Summoner gate: summoner:phase-submit check ref %q names a framework check whose command %q is not a shipped L1 adapter op (%s, %s, %s) — declaring framework trust never promotes an arbitrary command to L1.",
+					ref, def.Command, shared.CheckOpFileContains, shared.CheckOpDigestMatch, shared.CheckOpGrepCount)
+			}
+			l1 = append(l1, def)
+		case "project":
+			if shared.IsNetworkCheckCommand(def) {
+				return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit check ref %q names the network-class check %s — the ladder refuses to run network checks (L3, BLOCKED l3_unsupported), so the citation can never earn credit; drop the ref.", ref, def.CheckID)
+			}
+			if !haveEvents {
+				evs, err = shared.LoadRunEvents(run.RunID)
+				if err != nil {
+					return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit cannot read the run's trace to verify check ref %q (fail-closed): %v", ref, err)
+				}
+				haveEvents = true
+			}
+			res, found := shared.NewestCheckResult(evs, def.CheckID)
+			if !found {
+				return nil, fmt.Sprintf(
+					"Summoner gate: summoner:phase-submit check ref %q has no observed check.result for %s — run the registered check line first (it needs a paired in-band sandbox probe), then cite it.",
+					ref, def.CheckID)
+			}
+			if status, _ := res.Payload["status"].(string); status != shared.CheckStatusPass {
+				return nil, fmt.Sprintf(
+					"Summoner gate: summoner:phase-submit check ref %q cannot take credit from %s's newest result (%s) — only a passing, current-definition L2 execution backs a citation.",
+					ref, def.CheckID, status)
+			}
+			if digest, _ := res.Payload["digest"].(string); digest != shared.CheckDefDigest(def) {
+				return nil, fmt.Sprintf(
+					"Summoner gate: summoner:phase-submit check ref %q is stale — %s's newest passing result ran an older definition (digest mismatch); re-run the check under the current registry definition.",
+					ref, def.CheckID)
+			}
+		default:
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit check ref %q names check %s with unknown trust tier %q (want framework|project).", ref, def.CheckID, def.Trust)
+		}
+	}
+	return l1, ""
+}
+
+// --- T19: probe-submit (OUTCOME_UNKNOWN resolution channel) ---------------------
+
+// probeSubmitArgs is the strict payload of summoner:probe-submit: one OBSERVED
+// probe per unknown, positionally joined, equal lengths — a single probe never
+// resolves two unknowns, and an unresolved unknown is never resolved without
+// its own probe.
+type probeSubmitArgs struct {
+	UnknownToolUseIDs []string `json:"unknown_tool_use_ids"`
+	Outcome           string   `json:"outcome"`
+	ProbeToolUseIDs   []string `json:"probe_tool_use_ids"`
+}
+
+// decideProbeSubmit validates the ENTIRE resolution batch before any partial
+// transition (T19; spec §5 — no auto-replay, every unknown resolves through
+// its own observed probe):
+//
+//   - legal only while OUTCOME_UNKNOWN (the WAIT_USER discipline in
+//     decideSkill already blocks it at checkpoints);
+//   - strict shape: unknown_tool_use_ids and probe_tool_use_ids are equal-
+//     length non-empty arrays with no duplicates inside the batch;
+//   - every unknown id must be a recorded entry of THIS run: unresolved
+//     entries take the verdict; an already-resolved entry accepts only the
+//     IDENTICAL (outcome, probe) pair as an idempotent replay — anything else
+//     is rejected (a different probe for a resolved id never re-resolves it);
+//   - every probe id must be UNUSED as a receipt anywhere in the run (stale
+//     or reused probes are rejected) and must validate as evidence via the
+//     trace join: a read-class BASH call with an observed result, recorded
+//     AFTER the unknown's marking event, not failed (shared.ProbeEvidence —
+//     the join is scoped to this run's trace, so foreign run/session ids
+//     never validate).
+//
+// Failures are exit-2 denials ONLY — untraced (standing ruling: non-phase-
+// submit denials are untraced).
+func decideProbeSubmit(in *gateInput, run *shared.RunState) decision {
+	args, ok := in.ToolInput["args"].(string)
+	if !ok {
+		return deny("Summoner gate: summoner:probe-submit requires args — a JSON string carrying {unknown_tool_use_ids[], outcome, probe_tool_use_ids[]} (skills/probe-submit/SKILL.md).")
+	}
+	var a probeSubmitArgs
+	if err := strictUnmarshal([]byte(args), &a); err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit args is malformed (unknown or mistyped field): %v", err))
+	}
+	switch a.Outcome {
+	case shared.OutcomeAccepted, shared.OutcomeFailed, shared.OutcomeIndeterminate:
+	default:
+		return deny(fmt.Sprintf(
+			"Summoner gate: summoner:probe-submit outcome must be %s, %s or %s (what the probes actually showed), got %q.",
+			shared.OutcomeAccepted, shared.OutcomeFailed, shared.OutcomeIndeterminate, a.Outcome))
+	}
+	if len(a.UnknownToolUseIDs) == 0 {
+		return deny("Summoner gate: summoner:probe-submit requires at least one unknown_tool_use_ids entry.")
+	}
+	if len(a.UnknownToolUseIDs) != len(a.ProbeToolUseIDs) {
+		return deny(fmt.Sprintf(
+			"Summoner gate: summoner:probe-submit requires probe_tool_use_ids to match unknown_tool_use_ids one-for-one (one OBSERVED probe per unknown), got %d unknowns and %d probes.",
+			len(a.UnknownToolUseIDs), len(a.ProbeToolUseIDs)))
+	}
+	seenUnknown := make(map[string]bool, len(a.UnknownToolUseIDs))
+	seenProbe := make(map[string]bool, len(a.ProbeToolUseIDs))
+	for _, id := range a.UnknownToolUseIDs {
+		if seenUnknown[id] {
+			return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit lists unknown %s twice — each entry resolves once.", id))
+		}
+		seenUnknown[id] = true
+	}
+	for _, id := range a.ProbeToolUseIDs {
+		if seenProbe[id] {
+			return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit reuses probe %s inside the batch — one probe is evidence for exactly one unknown.", id))
+		}
+		seenProbe[id] = true
+	}
+	entryByID := make(map[string]*shared.OutcomeUnknown, len(run.OutcomeUnknowns))
+	for i := range run.OutcomeUnknowns {
+		entryByID[run.OutcomeUnknowns[i].ToolUseID] = &run.OutcomeUnknowns[i]
+	}
+	// Replay-first classification (the RecordDecision precedent): an entry
+	// already resolved with the IDENTICAL (outcome, probe) pair is an
+	// idempotent no-op whose legality must not depend on the CURRENT status —
+	// the original resolution may have already moved the run on. Any fresh
+	// resolution in the batch re-imposes the OUTCOME_UNKNOWN requirement.
+	eff := &probeSubmitEffect{outcome: a.Outcome}
+	fresh := false
+	for i, unknownID := range a.UnknownToolUseIDs {
+		probeID := a.ProbeToolUseIDs[i]
+		entry, known := entryByID[unknownID]
+		if !known {
+			return deny(fmt.Sprintf(
+				"Summoner gate: summoner:probe-submit names unknown %q — no such OUTCOME_UNKNOWN entry in this run (foreign or invented ids never resolve).",
+				unknownID))
+		}
+		if entry.Resolved {
+			if entry.Outcome == a.Outcome && entry.ProbeToolUseID == probeID {
+				eff.pairs = append(eff.pairs, probePair{unknownID: unknownID, probeID: probeID, replay: true})
+				continue // identical re-delivery: idempotent no-op
+			}
+			return deny(fmt.Sprintf(
+				"Summoner gate: summoner:probe-submit cannot re-resolve %s — it already resolved as %s via probe %s (a conflicting or probe-swapped replay is rejected).",
+				unknownID, entry.Outcome, entry.ProbeToolUseID))
+		}
+		fresh = true
+		eff.pairs = append(eff.pairs, probePair{unknownID: unknownID, probeID: probeID})
+	}
+	if fresh && run.Status != shared.StatusOutcomeUnknown {
+		return deny(fmt.Sprintf(
+			"Summoner gate: summoner:probe-submit is the OUTCOME_UNKNOWN resolution channel and is legal only in OUTCOME_UNKNOWN, status is %s.",
+			run.Status))
+	}
+	if !fresh {
+		return allow(&effects{probeSubmit: eff}) // pure replay: nothing to re-validate
+	}
+	evs, err := shared.LoadRunEvents(run.RunID)
+	if err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit cannot read the run's trace to validate the probes — denying (fail-closed): %v", err))
+	}
+	for _, pair := range eff.pairs {
+		if pair.replay {
+			continue
+		}
+		// The probe must be unused anywhere in the run: a receipt is one
+		// unknown's evidence, never a reusable token.
+		for j := range run.OutcomeUnknowns {
+			if run.OutcomeUnknowns[j].ProbeToolUseID == pair.probeID {
+				return deny(fmt.Sprintf(
+					"Summoner gate: summoner:probe-submit probe %s is stale — it is already the receipt of unknown %s; every unknown resolves through its own fresh probe.",
+					pair.probeID, run.OutcomeUnknowns[j].ToolUseID))
+			}
+		}
+		markSeq, ok := shared.MarkingSeq(evs, pair.unknownID)
+		if !ok {
+			return deny(fmt.Sprintf(
+				"Summoner gate: summoner:probe-submit unknown %s has no tool.outcome_unknown marking event in the trace — the entry and the trace disagree; refusing (fail-closed).",
+				pair.unknownID))
+		}
+		if err := shared.ProbeEvidence(evs, pair.unknownID, pair.probeID, markSeq); err != nil {
+			return deny(fmt.Sprintf(
+				"Summoner gate: summoner:probe-submit probe %s is not valid evidence for unknown %s — %v (evidence is a read-class Bash call with an observed result, recorded after the unknown was marked, never failed).",
+				pair.probeID, pair.unknownID, err))
+		}
+	}
+	return allow(&effects{probeSubmit: eff})
+}
+
 // decideWrite — the write-eligibility matrix (ruling 4). POST_GAME_PENDING
 // allows writes before anything else is considered (review I3: the emergency
 // stop journal is writable even when no diagnosis was ever accepted); then
@@ -725,6 +1127,33 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		if err := appendAll(events); err != nil {
 			return err // state already moved (WAIT_USER) — deny fail-closed
 		}
+		// T19: run the L1 framework adapters the refs named (in-gate, bounded,
+		// never exec'd) and trace each outcome. A FAIL ticks the failed-check
+		// budget — it does not un-submit: the checkpoint is where the user
+		// sees the criteria evidence and the budget state; an honest BLOCKED
+		// (unreadable file, budget cap, malformed def) ticks nothing.
+		if len(eff.l1Checks) > 0 {
+			l1Deadline := time.Now().Add(shared.L1AggregateBudget)
+			for _, def := range eff.l1Checks {
+				outcome := shared.RunL1Check(def, l1Deadline)
+				payload := map[string]interface{}{
+					"check_id": def.CheckID,
+					"trust":    "framework",
+					"tier":     "L1",
+					"status":   outcome.Status,
+					"digest":   shared.CheckDefDigest(def),
+				}
+				if outcome.Reason != "" {
+					payload["reason"] = outcome.Reason
+				}
+				if err := appendAll([]shared.TraceEvent{{Type: shared.EventCheckResult, Payload: payload}}); err != nil {
+					return err
+				}
+				if outcome.Status == shared.CheckStatusFail {
+					run.CountFailedCheck()
+				}
+			}
+		}
 		run.CountToolCall()
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
@@ -840,10 +1269,67 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		return nil
 	}
 
+	// --- probe-submit path (summoner:probe-submit, T19): reducer-first like the
+	// other runtime channels — decide() validated the whole batch against the
+	// trace already, so a reducer rejection here (status race, conflicting
+	// replay) consumes nothing, leaves NO trace (standing ruling: non-phase-
+	// submit denials untraced) and denies with its reason. Each entry resolves
+	// with its OWN durable probe receipt; only entries THIS call newly resolved
+	// get a tool.resolved event (a re-delivered batch re-observes its replays
+	// as silent no-ops). The last entry of the episode lands the restore or the
+	// recovery checkpoint inside the reducer's commit.
+	if eff != nil && eff.probeSubmit != nil {
+		events := []shared.TraceEvent{{
+			Type:    shared.EventToolStarted,
+			Payload: map[string]interface{}{"tool_name": in.ToolName},
+		}}
+		for _, pair := range eff.probeSubmit.pairs {
+			newly, err := run.ResolveOutcomeProbed(pair.unknownID, eff.probeSubmit.outcome, pair.probeID)
+			if err != nil {
+				fmt.Fprintf(errW, "Summoner gate: summoner:probe-submit rejected — %v\n", err)
+				return err
+			}
+			if newly {
+				events = append(events, shared.TraceEvent{
+					Type: shared.EventToolResolved,
+					Payload: map[string]interface{}{
+						"tool_use_id":       pair.unknownID,
+						"outcome":           eff.probeSubmit.outcome,
+						"probe_tool_use_id": pair.probeID,
+					},
+				})
+			}
+		}
+		if err := appendAll(events); err != nil {
+			return err // resolutions already persisted — deny fail-closed
+		}
+		run.CountToolCall()
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+			return err
+		}
+		return nil
+	}
+
 	// --- dispatch path: intents before any mutation (I6) ---
+	started := map[string]interface{}{"tool_name": in.ToolName}
+	if eff != nil && eff.bashClass != nil {
+		started["read_class"] = true
+		if eff.bashClass.probe {
+			started["sandbox_probe"] = "v1"
+		}
+		if eff.bashClass.l2 != nil {
+			started["l2_check"] = map[string]interface{}{
+				"check_id":  eff.bashClass.l2.CheckID,
+				"digest":    shared.CheckDefDigest(*eff.bashClass.l2),
+				"cwd":       eff.bashClass.l2.Cwd,
+				"env_allow": eff.bashClass.l2.EnvAllow,
+			}
+		}
+	}
 	events := []shared.TraceEvent{{
 		Type:    shared.EventToolStarted,
-		Payload: map[string]interface{}{"tool_name": in.ToolName},
+		Payload: started,
 	}}
 	if eff != nil && eff.delegation != "" {
 		payload := map[string]interface{}{"subagent_type": eff.delegation}

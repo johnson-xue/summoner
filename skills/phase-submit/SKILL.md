@@ -27,7 +27,7 @@ records `phase_submitted.rejected`.
     {"path": "docs/reviews/2026-11-10-npe.md", "digest": "<sha256 of the file bytes>", "kind": "report"}
   ],
   "criteria_ids": ["crit-root-cause-identified", "crit-evidence-cited"],
-  "check_refs": ["check://go-test/2026-11-10T09:00:00Z"]
+  "check_refs": ["check://has-readme", "check://unit"]
 }
 ```
 
@@ -38,11 +38,17 @@ Field rules:
 - `artifacts` — every file the phase produced, each with its content digest at
   submission time (the checkpoint freezes these versions; changing an artifact
   after submission invalidates a review of it). No artifacts → omit or `[]`.
+  Never list `summoner.yaml` when citing checks — a definition inside the
+  artifacts under review carries no authority.
 - `criteria_ids` — the exit criteria this phase claims, exactly as the
   acceptance view / plan froze them (the user accepts or rejects THIS list).
-- `check_refs` — references to registered-check results that back the claim
-  (check registry arrives with the manifest check registry task); omit when the
-  phase ran no mechanical checks.
+- `check_refs` — citations of registered mechanical checks that back the
+  claim, each `check://<check_id>`. `trust: framework` (L1) checks re-run
+  in-gate at submit (shipped adapter ops only: file-contains, digest-match,
+  grep-count); `trust: project` (L2) checks need their newest observed
+  result to be a PASS under the CURRENT definition — run the exact
+  registered Bash line (after the in-band sandbox probe) before citing.
+  Omit when the phase ran no mechanical checks.
 
 On success the gate atomically closes the phase and opens its checkpoint
 (WAIT_USER). The next step is rendering the checkpoint — run

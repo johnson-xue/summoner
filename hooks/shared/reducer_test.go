@@ -2563,3 +2563,78 @@ func reloadRunState(t *testing.T, runID string) *RunState {
 	}
 	return disk
 }
+
+// --- T19: probe-receipt resolution + failed-check counter ---------------------
+
+// TestResolveOutcomeProbed pins the probe-submit reducer entry: each unknown id
+// resolves with its OWN probe receipt (persisted on the entry), a same-pair
+// replay is an idempotent no-op, and a conflicting re-resolution (different
+// outcome or different probe) is an error.
+func TestResolveOutcomeProbed(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	r.MarkOutcomeUnknown("tu-u1")
+	r.MarkOutcomeUnknown("tu-u2")
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if newly, err := r.ResolveOutcomeProbed("tu-u1", OutcomeAccepted, "tu-p1"); err != nil || !newly {
+		t.Fatalf("first resolve = (%v, %v), want (true, nil)", newly, err)
+	}
+	e := r.OutcomeUnknowns[0]
+	if !e.Resolved || e.ProbeToolUseID != "tu-p1" {
+		t.Fatalf("entry after probed resolve = %+v, want resolved with probe receipt tu-p1", e)
+	}
+	// Replay of the same pair: idempotent no-op (freshly=false).
+	if newly, err := r.ResolveOutcomeProbed("tu-u1", OutcomeAccepted, "tu-p1"); err != nil || newly {
+		t.Fatalf("replay = (%v, %v), want (false, nil)", newly, err)
+	}
+	// Conflicting probe reuse on the same id: rejected.
+	if _, err := r.ResolveOutcomeProbed("tu-u1", OutcomeAccepted, "tu-pX"); err == nil {
+		t.Fatal("a different probe for an already-resolved id must be rejected")
+	}
+	// The episode completes on the last id; all-accepted restores the prior.
+	if newly, err := r.ResolveOutcomeProbed("tu-u2", OutcomeAccepted, "tu-p2"); err != nil || !newly {
+		t.Fatalf("last resolve = (%v, %v), want (true, nil)", newly, err)
+	}
+	if r.Status != StatusActive {
+		t.Fatalf("all-accepted episode must restore the prior, got %s", r.Status)
+	}
+	// Unknown ids and invalid outcomes refuse exactly like ResolveOutcome.
+	if _, err := r.ResolveOutcomeProbed("tu-absent", OutcomeAccepted, "tu-p"); err == nil {
+		t.Fatal("unknown id must refuse")
+	}
+	if _, err := r.ResolveOutcomeProbed("tu-u1", "bogus", "tu-p1"); err == nil {
+		t.Fatal("invalid outcome must refuse")
+	}
+	// A failed outcome on a fresh episode opens the recovery checkpoint.
+	r.MarkOutcomeUnknown("tu-u3")
+	if _, err := r.ResolveOutcomeProbed("tu-u3", OutcomeFailed, "tu-p3"); err != nil {
+		t.Fatalf("failed resolve: %v", err)
+	}
+	if r.Status != StatusWaitUser {
+		t.Fatalf("failed episode must open a recovery checkpoint, got %s", r.Status)
+	}
+	if cp := r.CurrentCheckpoint(); cp == nil || cp.Kind != CheckpointRecovery {
+		t.Fatalf("current checkpoint = %+v, want RECOVERY", r.CurrentCheckpoint())
+	}
+}
+
+// TestCountFailedCheck pins the rework-tick primitive the ladder calls on a
+// FAIL check result (blocked never ticks): in-memory increment, caller saves.
+func TestCountFailedCheck(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	r.CountFailedCheck()
+	if r.Counters.FailedChecks != 1 {
+		t.Fatalf("FailedChecks = %d, want 1", r.Counters.FailedChecks)
+	}
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Counters.FailedChecks != 1 {
+		t.Fatalf("FailedChecks after reload = %d, want 1", r2.Counters.FailedChecks)
+	}
+}

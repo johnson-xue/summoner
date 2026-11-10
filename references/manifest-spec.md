@@ -179,7 +179,8 @@ check_registry:
 - `trust` is `framework` or `project`. Declaring `framework` does **not** promote
   an arbitrary project command to L1: hooks authorize only approved, shipped
   adapters. L2 project checks require an active sandbox; unavailable isolation
-  is `BLOCKED`, not permission to run outside it.
+  is `BLOCKED`, not permission to run outside it. The full ladder rules are the
+  section below.
 - `digest` is lowercase SHA-256 from **`shared.CheckDefDigest`**: clear the stored
   digest, marshal the Go struct as JSON (its field order and `omitempty` rules),
   hash those bytes. Do not hash raw YAML or alphabetically sorted JSON. All
@@ -203,6 +204,47 @@ bare, missing or malformed reference. Any definition change must upgrade the
 envelope; execution rechecks the content digest. A check definition modified in
 the reviewed diff cannot certify itself: downgrade that criterion to judgment
 unless the reviewer verifies the check against the baseline.
+
+## The check trust ladder (L1/L2/L3)
+
+`trust` fixes **who verifies** a check; the runtime enforces the ladder
+mechanically (`hooks/shared/checkrun.go` and the gate → posttooluse join;
+spec §3). Checks may be cited at phase-submit as `check://<check_id>`.
+
+- **L1 `trust: framework`** — `command` must be one of the three shipped
+  adapter ops: `file-contains (path, needle)`, `digest-match (path, sha256)`,
+  `grep-count (path, regex, count)`. The gate runs them IN-PROCESS at
+  phase-submit when the citation is validated — never `exec`'d, no shell, no
+  network. Bounds: 4 MiB file cap, 2^20 match cap, 2s per check / 4s
+  aggregate deadlines (well under the hook timeout). Any other op under
+  `framework` trust is BLOCKED unexecuted.
+- **L2 `trust: project`** — the model runs the EXACT registered line
+  (`command` + `args`, byte-exact) as an ordinary Bash call. The gate admits
+  that line only when it is read-class AND the LATEST in-band sandbox probe
+  refused its fresh HOME write; `posttooluse` re-verifies definition digest,
+  exact line and pairing before writing `check.result`. A pass carries the
+  tier `L2(basis:paired_probe@<probe-id>, point-in-time)` — sandbox proof is
+  observational and time-scoped, never a standing property. No/declined
+  probe → honest BLOCKED `sandbox_unproven`; definition drift → BLOCKED
+  `definition_changed`; unobservable exit → BLOCKED. Never a pass without
+  the pairing.
+- **L3 network-class** — network commands are NEVER run by the framework:
+  exit 2 with a traced BLOCKED `l3_unsupported`. A network check can never
+  earn citation credit; drop the ref.
+
+The in-band probe is `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"`
+(invoked exactly like that, no operands): it attempts one fresh-exclusive
+write in `$HOME` (never overwriting or removing an existing file), classifies
+refusal conservatively (EPERM/EACCES/EROFS), always exits 0, and prints a
+wrapper line the posttooluse hook observes ONLY on the gate-marked probe
+call — a forged wrapper line in ordinary command output is never observed.
+
+Citation rules at phase-submit: L1 refs re-run in-gate; an L2 ref needs the
+NEWEST observed result for that id to be a PASS under the CURRENT recomputed
+digest (stale digest, or missing/blocked/failed → no credit). The
+submission's own artifacts must not include `summoner.yaml` — a check
+definition inside the artifacts under review carries no mechanical authority.
+Only `fail` ticks the failed-check budget; BLOCKED never does.
 
 ## Tool scope and suggested budgets
 

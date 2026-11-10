@@ -1692,12 +1692,36 @@ func (r *RunState) currentOutcomeEpisode() int {
 // action is never auto-replayed. A late duplicate resolve with the same
 // outcome is an idempotent no-op; a conflicting one is an error.
 func (r *RunState) ResolveOutcome(toolUseID, outcome string) error {
+	_, err := r.resolveOutcome(toolUseID, outcome, "")
+	return err
+}
+
+// ResolveOutcomeProbed is the probe-submit resolution entry (T19): it carries
+// the resolving call's OWN probe receipt (the read-class Bash observation the
+// gate validated against the trace) and persists it on the entry. Replay
+// semantics: an already-resolved entry accepts only the SAME (outcome, probe)
+// pair silently — (false, nil), nothing re-recorded; a different probe or
+// outcome for a resolved id is an error, and a probe receipt may never be
+// re-used against a different unknown (the gate's batch validation rejects
+// reused ids before this point; the entry-side check is the belt). Returns
+// whether THIS call newly resolved the entry.
+func (r *RunState) ResolveOutcomeProbed(toolUseID, outcome, probeToolUseID string) (bool, error) {
+	if probeToolUseID == "" {
+		return false, errors.New("ResolveOutcomeProbed: probe_tool_use_id is required (every unknown resolves through its own observed probe)")
+	}
+	return r.resolveOutcome(toolUseID, outcome, probeToolUseID)
+}
+
+// resolveOutcome is the shared resolution core (ResolveOutcome without a
+// receipt, ResolveOutcomeProbed with one).
+func (r *RunState) resolveOutcome(toolUseID, outcome, probeToolUseID string) (bool, error) {
 	switch outcome {
 	case OutcomeAccepted, OutcomeFailed, OutcomeIndeterminate:
 	default:
-		return fmt.Errorf("ResolveOutcome: invalid outcome %q (want accepted|failed|indeterminate)", outcome)
+		return false, fmt.Errorf("ResolveOutcome: invalid outcome %q (want accepted|failed|indeterminate)", outcome)
 	}
-	return r.commit(func(s *RunState) error {
+	newly := false
+	err := r.commit(func(s *RunState) error {
 		var entry *OutcomeUnknown
 		for i := range s.OutcomeUnknowns {
 			if s.OutcomeUnknowns[i].ToolUseID == toolUseID {
@@ -1709,10 +1733,10 @@ func (r *RunState) ResolveOutcome(toolUseID, outcome string) error {
 			return fmt.Errorf("ResolveOutcome: unknown tool_use_id %q", toolUseID)
 		}
 		if entry.Resolved {
-			if entry.Outcome == outcome {
+			if entry.Outcome == outcome && (probeToolUseID == "" || entry.ProbeToolUseID == probeToolUseID) {
 				return nil // late duplicate callback: no-op
 			}
-			return fmt.Errorf("ResolveOutcome: %s already resolved as %s (conflicting %s)", toolUseID, entry.Outcome, outcome)
+			return fmt.Errorf("ResolveOutcome: %s already resolved as %s via probe %q (conflicting %s/%s)", toolUseID, entry.Outcome, entry.ProbeToolUseID, outcome, probeToolUseID)
 		}
 		if err := s.requireStatus(StatusOutcomeUnknown, "ResolveOutcome"); err != nil {
 			return err
@@ -1720,6 +1744,8 @@ func (r *RunState) ResolveOutcome(toolUseID, outcome string) error {
 		entry.Resolved = true
 		entry.Outcome = outcome
 		entry.ResolvedAt = nowUTC()
+		entry.ProbeToolUseID = probeToolUseID
+		newly = true
 		for i := range s.OutcomeUnknowns {
 			if !s.OutcomeUnknowns[i].Resolved {
 				return nil // episode still open — nothing to restore yet
@@ -1754,6 +1780,10 @@ func (r *RunState) ResolveOutcome(toolUseID, outcome string) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return newly, nil
 }
 
 // --- budget (spec §5 预算与终止) ------------------------------------------------------
@@ -1768,6 +1798,14 @@ func (r *RunState) CountToolCall() {
 		return
 	}
 	r.Counters.PhaseToolCalls++
+}
+
+// CountFailedCheck records one FAILED check result (T19, spec §5 失败检查预
+// 算): only a real fail ticks the budget — an honest BLOCKED (sandbox
+// unproven, L3 unsupported, unobservable exit) is an inability, never a
+// failure. Mutates in memory only — the observing hook persists via Save.
+func (r *RunState) CountFailedCheck() {
+	r.Counters.FailedChecks++
 }
 
 // BudgetExhausted reports whether any limit set at run start has been

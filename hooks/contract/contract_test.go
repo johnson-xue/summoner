@@ -125,7 +125,7 @@ func rebuildBinaries() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{"session-start", "pretooluse-gate", "posttooluse", "subagentstop", "stop", "userpromptsubmit"} {
+	for _, name := range []string{"session-start", "pretooluse-gate", "posttooluse", "subagentstop", "stop", "userpromptsubmit", "summoner-sandbox-probe"} {
 		out := filepath.Join(dir, name)
 		if b, err := exec.Command("go", "build", "-o", out, "../"+name).CombinedOutput(); err != nil {
 			os.RemoveAll(dir)

@@ -108,7 +108,7 @@ func runGate(stdin io.Reader, errW io.Writer) int {
 		// No active Summoner run: not our business — unless the model is
 		// trying to drive the protocol without a run.
 		if in.ToolName == "Skill" {
-			if skill := stringField(in.ToolInput, "skill"); skill == skillPhaseSubmit || skill == skillChange || skill == skillReviewSubmit {
+			if skill := stringField(in.ToolInput, "skill"); skill == skillPhaseSubmit || skill == skillChange || skill == skillReviewSubmit || skill == skillProbeSubmit {
 				fmt.Fprintf(errW, "summoner gate: %s requires an active run — this session has none\n", skill)
 				return 2
 			}
@@ -143,6 +143,17 @@ func runGate(stdin io.Reader, errW io.Writer) int {
 				Payload:   payload,
 			}); err != nil {
 				fmt.Fprintf(errW, "summoner gate: phase_submitted.rejected trace append failed: %v\n", err)
+			}
+		}
+		// T19: a denial that owes honest outcomes (the ladder's BLOCKED
+		// check.results) traces them — a refused check is an observed
+		// outcome, never silence. A trace failure here cannot un-deny: warn
+		// and keep the denial.
+		for _, ev := range d.denyEvents {
+			ev.Source = gateSource
+			ev.ToolUseID = in.ToolUseID
+			if err := shared.AppendEvent(run.RunID, run.SessionID, ev); err != nil {
+				fmt.Fprintf(errW, "summoner gate: check.result trace append failed: %v\n", err)
 			}
 		}
 		fmt.Fprintln(errW, d.reason)

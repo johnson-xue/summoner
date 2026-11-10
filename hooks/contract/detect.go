@@ -7,19 +7,30 @@ package contract
 // BLOCKED 而非静默跑). Detection is split in two: a PURE classifier over
 // (sandboxConfigured, probe) — fully table-tested — and an injectable probe
 // that reports whether the live environment actually behaves sandboxed.
-// Real probing is install-time work (later tasks); hermetic tests inject the
-// probe result, never the environment.
+// Real probing is install-time work; hermetic tests inject the probe result,
+// never the environment.
 //
 // Verified probe signals (docs verified live 2026-11-10):
-//   - `touch ~/sandbox-probe` fails with "Operation not permitted" (macOS) /
-//     "Read-only file system" (Linux/WSL2): the home filesystem is not
-//     writable → sandboxed;
+//   - a FRESH EXCLUSIVE write under $HOME refused with "Operation not
+//     permitted" (macOS) / "Read-only file system" (Linux/WSL2): the home
+//     filesystem is not writable → sandboxed;
 //   - `curl --noproxy '*' https://example.com` fails with "Could not resolve
 //     host": no network egress → sandboxed.
+//
+// T19: the probe core moved to shared.RunSandboxProbe (fresh-exclusive,
+// random name, never overwrites or removes an existing file, conservative
+// refusal-vs-unrelated-error classification — the OLD fixed-path
+// `~/.summoner-sandbox-probe` write is gone). This package keeps its public
+// API (DetectSandboxTier/SandboxProbe/ClassifySandbox) delegating to it.
+// NOTE (T19 ruling): nothing HERE can authorize an L2 check execution — a
+// hook-side probe runs OUTSIDE the model's sandbox; the only L2 pairing
+// evidence is the in-band adapter (hooks/bin/summoner-sandbox-probe) observed
+// in a model Bash result. This detector serves INSTALL-TIME tier display.
 
 import (
 	"os"
-	"path/filepath"
+
+	shared "github.com/johnson-xue/summoner/hooks/shared"
 )
 
 // Sandbox tier values.
@@ -53,24 +64,19 @@ func DetectSandboxTier(sandboxConfigured, probeSaysSandboxed bool) string {
 
 // SandboxProbe reports whether the live environment behaves sandboxed.
 // Injectable: tests and install-time code substitute a canned result; the
-// default implements the documented touch signal (cheap, dependency-free).
+// default performs the shared fresh-exclusive home write (a refused create
+// means the sandbox is in effect; a succeeded or unproven create means not).
 var SandboxProbe = defaultSandboxProbe
 
-// defaultSandboxProbe attempts the documented home-filesystem write: a
-// refused write means the sandbox is in effect. An unresolvable home dir
-// reports unsandboxed — an honest "probe inactive", leaving the tier to the
-// configuration claim.
+// defaultSandboxProbe delegates to shared.RunSandboxProbe against the user's
+// home directory. An unresolvable home reports unsandboxed — an honest "probe
+// inactive", leaving the tier to the configuration claim.
 func defaultSandboxProbe() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	probe := filepath.Join(home, ".summoner-sandbox-probe")
-	if err := os.WriteFile(probe, nil, 0o644); err != nil {
-		return true // write refused → sandbox in effect
-	}
-	os.Remove(probe)
-	return false
+	return shared.RunSandboxProbe(home).Effect == shared.SandboxProbeRefused
 }
 
 // ClassifySandbox composes the injectable probe with the pure classifier —

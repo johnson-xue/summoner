@@ -2,7 +2,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +14,81 @@ import (
 )
 
 func main() {
+	sessionID := parseSessionID(os.Stdin)
 	shared.EmitOutput("SessionStart", renderContext(shared.PluginRoot(), shared.ProjectDir()))
 	emitPendingPostGame()
+	if sessionID != "" {
+		scanDanglingIntents(sessionID)
+	}
+}
+
+// parseSessionID reads the SessionStart payload for its session_id — the only
+// field this hook consumes, and tolerantly: a missing/invalid payload skips
+// the crash scan (the hook's other duties still run; SessionStart must never
+// brick a session over its own input).
+func parseSessionID(r io.Reader) string {
+	var raw struct {
+		SessionID string `json:"session_id"`
+	}
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(&raw); err != nil {
+		return ""
+	}
+	return raw.SessionID
+}
+
+// scanDanglingIntents is the SessionStart crash-window recovery scan (T19,
+// spec §5 OUTCOME_UNKNOWN 与副作用恢复): a restarted session inherits the
+// previous session's runs, and a MUTATING intent whose result never landed —
+// a write-class tool call with no tool.result/tool.failed, or a worker
+// delegation that never completed (the previous session's worker processes are
+// dead; their side effects are uncertain) — is an outcome-unknown side effect.
+// Each found id is marked OUTCOME_UNKNOWN (idempotently: already-marked ids
+// and terminal-state runs are skipped by the reducer) and its marking is
+// traced as tool.outcome_unknown with detected_by session-start. Read-only
+// calls, Ask/decision bookkeeping, Skill channels and reviewer delegations
+// (the §3 review lifecycle owns those) are never crash candidates.
+//
+// NEVER exits non-zero and never blocks the session: every failure is a stderr
+// warning — a session must always be able to start (the Stop hook re-runs this
+// scan's tool half, so a missed mark here is caught at the next turn end).
+func scanDanglingIntents(sessionID string) {
+	runs, err := shared.SessionRuns(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "summoner session-start: crash scan skipped — session run-state unreadable: %v\n", err)
+		return
+	}
+	for _, run := range runs {
+		if run.Status == shared.StatusClosed || run.Status == shared.StatusPostGamePending {
+			continue // terminal: nothing may be marked there
+		}
+		evs, err := shared.LoadRunEvents(run.RunID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "summoner session-start: crash scan skipped for run %s — trace unreadable: %v\n", run.RunID, err)
+			continue
+		}
+		before := len(run.OutcomeUnknowns)
+		for _, d := range shared.MutatingDanglingIntents(evs, true) {
+			run.MarkOutcomeUnknown(d.ToolUseID)
+		}
+		if len(run.OutcomeUnknowns) == before {
+			continue
+		}
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "summoner session-start: crash scan could not persist run %s (state unchanged, next Stop rescans): %v\n", run.RunID, err)
+			continue
+		}
+		for _, e := range run.OutcomeUnknowns[before:] {
+			if err := shared.AppendEvent(run.RunID, sessionID, shared.TraceEvent{
+				Type:      shared.EventToolOutcomeUnknown,
+				Source:    "session-start",
+				ToolUseID: e.ToolUseID,
+				Payload:   map[string]interface{}{"tool_use_id": e.ToolUseID, "detected_by": "session-start"},
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "summoner session-start: tool.outcome_unknown trace append failed for %s: %v\n", e.ToolUseID, err)
+			}
+		}
+	}
 }
 
 // emitPendingPostGame surfaces this project's owed post-games (T18): runs

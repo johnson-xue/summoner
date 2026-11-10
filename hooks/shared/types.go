@@ -321,15 +321,19 @@ type ReviewRecord struct {
 // (spec §5). Mutating actions are never auto-replayed; the capability's
 // one-shot read-only probe resolves each entry. Episode scopes the entry to
 // its OUTCOME_UNKNOWN batch so a later episode never inherits an earlier
-// one's failed/indeterminate verdicts (task-2.5 B3/B4).
+// one's failed/indeterminate verdicts (task-2.5 B3/B4). ProbeToolUseID (T19)
+// is the durable probe receipt: the read-class Bash observation that resolved
+// the entry — the replay key of probe-submit (a re-delivered resolution with
+// the same pair is silent; a different probe for a resolved id is rejected).
 type OutcomeUnknown struct {
-	ToolUseID   string    `json:"tool_use_id"`
-	PriorStatus RunStatus `json:"prior_status,omitempty"`
-	Episode     int       `json:"episode,omitempty"`
-	RecordedAt  string    `json:"recorded_at,omitempty"`
-	Resolved    bool      `json:"resolved"`
-	Outcome     string    `json:"outcome,omitempty"` // accepted|failed|indeterminate
-	ResolvedAt  string    `json:"resolved_at,omitempty"`
+	ToolUseID      string    `json:"tool_use_id"`
+	PriorStatus    RunStatus `json:"prior_status,omitempty"`
+	Episode        int       `json:"episode,omitempty"`
+	RecordedAt     string    `json:"recorded_at,omitempty"`
+	Resolved       bool      `json:"resolved"`
+	Outcome        string    `json:"outcome,omitempty"` // accepted|failed|indeterminate
+	ResolvedAt     string    `json:"resolved_at,omitempty"`
+	ProbeToolUseID string    `json:"probe_tool_use_id,omitempty"`
 }
 
 // BudgetLimits are the run-start budget confirmations (spec §5); zero = unlimited.

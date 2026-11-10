@@ -172,6 +172,18 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 	}
 	run := live[0]
 
+	// T19 crash scan (spec §5): a MUTATING tool intent whose result never
+	// landed is an outcome-unknown side effect — mark it before anything else
+	// looks at status (a marked WAIT_USER run becomes OUTCOME_UNKNOWN here, so
+	// the display logic below correctly defers to the reconciliation episode;
+	// the episode's restore returns the run to WAIT_USER where the render
+	// obligation resurfaces). Tools only: a live worker delegation may
+	// legitimately still be running at a normal per-turn Stop — a live
+	// delegation is not a crash (the SessionStart scan converts those; there
+	// the previous session's workers are dead by construction). This scan
+	// NEVER blocks the stop — it records, warns, and the stop asymmetry holds.
+	markDanglingIntents(run, in, errW)
+
 	if run.Status == shared.StatusWaitUser {
 		if cp := run.CurrentCheckpoint(); cp != nil && !cp.Displayed {
 			if stopAck(in.LastAssistantMessage, cp) {
@@ -196,6 +208,45 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 			run.RunID, run.Status)
 	}
 	return 0
+}
+
+// markDanglingIntents is the Stop crash scan (T19): mutating tool intents of
+// the live run whose results never landed become OUTCOME_UNKNOWN entries —
+// each with its tool.outcome_unknown marking (detected_by stop). Idempotent:
+// already-marked ids and terminal states no-op, so the 8-block re-fire path
+// records nothing twice. A Save or trace failure only warns: the stop itself
+// is never blocked over bookkeeping (state stays unmarked and the next
+// SessionStart/Stop rescan finds the same intents).
+func markDanglingIntents(run *shared.RunState, in *stopInput, errW io.Writer) {
+	if run.Status == shared.StatusClosed || run.Status == shared.StatusPostGamePending {
+		return
+	}
+	evs, err := shared.LoadRunEvents(run.RunID)
+	if err != nil {
+		fmt.Fprintf(errW, "summoner stop: crash scan skipped — trace unreadable: %v\n", err)
+		return
+	}
+	before := len(run.OutcomeUnknowns)
+	for _, d := range shared.MutatingDanglingIntents(evs, false) {
+		run.MarkOutcomeUnknown(d.ToolUseID)
+	}
+	if len(run.OutcomeUnknowns) == before {
+		return
+	}
+	if err := run.Save(); err != nil {
+		fmt.Fprintf(errW, "summoner stop: crash scan could not persist run %s (state unchanged, next SessionStart rescans): %v\n", run.RunID, err)
+		return
+	}
+	for _, e := range run.OutcomeUnknowns[before:] {
+		if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
+			Type:      shared.EventToolOutcomeUnknown,
+			Source:    stopSource,
+			ToolUseID: e.ToolUseID,
+			Payload:   map[string]interface{}{"tool_use_id": e.ToolUseID, "detected_by": "stop"},
+		}); err != nil {
+			fmt.Fprintf(errW, "summoner stop: tool.outcome_unknown trace append failed for %s: %v\n", e.ToolUseID, err)
+		}
+	}
 }
 
 // markDisplayedAndAllow binds the verified render: the render block in

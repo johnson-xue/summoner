@@ -227,6 +227,13 @@ func appendTrace(run *shared.RunState, in *hookInput, ev shared.TraceEvent, errW
 // T18: a POST_GAME_PENDING run additionally observes its closure material —
 // questionnaire marker answers and journal Write/Edit at the fixed path — and
 // attempts closure when everything is on record.
+//
+// T19: a Bash completion joins the gate-recorded admission markers of its
+// tool.started — the in-band sandbox probe's effect (the wrapper the adapter
+// printed, observed ONLY for calls the gate marked as the probe channel; a
+// forged wrapper line in an ordinary command's output is never observed) and
+// the L2 check execution's outcome (pairing re-verified, exit observed, honest
+// BLOCKED when either cannot be established).
 func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 	if run.Status == shared.StatusPostGamePending {
 		if code := observePostGame(run, in, errW); code != 0 {
@@ -238,12 +245,39 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 			return recordDecisionAttempt(run, cp, in, errW)
 		}
 	}
+	resultPayload := map[string]interface{}{
+		"tool_name":       in.ToolName,
+		"response_sha256": responseDigest(in.ToolResponse),
+	}
+	var admission map[string]interface{}
+	if in.ToolName == "Bash" {
+		evs, err := shared.LoadRunEvents(run.RunID)
+		if err != nil {
+			// The tool.result append below fails on the same trace file; fall
+			// through and let that be the fail-closed report.
+			evs = nil
+		}
+		if started, _, ok := shared.StartedEvent(evs, in.ToolUseID); ok {
+			admission = started
+			if _, marked := started["sandbox_probe"]; marked {
+				effect := shared.SandboxProbeUnproven
+				if e, ok := shared.ParseSandboxProbeWrapper(bashStdout(in.ToolResponse)); ok {
+					effect = e
+				}
+				resultPayload["sandbox_probe"] = map[string]interface{}{"effect": effect}
+			}
+		}
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type:    shared.EventToolResult,
+			Payload: resultPayload,
+		}, errW); err != nil {
+			return 2
+		}
+		return recordCheckResult(run, in, evs, admission != nil, errW)
+	}
 	if err := appendTrace(run, in, shared.TraceEvent{
-		Type: shared.EventToolResult,
-		Payload: map[string]interface{}{
-			"tool_name":       in.ToolName,
-			"response_sha256": responseDigest(in.ToolResponse),
-		},
+		Type:    shared.EventToolResult,
+		Payload: resultPayload,
 	}, errW); err != nil {
 		return 2
 	}
@@ -257,6 +291,124 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 	}
 	if run.Status == shared.StatusPostGamePending {
 		return maybeClosePostGame(run, in, errW)
+	}
+	return 0
+}
+
+// bashStdout extracts a Bash tool_response's stdout text ("stdout", falling
+// back to "output"). Absent → "": the probe join then records "unproven",
+// never a guessed effect.
+func bashStdout(toolResponse interface{}) string {
+	resp, ok := toolResponse.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"stdout", "output"} {
+		if s, ok := resp[key].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// recordCheckResult concludes an L2 check execution (T19, spec §3 L2): the
+// call's tool.started carries the gate's l2_check admission binding —
+// re-verify the pairing against the CURRENT registry (definition digest, exact
+// command line, latest in-band probe before the admission refused), then
+// observe the exit: 0 passes, non-zero fails (and ticks the failed-check
+// budget), an unobservable exit is an honest BLOCKED. Every BLOCKED here is a
+// refusal to claim, never a quality verdict. evs is the pre-result event
+// snapshot (all probe observations precede the admission by construction);
+// hasAdmission is false when the trace could not be read at the join — then
+// the outcome is recorded as an unobservable BLOCKED, never credit.
+func recordCheckResult(run *shared.RunState, in *hookInput, evs []shared.TraceEvent, hasAdmission bool, errW io.Writer) int {
+	binding, seq, ok := shared.L2Admission(evs, in.ToolUseID)
+	if !ok {
+		return 0 // not an admitted check execution — nothing to conclude
+	}
+	checkID, _ := binding["check_id"].(string)
+	boundDigest, _ := binding["digest"].(string)
+	blocked := func(reason string) int {
+		payload := map[string]interface{}{
+			"check_id": checkID,
+			"trust":    "project",
+			"status":   shared.CheckStatusBlocked,
+			"reason":   reason,
+		}
+		if boundDigest != "" {
+			payload["digest"] = boundDigest
+		}
+		if err := appendTrace(run, in, shared.TraceEvent{Type: shared.EventCheckResult, Payload: payload}, errW); err != nil {
+			return 2
+		}
+		return 0
+	}
+	if !hasAdmission {
+		// The trace was unreadable at the join: no verifiable admission —
+		// record the inability, claim nothing.
+		return blocked("exit_unobservable")
+	}
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil || m == nil {
+		// Corrupt or gone: the registry the admission named cannot be
+		// re-verified — no credit. (Missing manifest: the check was registered
+		// once; its disappearance mid-run is the project's own drift.)
+		fmt.Fprintf(errW, "summoner posttooluse: check registry unreadable for the L2 join of %s — recording BLOCKED: %v\n", checkID, err)
+		return blocked("definition_changed")
+	}
+	var def shared.CheckDef
+	found := false
+	for _, d := range m.CheckRegistry {
+		if d.CheckID == checkID {
+			def, found = d, true
+			break
+		}
+	}
+	if !found || shared.CheckDefDigest(def) != boundDigest {
+		return blocked("definition_changed")
+	}
+	// Belt for the gate's admission-time byte match: the executed input must
+	// still BE the exact registered line (nothing rides along an exact match).
+	if command, _ := in.ToolInput["command"].(string); command != shared.ExactCheckCommandLine(def) {
+		return blocked("admission_mismatch")
+	}
+	probeID, refused, probeFound := shared.LatestSandboxProbe(evs, seq)
+	if !probeFound || !refused {
+		return blocked("sandbox_unproven")
+	}
+	exit, haveExit := shared.BashExit(in.ToolResponse)
+	if !haveExit {
+		return blocked("exit_unobservable")
+	}
+	status := shared.CheckStatusPass
+	reason := ""
+	if exit != 0 {
+		status = shared.CheckStatusFail
+		reason = fmt.Sprintf("exit %d", exit)
+	}
+	payload := map[string]interface{}{
+		"check_id": checkID,
+		"trust":    "project",
+		// Point-in-time wording is the CONTRACT (T19 ruling): the pairing
+		// proves the sandbox at the probe's moment, not end-to-end — the
+		// TOCTOU/model-paced residual is declared, never claimed away.
+		"tier":   fmt.Sprintf("L2(basis:paired_probe@%s, point-in-time)", probeID),
+		"status": status,
+		"exit":   exit,
+		"digest": shared.CheckDefDigest(def),
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	if err := appendTrace(run, in, shared.TraceEvent{Type: shared.EventCheckResult, Payload: payload}, errW); err != nil {
+		return 2
+	}
+	if status == shared.CheckStatusFail {
+		run.CountFailedCheck()
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "summoner posttooluse: persisting the failed-check counter failed — fail-closed: %v\n", err)
+			return 2
+		}
 	}
 	return 0
 }

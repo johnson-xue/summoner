@@ -40,6 +40,11 @@
       "name": "review-submit",
       "path": "skills/review-submit/SKILL.md",
       "description": "ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING); never for anything else. Not user-invocable; it is the main session's single envelope-registration channel (validates against the frozen acceptance view minus drops, consumes the [v] obligation, prepares the review)."
+    },
+    {
+      "name": "probe-submit",
+      "path": "skills/probe-submit/SKILL.md",
+      "description": "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else. Not user-invocable; it is the main session's single crash-recovery channel (one observed read-class probe per unresolved outcome, validated against the run's trace before any transition)."
     }
   ],
   "agents": [

@@ -26,7 +26,8 @@
     "./skills/auto-setup-summoner/SKILL.md",
     "./skills/phase-submit/SKILL.md",
     "./skills/change/SKILL.md",
-    "./skills/review-submit/SKILL.md"
+    "./skills/review-submit/SKILL.md",
+    "./skills/probe-submit/SKILL.md"
   ],
   "agents": [
     "./agents/code-reviewer.md",

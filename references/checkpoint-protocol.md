@@ -296,6 +296,28 @@ recovery checkpoint: the render lists the probes and outcomes, and the user
 decides `continue:` (accept the status quo and restore) / `recall:` / `stop:`.
 Mutating actions are never auto-replayed.
 
+### How an episode arises and resolves (spec §5)
+
+- **Crash scans** classify dangling intents by evidence, not guesswork:
+  SessionStart (after a restart) marks dangling MUTATING tool intents
+  (tool.started on the trace, result never landed) plus dead worker
+  delegations; Stop (turn end) marks tools only — a live delegation is not
+  a crash. Reviewer delegations never convert (the review lifecycle owns
+  them). Each mark traces `tool.outcome_unknown` with `detected_by`
+  (`session-start` / `stop`).
+- **During the episode** writes are denied and the crashed action is never
+  auto-replayed. Read-class Bash probes stay allowed — they are the evidence
+  channel, exempt from budget exhaustion alongside `summoner:probe-submit`.
+- **Resolution** goes ONLY through `Skill(summoner:probe-submit, args=<batch>)`
+  (`skills/probe-submit/SKILL.md` is the payload contract). Evidence rules:
+  ONE observed read-class Bash probe per unknown (recorded after the marking,
+  not failed, never reused across entries or episodes); the gate validates
+  the WHOLE batch against the run's trace before any transition — one bad
+  pair resolves nothing. All `accepted` → the pre-episode status restores;
+  any `failed`/`indeterminate` → this RECOVERY checkpoint. A re-delivered
+  identical batch is an idempotent no-op; a different outcome or probe for
+  an already-resolved id is rejected.
+
 ## Stop asymmetry & recovery
 
 - Stopping is always possible: free-text stop signals (stop/halt/abort/停止/

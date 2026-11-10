@@ -53,6 +53,16 @@ invalid-tests-fail.jsonl|SKIP|SKIP|PASS|SKIP|SKIP|FAIL|PASS
 # zero-iteration default is PASS (observed, deterministic). T12's
 # user-gate-check scorer will assert the change-loop semantics themselves.
 valid-change-loop.jsonl|SKIP|SKIP|SKIP|SKIP|SKIP|SKIP|PASS
+# T19 fixtures: crash recovery (two dangling writes → session-start marks →
+# read-class probes → probe-submit tool.resolved batch) and the check ladder
+# (L3 BLOCKED l3_unsupported → L2 BLOCKED sandbox_unproven → in-band probe
+# observed refused → admitted L2 pass with point-in-time tier → L1 in-gate at
+# submit). Same shape as valid-change-loop: v2-only event types, so the legacy
+# scorers SKIP and verifier-checklist-check's zero-iteration default is PASS.
+# The fixtures are canonical-AppendEvent traces (never hand-hashed) and assert
+# trace SHAPE only — no native sandbox was involved, and none is claimed.
+valid-crash-recovery.jsonl|SKIP|SKIP|SKIP|SKIP|SKIP|SKIP|PASS
+valid-checks-ladder.jsonl|SKIP|SKIP|SKIP|SKIP|SKIP|SKIP|PASS
 "
 
 SCORERS=(build-check handoff-contract-check iron-law-check lint-check review-isolation-check test-pass-rate verifier-checklist-check)
