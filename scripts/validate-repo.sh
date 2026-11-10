@@ -229,16 +229,25 @@ for m in checkpoint-format auto-skip-table ship-merge-template; do
     fail "canonical:$m marker count = $count (must be exactly 1)"
   fi
 done
-# the rendered checkpoint box signature may appear ONLY in the canonical file
+# the rendered checkpoint render signature may appear ONLY in the canonical file
 # (references/ siblings are user-served too — audit-found confinement gap)
-SIG_HITS=$(grep -rl "⚡ SUMMONER — Phase" --include="*.md" commands/ skills/ agents/ references/ 2>/dev/null \
+SIG_HITS=$(grep -rl "⚡ SUMMONER CHECKPOINT" --include="*.md" commands/ skills/ agents/ references/ 2>/dev/null \
              | grep -v "checkpoint-protocol\.md$" || true)
 if [[ -n "$SIG_HITS" ]]; then
   while IFS= read -r f; do
-    fail "inline checkpoint-box render in $f (point at references/checkpoint-protocol.md instead)"
+    fail "inline checkpoint render in $f (point at references/checkpoint-protocol.md instead)"
   done <<< "$SIG_HITS"
 else
-  ok "no inline checkpoint-box renders outside canonical file"
+  ok "no inline checkpoint renders outside canonical file"
+fi
+# nonce rule (T8): the canonical CHECKPOINT render carries the nonce field —
+# display verification binds decisions to it, so a render spec without the
+# nonce is a protocol break, not a cosmetic gap. The canonical template lives
+# only in checkpoint-protocol.md; everything else points at it.
+if grep -q '⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind}' references/checkpoint-protocol.md 2>/dev/null; then
+  ok "canonical checkpoint render carries the nonce field"
+else
+  fail "canonical checkpoint render missing the nonce field (references/checkpoint-protocol.md must keep the ⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind} header)"
 fi
 # inline auto-skip tables in commands → pointer only
 TABLE_HITS=$(grep -rl "^| Phase | Condition |" --include="*.md" commands/ 2>/dev/null)
@@ -289,12 +298,16 @@ else
   P4=0
   for f in commands/*.md; do
     name="$(basename "$f" .md)"
+    # a command file may carry the plugin prefix in its filename
+    # (commands/summoner-status.md → /summoner:status); strip it so the
+    # pointer toml and GEMINI.md row keep the user-facing name.
+    name="${name#summoner-}"
     toml=".gemini/commands/summoner-$name.toml"
     if [[ ! -f "$toml" ]]; then
       fail "missing .gemini pointer: $toml"; P4=1; continue
     fi
-    if ! grep -q "skills/summoner/SKILL.md" "$toml" || ! grep -q "commands/$name.md" "$toml"; then
-      fail "$toml is not pointer-form (must reference skills/summoner/SKILL.md + commands/$name.md)"; P4=1
+    if ! grep -q "skills/summoner/SKILL.md" "$toml" || ! grep -q "commands/$(basename "$f")" "$toml"; then
+      fail "$toml is not pointer-form (must reference skills/summoner/SKILL.md + $(basename "$f"))"; P4=1
     fi
     if ! grep -q "summoner:$name" .gemini/GEMINI.md; then
       fail ".gemini/GEMINI.md table missing /summoner:$name"; P4=1

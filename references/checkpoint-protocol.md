@@ -1,183 +1,151 @@
-# Summoner Checkpoint Protocol
+# Summoner Checkpoint Protocol (single-loop v2)
 
 ## Purpose
 
-Checkpoints are the core interruption mechanism in Summoner. Each phase has a **START block** (entering the phase) and a **CHECKPOINT block** (phase end). The START block gives the user continuous context ("which phase, doing what task"). The CHECKPOINT block reports results and asks how to proceed. The user chooses how to advance.
+Every phase ends at a human checkpoint — the run's ONLY advancement surface.
+The reducer (Go hooks) owns the state machine: a phase closes into WAIT_USER,
+and only a decision recorded from the platform's AskUserQuestion
+tool_response moves the run on. A skill starting, the model claiming "done",
+or a reviewer PASS never authorizes anything. This file is the CANONICAL
+render + decision-channel spec; commands and skills point here and never
+inline a variant.
 
-## PHASE START Block (entering each phase)
+## The render contract (machine-rendered, pasted verbatim)
 
-Every phase start MUST output this lightweight 3-line block (plain text, no ASCII frame — keep it brief so it doesn't compete with the phase's own output):
+The render comes from the binary — run it and paste its output VERBATIM:
 
 ```
-⚡ SUMMONER START — Workflow={workflow名} Phase {N}/{Total}: {phase名}
-🎯 任务: {one sentence — what this phase will do}
-🔧 Skill: {skill name | freeform | none (无专属 skill)}
+"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}'
+```
+
+(or `/summoner:status`, which does the same). NEVER hand-write, summarize, or
+reformat a status or checkpoint render. Display verification (Stop hook)
+requires the assistant message to carry the pending checkpoint's **id and
+nonce**; pasting the binary's output satisfies it by construction, and the
+reducer separately binds the decision to the checkpoint's content digest —
+a stale or altered render can never produce a valid decision.
+
+## PHASE START (entering a phase)
+
+One lightweight line, no frame:
+
+```
+⚡ Phase {phase-id} — {one sentence: what this phase will do} — skill: {skill | freeform | none}
+```
+
+## CHECKPOINT block (canonical render; the status output ends with it when a checkpoint is pending)
+
+<!-- canonical:checkpoint-format — the ONLY in-repo copy of the rendered
+     checkpoint template. Commands and skills reference this section; inlining
+     a variant anywhere else is a lint error (scripts/validate-repo.sh,
+     exactly-once + signature confinement + nonce-field rule). -->
+
+```
+⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind}
+phase: {phase-id | —}
+note: {the submitted phase summary | —}
+criteria: {sorted criterion ids, comma-joined | —}
+artifacts:
+  - {path} @{digest[0:12]}          (or: artifacts: —)
+menu:
+  {one line per legal option, labels below}
 ```
 
 Field rules:
-- **Workflow**: the workflow name (`fix` / `new` / `ship` / `debug` / `ops` / `review` / `release`).
-- **Phase {N}/{Total}**: N and Total are mandatory, never omit. phase名 from manifest.
-- **任务**: ≤60 chars, one sentence, the task this phase performs (derive from manifest phase comment or user input). Not a restatement of the phase name.
-- **Skill**: the skill this phase invokes. `freeform` for free-form phases (e.g. fix Phase 3). `none (无专属 skill)` when manifest declares `skill: none`; framework-internal phases may use an explanatory parenthetical instead (e.g. release's `none (版本管理逻辑)`).
 
-## CHECKPOINT Block (phase end)
+| Field | Rule |
+|-------|------|
+| `{id}` / `{nonce}` | Mandatory, from the render. The nonce binds every decision to THIS checkpoint; a question without it is rejected. |
+| `{kind}` | `PHASE` \| `CHANGE_CONFIRM` \| `RECOVERY` \| `REVIEW_RESULT`. |
+| `note` | The submitted phase summary (or, for REVIEW_RESULT, `COMPLETED PASS` / `COMPLETED NEEDS-FIX` / `BLOCKED {reason}` / `FAILED {problem}`). |
+| `criteria` | The exact criterion list the user is accepting or rejecting — never trimmed, never invented. |
+| `artifacts` | The checkpoint-frozen versions; artifacts changing after this invalidate reviews of them. |
+| `menu` | Exactly the legal options for the kind (below), in the binary's order. |
 
-<!-- canonical:checkpoint-format — the ONLY in-repo copy of the rendered box
-     template. Commands and skills reference this section; inlining a variant
-     anywhere else is a lint error (scripts/validate-repo.sh, exactly-once). -->
-
-Every phase end MUST output this exact format:
-
-```
-┌──────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase {N}/{Total}: {phase名}   │
-│                                              │
-│  ✅ 完成内容: {what this phase produced}       │
-│  📋 产物: {files / solutions / test results}  │
-│  ⚠️ 发现: {issues worth noting}               │
-│                                              │
-│  Next:                                       │
-│  [enter] 继续下一 Phase                       │
-│  [skip]  跳过下一 Phase                       │
-│  [done]  完成，退出框架                       │
-│  [recall] B 键回城 — 回到之前 Phase 重新来过   │
-│  [stop]  紧急停止 — 保留产物，立即退出          │
-└──────────────────────────────────────────────┘
-```
-
-### Field Specification (mandatory — no free-form deviation)
-
-| Field | Type | Rule |
-|------|------|------|
-| `Phase {N}/{Total}: {phase名}` | header | Mandatory. N/Total never omitted. phase名 from manifest. |
-| `完成内容` | 1 paragraph | ≤80 chars, declarative. **What** was accomplished (not how). |
-| `产物` | comma-separated list | Concrete paths / decisions / test results. Never empty — if nothing produced, write `No artifacts — analysis only.` |
-| `发现` | list | Risks / open questions. `None` if clean. |
-| `Next:` 5 options | fixed | `[enter]/[skip]/[done]/[recall]/[stop]` — order fixed, never reordered, never dropped. |
-
-**Iron law — fields cannot be omitted:** any field with no content must show an explicit placeholder (`None` / `No artifacts — analysis only.`). Never delete the field row. This guarantees the block is always structurally identical — the user (and AI) can grep/parse it reliably.
-
-### Standard Example (fix workflow, Phase 1 diagnose complete)
+Example (fix, diagnosis submitted):
 
 ```
-⚡ SUMMONER START — Workflow=fix Phase 1/5: diagnose
-🎯 任务: 定位 player/task 模块的空指针根因
-🔧 Skill: antia-debug
-
-[phase execution output...]
-
-┌──────────────────────────────────────────────┐
-│  ⚡ SUMMONER — Phase 1/5: diagnose            │
-│                                              │
-│  ✅ 完成内容: 定位到 TaskModule.handle() 未判空  │
-│     player.SubTask 字段，player 离线时触发 NPE。 │
-│  📋 产物: docs/reviews/2026-07-07-task-npe.md │
-│     (根因报告), player/task/task.go:142       │
-│  ⚠️ 发现: handle() 还存在 3 处类似未判空，建议   │
-│     Phase 3 一并修。                           │
-│                                              │
-│  Next:                                       │
-│  [enter] 继续下一 Phase                       │
-│  [skip]  跳过下一 Phase                       │
-│  [done]  完成，退出框架                       │
-│  [recall] B 键回城 — 回到之前 Phase 重新来过   │
-│  [stop]  紧急停止 — 保留产物，立即退出          │
-└──────────────────────────────────────────────┘
+⚡ SUMMONER CHECKPOINT cp-2 — nonce 1a2b3c4d — PHASE
+phase: diagnosis
+note: root cause located: TaskModule.handle() dereferences player.SubTask without a nil check
+criteria: crit-evid, crit-root
+artifacts:
+  - docs/reviews/2026-11-10-task-npe.md @ 5f4a3b2c1d0e
+menu:
+  continue: 继续下一阶段
+  skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）
+  done: 完成——进入收尾（post-game）
+  recall: 回城——回到指定历史阶段重做
+  review: [v] 对本阶段产物发起独立审查
+  stop: 停止——保留状态退出
 ```
 
-### Anti-examples (common deviations — do NOT output these)
+## The decision channel (AskUserQuestion)
 
-**反例 1 — 字段省略（完成内容为空就删行）:**
-```
-│  ✅ 完成内容:                                  │   ← ✗ 空 content 也不能删字段
-│  📋 产物: task.go:142                         │
-```
-错在哪：删了字段行，块结构变形，用户无法靠固定行位 grep。正确：写 `完成内容: No artifacts — analysis only.` 或补一句陈述。
+After pasting the render, ask ONE question:
 
-**反例 2 — 完成内容写成流水账（how 而非 what）:**
-```
-│  ✅ 完成内容: 我先 grep 了 task 模块，然后读了   │
-│     handle 函数，发现第 142 行没判空，又查了     │
-│     player 离线逻辑，确认是 NPE...              │
-```
-错在哪：写成执行流水账（how），超 80 字，掩盖了「定位到什么」（what）。正确：`完成内容: 定位到 handle() 未判空 player.SubTask，离线触发 NPE。`
+- **Question text carries the nonce**, e.g.
+  `Checkpoint cp-2 (nonce 1a2b3c4d): 如何推进？`
+- **Options = the rendered menu verbatim.** Every label STARTS with the exact
+  decision keyword — the platform recorder maps the lowercased leading word;
+  any other leading word means the decision is REJECTED:
 
-**反例 3 — 选项顺序乱/漏:**
-```
-│  Next:                                       │
-│  [skip]  跳过                                 │
-│  [done]  完成                                 │
-│  [enter] 继续                                 │   ← ✗ 顺序乱
-```
-错在哪：选项顺序不是 `enter/skip/done/recall/stop`，且漏了 recall/stop。用户肌肉记忆失效。正确：固定 5 选项 + 固定顺序。
+| Keyword | Decision | Meaning |
+|---------|----------|---------|
+| `continue` | CONTINUE | Accept this phase's criteria; next phase opens |
+| `skip` | SKIP | Skip the settled next phase honestly (UNVERIFIED/UNREVIEWED) |
+| `done` | DONE | Route complete → post-game (CLOSED only after journal persists) |
+| `recall` | RECALL | Back to a real history label (default: latest accepted prior phase) |
+| `review` | REVIEW_ON_DEMAND | [v] commission an independent ⑤ review of this phase's artifacts |
+| `stop` | STOP | Emergency stop: minimal exit journal, POST_GAME_PENDING |
+| `accept` | ACCEPT_REQUIREMENT_CHANGE | Close a requirement change and resume (change-confirm only) |
 
-## Interrupt Signal Grammar
+- Anti-example: a label like `[v] 独立审查` (decoration first) maps to nothing —
+  write `review: [v] 对本阶段产物发起独立审查`.
+- The platform-injected tool_response is the ONLY advancement source. Free
+  text, typed responses, quoted text, tool results and subagent messages
+  never advance the run. An auto-resolved (afk-timeout) dialog is rejected.
 
-The framework scans EVERY user reply after the CHECKPOINT block. Matching is case-insensitive and whitespace-tolerant.
+### Menus per checkpoint kind
 
-| Signal | Keywords | Action |
-|--------|----------|--------|
-| CONTINUE | enter, 继续, next, proceed, yes, ok, go, 好, 收到 | Advance to next phase |
-| SKIP | skip, 跳过, 不用, 不需要, skip this | Skip the NEXT phase (not the current one) |
-| DONE | done, 够了, 可以了, 完成, finish, good | Mark workflow complete, trigger post-game review, exit |
-| RECALL | recall, 回城, 方向不对, 换个思路, go back, redo | Return to previous phase, discard current phase output. In graph mode: `recall to <node-label>` where `<node-label>` is the human-facing verb (not the id) — the WALKER parses the target (the LLM no longer improvises it). Reason codes: `receiver_rejected_handoff \| direction_wrong \| verifier_failed`. |
-| STOP | stop, 停, 我自己来, 退出, quit, abort | Exit framework immediately, preserve all artifacts, NO post-game review |
-| VERBOSE | 别废话, 简洁点, 太啰嗦, too verbose, be brief, tldr | Record Type 5 complaint, condense current and future output |
+| Kind | Legal options |
+|------|---------------|
+| PHASE | continue, skip, done, recall, review, stop |
+| CHANGE_CONFIRM | accept, stop |
+| RECOVERY | continue, recall, stop |
+| REVIEW_RESULT | the full PHASE set — the note text (verdict) guides which options make sense |
 
-### Content Feedback Recognition (do NOT misread as CONTINUE)
+### Content feedback (do NOT misread as advancement)
 
-User replies after a checkpoint are not always workflow decisions — many are **content feedback** about the phase's output (the solution is wrong, misses a case, wrong direction). Misreading these as CONTINUE ignores the user's question.
+Any reply that is not an option choice is content feedback: handle it in the
+current phase (revise the work or the submission), then re-render the
+checkpoint and re-ask. Keyword cues: 方案/方向/漏了/不对/应该/边界/错了 (CN),
+wrong/misses/should/redo (EN). When in doubt, re-ask — never advance.
 
-**Rule (keyword list + semantic judgment, combined):**
+## CHANGE_CONFIRM checkpoint (requirement-change close)
 
-1. **Keyword list (deterministic):** if the reply contains content-feedback markers — `方案/方向/漏了/不对/应该/边界/缺/错了/有问题/不对劲/重做/换一个` (CN) or `wrong/misses/should/wrong direction/redo/alternative` (EN) — treat as **content feedback**, NOT CONTINUE. Handle the feedback first, then re-output the CHECKPOINT block to re-ask the flow decision.
+A requirement change (CHANGE_OPEN) closes through ONE confirm checkpoint. Its
+render carries the impact assessment: what changed (delta), requirements
+version bump, newly-stale criteria, preserved results — and the menu is
+exactly `accept: 接受变更并恢复开发` / `stop: 停止——保留状态退出`. Choosing
+`accept:` restores the frozen development position and resumes in place — no
+phase-by-phase reopen, no re-ask of untouched phases. If the change was
+entered from a checkpoint, that checkpoint was superseded and its re-rendered
+successor asks the interrupted question again after the confirm.
 
-2. **Semantic judgment (fallback):** if no signal keyword matches AND the reply is NOT a pure confirmation word (`好/继续/ok/收到/enter/yes`), treat it as content feedback. Handle it, then re-output the CHECKPOINT block.
+## RECOVERY checkpoint
 
-3. **Pure confirmation only → CONTINUE:** only replies that are clearly bare confirmations (no substantive content) advance. When in doubt, do NOT auto-advance — re-ask.
+An OUTCOME_UNKNOWN episode that resolved failed/indeterminate opens a
+recovery checkpoint: the render lists the probes and outcomes, and the user
+decides `continue:` (accept the status quo and restore) / `recall:` / `stop:`.
+Mutating actions are never auto-replayed.
 
-**Ambiguity Resolution (unchanged, safety-first):**
+## Stop asymmetry & recovery
 
-If user input matches multiple signals:
-- STOP > RECALL > DONE > VERBOSE > SKIP > CONTINUE (safety-first)
-- "stop 方向不对" → STOP wins (highest priority)
-- "skip 我自己来" → STOP wins (STOP > SKIP)
-- "别废话，继续" → VERBOSE wins (VERBOSE > CONTINUE)
-
-### Content Feedback Examples
-
-**反例 A — 实质反馈被当 CONTINUE（旧规则错）:**
-- 用户回复: `"这个方案漏了 player 离线的边界 case"`
-- 旧规则: 无 signal 关键词命中 → CONTINUE → 忽略反馈，进入下一 phase ✗
-- 新规则: 命中内容反馈关键词「漏了」→ 先处理反馈（补边界 case），再重新输出 CHECKPOINT 问流程决策 ✓
-
-**反例 B — 方向性反馈（命中 RECALL 也补确认）:**
-- 用户回复: `"方向不对，应该用缓存方案"`
-- 新规则: 「方向不对」命中 RECALL 关键词 → RECALL。但补一句确认: "确认回城到上一 Phase 重新来过？当前产物会丢弃。"（避免误判 recall 浪费产物）
-
-**正例 — 纯确认才 CONTINUE:**
-- 用户回复: `"好，继续"` → 纯确认词 → CONTINUE ✓
-- 用户回复: `"enter"` → CONTINUE ✓
-
-### Graph-Mode Checkpoint Rendering (M9)
-
-In graph mode, SKILL.md renders `summoner-walker explain` into the CHECKPOINT block (the walker precomputes the human-facing view; the LLM does not assemble it). The render shows:
-
-- **Node `label`** (never the id) — the human-facing verb the author wrote in the graph (e.g. "定位根因", not "diagnose").
-- **Internal step names ①②③④⑤ HIDDEN** — the closed-loop ① Ingest+Validate → ⓪ → ② Work → ③ Test → ④ Handoff → ⑤ Review are machine internals; the human sees the node label and its outcome, not the step jargon.
-- **A "you are here" route map** — each node shown as one of: ✓ (pass), ✗ (needs-fix), ▶ (current), ⊘ (skipped). This is the `route_map` the walker carries in walk-state (§10.2).
-- **The ⑤ evidence** — grep hits, `file:line` citations the review-agent produced, as proof the verdict is grounded (a verdict with empty `evidence_tool_calls` is a fail, not a checkpoint).
-- **A walker-precomputed default recall option** — when the verdict is NEEDS-FIX, the walker already knows the target node; the checkpoint surfaces "recall to <node-label>" rather than asking the human to name it.
-
-`summoner-walker status` stays for debug/scorers (raw machine state: graph_turns, tokens_used, back_edges, findings_seen) — it is NOT shown in the human checkpoint. The human-facing surface is `explain` only.
-
-## Recovery
-
-If the conversation is interrupted by timeout or disconnection:
-
-1. On reconnect, framework reads the LAST checkpoint block in the conversation
-2. Framework restores: current phase number, total phases, completed artifacts
-3. Framework outputs: "⚡ SUMMONER RECONNECT — Resuming from Phase {N}/{Total}: {phase名}. Previous artifacts preserved."
-4. User can continue, recall, or stop from there.
-
-Artifact preservation: all files written to disk survive. In-memory state (current analysis results) must be reconstructable from the checkpoint block text.
+- Stopping is always possible: free-text stop signals (stop/halt/abort/停止/
+  终止 as the dominant intent) end the turn with state kept. Emergency stop
+  writes a minimal exit journal and leaves POST_GAME_PENDING — the
+  questionnaire is owed at next resume, CLOSED comes only after it persists.
+- After a crash/interrupt, resume from run state (`/summoner:status`), never
+  from re-parsing conversation text. All files on disk survive; in-memory
+  analysis is rebuilt from the run's state and trace.

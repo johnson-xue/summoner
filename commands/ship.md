@@ -1,58 +1,44 @@
 ---
-description: 发版前审查 — 并行 fan-out 三个 persona → merge 报告 → go/no-go 决策
-phase_checkpoints: after_merge
-end_action: post_game_review
+description: 发版前审查 — 单一独立 reviewer 覆盖完整 rubric → merge 报告 → GO/NO-GO 决策。敏感变更增加标准，不增加 reviewer。
 ---
 
 # /summoner:ship
 
-Fan-out orchestrator. Runs three personas in parallel, merges their reports, produces a go/no-go decision with rollback plan.
+Pre-launch decision review. ONE fresh independent reviewer covers the complete
+rubric (correctness/idiom/architecture/security/impact + Prove-It); the main
+session merges the report into a go/no-go decision. Sensitive changes add
+CRITERIA to the verification spec — never more reviewers (parallel fan-out
+returns only if an evaluation proves net benefit).
 
-## Workflow
+## Route
 
-```
-Phase A (PARALLEL):
-  ├── code-reviewer    → review report
-  ├── security-auditor → audit report
-  └── test-engineer    → coverage report
+Run-start records the run (ship has no framework-owned phase sequence yet —
+the route comes from the manifest mapping; the manifest check registry task
+formalizes it). In practice:
 
-Phase B (MERGE):
-  synthesize → go/no-go + rollback plan
-```
-
-## Phase A — Parallel Fan-Out
-
-Spawn all three personas simultaneously using the Agent tool in a single turn:
-
-1. `code-reviewer` — 5-axis review on staged changes / recent commits
-2. `security-auditor` — Vulnerability and threat-model pass
-3. `test-engineer` — Test coverage analysis
-
-## Phase B — Merge
-
-Synthesize the three reports into one output: render the canonical **Ship Merge Report Format** from `references/workflow-reference.md` §Ship Merge Report Format (GO | NO-GO decision + blockers / recommended / risks / rollback / reports — never inline a variant).
-
-## Adaptive Fan-Out
-
-Fan-out scale is determined by diff size before launching personas:
-
-| Diff Size | Personas | Rationale |
-|-----------|----------|-----------|
-| < 50 lines AND < 3 files | Skip fan-out entirely | Trivial change — suggest `/summoner:review` |
-| < 200 lines | code-reviewer only | Small change — 5-axis review sufficient |
-| < 500 lines | code-reviewer + test-engineer | Medium change — review + coverage check |
-| ≥ 500 lines OR touches auth/data/config | All 3 (code-reviewer + security-auditor + test-engineer) | Large/sensitive change — full audit |
+1. **Prepare** — freeze the diff baseline (base + snapshot, or file digests
+   without Git), assemble the verification_spec (criteria from the project's
+   rubric; auth/payment/personal-data/config touches ADD criteria), register
+   the review envelope. Mechanical criteria freeze their check definitions:
+   `verification_scope.check_ids` carries `check_id@digest` (registry
+   enforced; hooks/shared/envelope.go is the authority).
+2. **Review** — delegate one typed `reviewer` Agent; evidence reconciled
+   against its transcript; BLOCKED (sandbox/env) is a reason code, never a
+   quality verdict.
+3. **Merge** — render the canonical **Ship Merge Report Format** from
+   `references/workflow-reference.md` (GO | NO-GO + blockers / recommended /
+   risks / rollback / full report — never inline a variant).
+4. **Decide** — the checkpoint asks the user; a Critical finding defaults
+   NO-GO unless the user explicitly accepts the risk.
 
 ## Rules
 
-1. 每个 Phase（A 并行 / B merge）开始输出 **PHASE START** 块 + 结束输出 **SUMMONER CHECKPOINT** 块（格式与字段规约见 `references/checkpoint-protocol.md`），等待用户选择。内容反馈先处理再重问。
-2. Phase A personas run in PARALLEL — never sequentially.
-3. Personas do NOT call each other. The main agent merges in Phase B.
-4. Rollback plan is MANDATORY before any GO decision.
-5. If any persona returns a Critical finding, default verdict is NO-GO unless user explicitly accepts the risk.
-6. **Fan-out scale is dynamic** — determine diff size first, then select personas per the Adaptive Fan-Out table above (its first row = skip fan-out, suggest `/summoner:review`).
-7. **Always run all 3** if the diff touches auth, payments, personal data, or configuration/env files — regardless of line count.
+1. Checkpoints + AskUserQuestion per `references/checkpoint-protocol.md`.
+2. Cite existing review/verification evidence instead of re-running it —
+   same-digest artifacts with a still-valid result reuse once.
+3. Rollback plan is MANDATORY before any GO.
+4. review vs ship: review answers「有什么问题」；ship 引用其证据做 GO/NO-GO。
 
 ## Post-Game Review
 
-Trigger Type 4 (流程评价) after ship decision.
+Mandatory — Type 4 (流程评价) after the ship decision.

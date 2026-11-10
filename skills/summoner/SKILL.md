@@ -1,8 +1,8 @@
 ---
 name: summoner
-description: Routes user intent through summoner.yaml manifest to domain skills. Enforces checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow.
+description: Routes user intent through summoner.yaml manifest to domain skills. Enforces the single-loop checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow.
 when_to_use:
-  - User invokes /summoner:fix, /summoner:new, /summoner:ship, /summoner:debug, /summoner:ops, /summoner:review, or /summoner:release
+  - User invokes /summoner:fix, /summoner:new, /summoner:ship, /summoner:debug, /summoner:ops, /summoner:review, /summoner:release, or /summoner:status
   - User says "帮我排查这个 bug" or "add a new feature" and needs structured workflow
   - User wants checkpoint-based review (stop/recall/skip at any phase)
 allowed-tools:
@@ -11,167 +11,164 @@ allowed-tools:
   - Write
   - Edit
   - Bash
+  - AskUserQuestion
   - Agent
-  - TaskCreate
-  - TaskUpdate
 ---
 
-# Summoner — AI Agent Orchestration Framework
+# Summoner — AI Agent Orchestration Framework (single-loop)
 
-## Overview
+## What Summoner is
 
-Summoner is the routing hub. It reads the project's `summoner.yaml` manifest, resolves phase names to domain skills, enforces checkpoint pauses between phases, and triggers post-game review at workflow end. It does NOT implement any domain logic itself — that lives in project skills.
+You are the single executor and orchestrator: you understand intent, read the
+project's `summoner.yaml` manifest, pick capabilities, do the work, run
+registered checks, and produce results. The Go hook reducer (gatekeeper) owns
+run state, checkpoints, budgets, evidence and recall history — it validates
+every transition and blocks illegal ones (exit 2). There is no second mode, no
+graph walker, no chain fallback: one loop, phases in a fixed order, a
+checkpoint after every phase.
 
-## When to Use
+**fix vs debug disambiguation**（"排查" 类短语同时命中两者时）:
+- 意图包含修复期望或未说明只要原因 → `/summoner:fix`（repair-bias 默认）
+- 意图明确只要原因、不要改码 → `/summoner:debug`
+- 两可且用户明确犹豫 → 问一句再路由。此规则由 `evals/cases/routing.json` 固化。
 
-- User invokes `/summoner:fix`, `/summoner:new`, `/summoner:ship`, `/summoner:debug`, `/summoner:ops`, `/summoner:review`, or `/summoner:release`
-- User expresses intent that matches a Summoner workflow (e.g., "帮我排查这个线上 bug" → suggest `/summoner:fix`)
+**When NOT to use:** user names a specific domain skill directly → route
+straight there; pure Q&A → answer directly.
 
-**fix vs debug disambiguation**（"排查/排查一下/look into" 同时命中两者时的裁决规则）：
-- 意图包含修复期望（"修好/修一下/fix it/然后把它解决"）或未说明只要原因 → `/summoner:fix`（repair-bias 默认）
-- 意图明确只要原因、不要改码（"只告诉我原因/先别动代码/don't change anything/why does this happen"）→ `/summoner:debug`
-- 两可且用户明确表达犹豫 → 问一句再路由，不猜。此规则由 `evals/cases/routing.json` 固化并被 `scripts/run-routing-evals.sh`（opt-in）验证。
+## The single loop (protocol, in order)
 
-**When NOT to use:**
-- User explicitly says "直接用 my-debug-skill" or names a specific domain skill → route directly, skip Summoner orchestration
-- Pure Q&A, no workflow needed → respond directly
+1. **Run start** — the user submits a `/summoner:<workflow>` prompt. The
+   UserPromptSubmit hook records the run (the ONLY run starter); you do
+   nothing to start it. One live run per session — a second is never created.
+   Budgets surface at the first checkpoint (unlimited until the user sets
+   them at a run's checkpoints).
+2. **Phase work** — phases open per the fixed framework sequence
+   (`fix`: context→diagnosis→reproduce→fix→regression→review; `new`:
+   context→requirements→plan→implement→verify→review; `debug`:
+   context→diagnosis). The capability each phase uses comes from the project
+   manifest (`phases.<name>.skill`); no manifest → built-in defaults, and you
+   say so ("未配置项目专属能力"). `skill: none` is explicit no-capability — it
+   never authorizes skipping diagnosis or auto-advancing. Work happens in
+   THIS session; you may delegate only typed `reviewer`/`worker` Agent
+   batches (the gate refuses others).
+3. **Submit** — when a phase's work is done, submit via
+   `Skill(summoner:phase-submit, args=<phase-result JSON>)` — the ONLY
+   submission channel (`skills/phase-submit/SKILL.md` defines the payload).
+   The gate closes the phase and opens its checkpoint atomically; anything
+   else you say about "done" advances nothing.
+4. **Render** — run `${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and
+   paste its output VERBATIM into your reply. The render (with the pending
+   checkpoint block: id, nonce, criteria, artifact versions, decision menu)
+   is machine-generated; NEVER hand-write or summarize it. The Stop hook
+   blocks ending the turn until the message carries the checkpoint id +
+   nonce — that is display verification, and pasting the binary's output
+   satisfies it by construction. Format authority:
+   `references/checkpoint-protocol.md`.
+5. **Decide** — ask via **AskUserQuestion**: the question text carries the
+   checkpoint's nonce; the options are the rendered menu verbatim. Every
+   option label STARTS with the decision keyword (continue/skip/done/recall/
+   review/stop/accept) — any other leading word is rejected. The platform's
+   injected tool_response is the ONLY advancement source; the PostToolUse
+   hook records the decision. Free text, typed responses, quotes, subagent
+   messages NEVER advance the run — treat them as content feedback (revise,
+   then re-render and re-ask).
+6. **Repeat** until the user decides `done`/`stop`, or the route is settled.
 
-## Core Operating Behaviors
+## Iron laws (mechanism-enforced, not prompt discipline)
 
-### 0. Memory Retrieval (Phase 0)
+- **Never auto-advance.** WAIT_USER blocks writes; only a recorded
+  AskUserQuestion decision moves the run.
+- **Phase 1 diagnosis iron law** (fix/debug): Edit/Write/Bash-writes are
+  denied until the diagnosis phase is ACCEPTED at its checkpoint. 诊断未知 =
+  只能继续调查或停止.
+- **Skipping is honest**: a skipped phase is marked UNVERIFIED/UNREVIEWED; it
+  can never be presented as PASS.
+- **Post-game is mandatory**: `done` and emergency `stop` both leave the run
+  POST_GAME_PENDING — it becomes CLOSED only after the questionnaire +
+  journal persist (`references/post-game-review.md`).
+- **Stop asymmetry**: stopping is always possible (free-text stop signals end
+  the turn; state is kept). Advancing is only ever hard.
 
-Before starting any workflow, check Summoner Memory for relevant historical patterns.
+## [v] On-demand review (checkpoint menu `review:`)
 
-1. Read `project.name` from the project's `summoner.yaml`; resolve the memory DB path (`$SUMMONER_MEMORY_DIR` or `~/.summoner/memory/{project-name}.db` — version-independent; details + legacy migration in `references/memory-chain.md` §DB Path Resolution). If the DB doesn't exist: in Claude Code run `${CLAUDE_PLUGIN_ROOT}/scripts/init-memory-db.sh {project-name}`; otherwise skip Phase 0 and proceed to Phase 1.
-2. **Read `references/memory-chain.md` §Phase 0: Retrieval Protocol** and follow it exactly: feature extraction (error_codes / module with subsystem-fallback / keywords), the Top-5 SQL query, the match-presentation box, and the 1500-token hard cap with silent graceful degradation (Top 5 → Top 3 → Top 1 → skip).
-3. User picks `[enter]` (loaded patterns inform the workflow) or `[no]` (proceed, zero token cost).
+Any phase checkpoint can commission the same ⑤ independent review of that
+phase's artifacts: choose `review:` → the run parks under a REVIEW obligation
+(REVIEW_PENDING). You then build the review envelope and delegate ONE typed
+`reviewer` Agent (the gate binds it to the PREPARED review id). Envelope
+construction follows spec §3 / `agents/reviewer.md`. Once the check registry
+exists (manifest check registry, next task), every mechanical criterion's
+envelope entry MUST carry the frozen `check_id@digest` form in
+`verification_scope.check_ids` — bare, missing or malformed entries are
+rejected (`hooks/shared/envelope.go` is the authority). Review-result reuse
+additionally requires the result to still be valid: a later recall or
+requirements-version bump that touches the artifacts voids a prior PASS —
+check staleness against the run state before citing reuse. PASS still leaves
+the run WAIT_USER; NEEDS-FIX feeds rework.
 
-### 1. Skill Resolution
+## Recall (`recall:`)
 
-On receiving a command, read the project's `summoner.yaml`:
+Default target: the latest ACCEPTED prior phase (the status render names it).
+`recall to <label>` resolves only REAL history labels (phase ids with a
+visit in this run); ambiguity → list the options and ask, never guess. A
+recall appends a fresh visit of the target phase (history is kept) and marks
+downstream accepted criteria stale. A recall whose target IS the diagnosis
+phase revokes that version's write eligibility (fix/debug) until the redone
+diagnosis is re-accepted at its checkpoint. It NEVER stash/reset/restores
+files — undoing code is a separate explicit operation.
 
-```
-1. Locate summoner.yaml at project root
-2. If found: resolve each phase in the workflow to its skill → proceed to Phase Execution
-3. If a phase has skill: "none": skip that phase (explicit no-capability)
-4. If a phase is not in the manifest: use superpowers default (define → brainstorming, plan → writing-plans, review → requesting-code-review)
-5. If NOT found: read `references/no-manifest-flow.md` and follow it (Phase 0 auto-skipped; Phases 1-2 use superpowers defaults; interactive menu at Phase 3 of /summoner:new; /summoner:fix Phase 3 uses the freeform flow without the menu). Iron Law: never silently fall back to generic execution.
-```
+## Stop, emergency stop, and resuming
 
-### 2. Checkpoint Enforcement
+- `stop:` (or a free-text stop signal) ends the run now: minimal exit journal,
+  state stays POST_GAME_PENDING, questionnaire owed at next resume.
+- Interruption/crash: run state and trace live on disk keyed by project +
+  session + run — resume answers come from `/summoner:status`, never from
+  re-parsing conversation text. Unresolved side effects surface as
+  OUTCOME_UNKNOWN and are settled by read-only probes plus a recovery
+  checkpoint (user decides retry/recall/stop; mutating actions are never
+  auto-replayed).
+- Escape hatch (un-brick only): `SUMMONER_HOOKS_DISABLE=1` — using it on a
+  live run is recorded as a contract violation.
 
-Each phase has a **START block** (entering) and a **CHECKPOINT block** (end) — both defined in `references/checkpoint-protocol.md`.
+## Requirement changes vs recall (pointer)
 
-**Entering a phase:**
-1. Output the PHASE START block (lightweight 3-line plain-text: Workflow + Phase N/Total + 任务 + Skill) — gives the user continuous context of "which phase, doing what task"
+自由文本提出需求调整 = 开变更子环（CHANGE_OPEN：冻结开发位置 → delta → 影响评估 →
+单点确认「接受变更并恢复开发」），增量恢复、不重跑流水线——与 recall（方向错了回城
+重做）是两条不同的路。边界全文（触发、stale 传播、预算口径）落在变更协议文档
+(spec §1 需求变更闭环；runtime wiring 后续任务接线)。检查点期间提出变更会 supersede
+当前检查点，确认后以其重渲染版重新询问。
 
-**After each phase completes:**
-1. Output the SUMMONER CHECKPOINT block (exact format in `references/checkpoint-protocol.md`)
-2. Wait for user response
-3. Scan for interrupt signals (per `references/checkpoint-protocol.md` interrupt signal grammar)
-4. If the reply is content feedback (not a pure flow decision), handle the feedback first, then re-output the CHECKPOINT block — do NOT auto-advance
-5. Execute the selected action: continue / skip / done / recall / stop
+## Phase 0 memory (the `context` phase)
 
-**Iron Law:** Never auto-advance past a checkpoint. Never assume the user wants to continue. Never misread content feedback as CONTINUE.
+Before first domain work in any workflow: read `project.name` from
+`summoner.yaml`; if the memory DB exists (`$SUMMONER_MEMORY_DIR` or
+`~/.summoner/memory/{project}.db`), follow `references/memory-chain.md`
+§Phase 0 retrieval (Top-5 SQL, match box, 1500-token cap, graceful
+degradation). No DB → skip retrieval, say so, continue. The context phase
+closes at its checkpoint like any other.
 
-### 3. Phase Execution
+## Workflow quick reference
 
-For each phase in the workflow chain:
+| Command | Phase route |
+|---------|-------------|
+| `/summoner:fix` | context → diagnosis(M) → reproduce → fix → regression → review |
+| `/summoner:new` | context → requirements → plan → implement → verify → review |
+| `/summoner:debug` | context → diagnosis（止于诊断检查点） |
+| `/summoner:review` | verification_spec 路线（manifest `phases.review`） |
+| `/summoner:ship` | 单 reviewer 全 rubric → merge 报告 → GO/NO-GO |
+| `/summoner:ops` | 项目 ops 能力承担领域步骤；用户门/trace/复盘走同一 reducer |
+| `/summoner:release` | 版本计划 → changelog → 发布执行（自含，T13 维护） |
+| `/summoner:status` | 只读状态视图（不改状态） |
 
-**When manifest IS available (or user specified skill via Option 2):**
-1. Output PHASE START block (Workflow/Phase N/Total/任务/Skill)
-2. Read the phase's skill from manifest (or use the manually-specified skill for Phase 3)
-3. Invoke the skill via the Skill tool: `Skill(skill="<skill-name>", args="<user's original input>")`
-4. The skill runs its internal workflow and returns results
-5. Summoner extracts: what was accomplished, artifacts produced, issues found
-6. Output CHECKPOINT block (field spec + anti-examples in `references/checkpoint-protocol.md`)
-
-**When manifest is NOT available — after No Manifest menu resolution:**
-
-Follow `references/no-manifest-flow.md` §Post-menu phase execution (Phase 1-2 superpowers defaults; Phase 3+ by menu choice: pause→reload / manual skill / generic superpowers chain).
-
-**Phase 3 Routing (when manifest is available):**
-
-At Phase 3 of `/summoner:new`, determine the implementation skill based on function type:
-- New subsystem / module → `phase.subsystem` skill
-- New RPC interface → `phase.rpc` skill
-- GM tool / admin command → `phase.gmt` skill
-- If the relevant phase is not in the manifest: ask user which skill to use (one-time), then apply for this session
-- If multiple match: ask user to clarify the primary function type
-
-For the `fix` phase (freeform — no skill mapping):
-1. Present the diagnosis from Phase 1
-2. Ask the user: "How would you like to fix this? I can implement the fix, or you can make changes yourself."
-3. If user implements: wait for them to confirm changes are done
-4. If agent implements: apply changes, show diff
-
-### Graph-Mode Phase Execution (when the plan carries a `summoner-task-graph` block)
-
-If the active plan artifact contains a fenced ` ```yaml summoner-task-graph ` block, drive the graph walker instead of the linear phase chain: **read `references/graph-mode.md`** and follow its directive loop (`summoner-walker next` → RUN_NODE / RUN_REVIEW → record → route; node-snapshot save/restore on directive; CHECKPOINT renders `walker explain`; HALT surfaces budget exhaustion). The walker is the router + bookkeeper — it never executes agents or touches the working tree. If the plan has NO task-graph block → chain fallback (§3 above; backward compat).
-
-### Trace Emission (chain mode — feeds the deterministic scorers)
-
-The scorers (`build-check` / `lint-check` / `test-pass-rate` / `iron-law-check`) only audit runs that leave trace data — graph mode gets it from the walker; chain mode needs these two appends per phase (shell `echo >> one line`, never rewrite). File: `${TMPDIR}/summoner-traces/<project-name>/<workflow>-$(date +%Y%m%d-%H%M%S).jsonl`
-
-- At each PHASE START: `{"type":"phase_start","timestamp":"<ISO8601>","workflow":"<w>","phase":<n>,"name":"<phase>","skill":"<skill|none>"}`
-- At each CHECKPOINT: `{"type":"phase_end","timestamp":"<ISO8601>","workflow":"<w>","phase":<n>,"status":"completed","artifacts":["..."]}`
-- After build/test/lint commands: `{"type":"tool_call","timestamp":"<ISO8601>","tool":"Bash","args":{"command":"<cmd>"},"result":"<success|error>"}`
-
-Event schema: `references/trace-protocol.md`. Scoring is post-hoc (`scripts/score-trace.sh`) — emission never blocks the workflow.
-
-### 4. Post-Game Review
-
-**Enforcement:** The PreToolUse hook automatically detects Summoner invocation and writes a session-keyed state file (parallel sessions don't clobber each other). The same hook enforces the chain-mode iron law: Edit/Write are denied (exit 2) until a phase skill has run in the session — no code changes before Phase 0-1. Escape hatches: an all-`skill: none` manifest pre-advances; `SUMMONER_IRON_LAW=off` disables the gate. The Stop hook checks the state file at session end and warns if the review may have been forgotten. You don't need to track state — the hooks handle it.
-
-At workflow end (user says "done" or all phases complete):
-1. Determine the review type based on session events (corrections, skips, injections, verbosity complaints)
-2. Present the appropriate questionnaire from `references/post-game-review.md`
-3. Collect answers and write journal entry
-4. Agent self-reflection: one paragraph on what could have been done better
-
-After collecting review answers:
-5. Write journal entry to SQLite: INSERT into journal table
-6. Classify pattern per `references/post-game-review.md` Memory Write Protocol
-7. If pattern meets persistence criteria:
-   - Extract features (error_codes, modules, keywords, summary)
-   - Check for existing pattern by name → UPDATE hits or INSERT new
-   - Report: "📝 Memory updated: {pattern_name} (hits: {N})"
-8. If pattern matches existing: "📝 Memory: {pattern_name} hits now {N}"
-9. Report new hit counts for any updated patterns
-
-## Workflow Quick Reference
-
-Full definitions: Read `references/workflow-reference.md` (workflow diagrams, auto-skip conditions, rationalizations, red flags, verification checklist). Read the specific command file (e.g., `commands/fix.md`) for workflow-specific rules.
-
-| Command | Phase Chain |
-|---------|------------|
-| `/summoner:fix` | debug(M) → reproduce → fix → verify → review |
-| `/summoner:new` | define → plan → implement → test → review |
-| `/summoner:ship` | fan-out(1-3 personas) → merge |
-| `/summoner:debug` | debug only, no code changes |
-| `/summoner:ops` | ops skill (delegated) |
-| `/summoner:review` | code review only |
-| `/summoner:release` | version-plan → changelog → release-execution (self-contained, no manifest routing) |
-
-(M) = Mandatory — iron law, cannot be skipped.
-
-## Available Personas (dispatch as subagents)
-
-| Persona | Use for |
-|---------|---------|
-| `summoner:code-reviewer` | Standalone code review, ship fan-out |
-| `summoner:security-auditor` | Security vulnerability audit, ship fan-out |
-| `summoner:test-engineer` | Test coverage analysis, Prove-It checks, ship fan-out |
-| `summoner:debug-agent` | Root cause analysis, stack trace diagnosis, error pattern matching |
+(M) = iron law. Framework phase sequences cover fix/new/debug today;
+review/ship/ops/release runs record via run-start and take their phase route
+from the project manifest (manifest check registry task formalizes it).
 
 ## References
 
-- `commands/<name>.md` — Workflow-specific rules and rationalizations
-- `references/workflow-reference.md` — Full workflow definitions, auto-skip, rationalizations, red flags, verification
-- `references/checkpoint-protocol.md` — Checkpoint output format and interrupt signal grammar
-- `references/post-game-review.md` — 5-type questionnaire, journal, and memory write protocol
-- `references/memory-chain.md` — Memory retrieval (read at Phase 0) and write protocols
-- `references/no-manifest-flow.md` — No-manifest menu + post-menu execution (read only when summoner.yaml is missing)
-- `references/graph-mode.md` — Walker directive loop (read only when the plan carries a summoner-task-graph block)
-- `references/manifest-spec.md` — summoner.yaml field specification
-- `references/persona-composition.md` — Persona composition rules and anti-patterns
+- `commands/<name>.md` — per-workflow rules
+- `references/checkpoint-protocol.md` — canonical checkpoint render + decision channel (CANONICAL, never inline a variant)
+- `references/workflow-reference.md` — auto-skip table, rationalizations, red flags, ship merge report
+- `references/post-game-review.md` — questionnaire, journal, memory write protocol
+- `references/memory-chain.md` — memory retrieval/write protocols
+- `references/manifest-spec.md` — summoner.yaml fields
+- `skills/phase-submit/SKILL.md` — the submission payload contract

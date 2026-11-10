@@ -25,6 +25,11 @@
       "name": "auto-setup-summoner",
       "path": "skills/auto-setup-summoner/SKILL.md",
       "description": "Automatically guide user to initialize Summoner when summoner.yaml is missing. Use when a /summoner:* command is invoked without summoner.yaml, or the SessionStart hook reports the project is not initialized."
+    },
+    {
+      "name": "phase-submit",
+      "path": "skills/phase-submit/SKILL.md",
+      "description": "ONLY to submit a completed phase result — invoke when a phase's work is done; never for anything else. Not user-invocable; it is the main session's single submission channel to the checkpoint protocol."
     }
   ],
   "agents": [
@@ -58,17 +63,17 @@
     {
       "name": "summoner:fix",
       "path": "commands/fix.md",
-      "description": "Bug fix full pipeline: diagnose → reproduce → fix → verify → review. DEFAULT for 排查-type phrases ('帮我排查这个 bug') — route here unless the user explicitly wants diagnosis only (then /summoner:debug). Triggers: '线上报错', '帮我排查这个 bug 并修好', '登录失败了修一下'"
+      "description": "Bug fix full pipeline: context → diagnosis (iron law) → reproduce → fix → regression → review, each phase closing at a user-verified checkpoint. DEFAULT for 排查-type phrases ('帮我排查这个 bug') — route here unless the user explicitly wants diagnosis only (then /summoner:debug). Triggers: '线上报错', '帮我排查这个 bug 并修好', '登录失败了修一下'"
     },
     {
       "name": "summoner:new",
       "path": "commands/new.md",
-      "description": "New feature full pipeline: define → plan → implement → test → review. Triggers: '新增一个子系统', 'add knight mode feature', '加一个排行榜功能'"
+      "description": "New feature full pipeline: context → requirements → plan → implement → verify → review, each phase closing at a user-verified checkpoint. Triggers: '新增一个子系统', 'add knight mode feature', '加一个排行榜功能'"
     },
     {
       "name": "summoner:ship",
       "path": "commands/ship.md",
-      "description": "Pre-launch review: adaptive fan-out 1-3 personas in parallel → merge → go/no-go. Triggers: '准备发版', 'review before merge', '上线前检查'"
+      "description": "Pre-launch review: one independent reviewer over the full rubric → merge report → go/no-go. Sensitive changes add criteria, not reviewers. Triggers: '准备发版', 'review before merge', '上线前检查'"
     },
     {
       "name": "summoner:debug",
@@ -83,12 +88,17 @@
     {
       "name": "summoner:review",
       "path": "commands/review.md",
-      "description": "Standalone code review via code-reviewer persona without other phases. Triggers: 'review 一下这个改动', '帮我看看这段代码有什么问题'"
+      "description": "Standalone code review via the verification_spec route — one independent reviewer, no code changes. Triggers: 'review 一下这个改动', '帮我看看这段代码有什么问题'"
     },
     {
       "name": "summoner:release",
       "path": "commands/release.md",
       "description": "Version release workflow: version planning → changelog → release execution. Triggers: '发版', 'release 0.1.x', 'publish a new version'"
+    },
+    {
+      "name": "summoner:status",
+      "path": "commands/summoner-status.md",
+      "description": "Read-only status view of the current run — phase route, pending checkpoint, budget, sandbox tier. Renders via hooks/bin/summoner-status; never mutates state. Triggers: '当前进度', 'run status', '检查点状态'"
     }
   ]
 }

@@ -19,6 +19,7 @@ Available via slash commands in `.gemini/commands/`:
 | `/summoner:ops` | ops skill (delegated) |
 | `/summoner:review` | code review standalone |
 | `/summoner:release` | version-plan→changelog→release-execution |
+| `/summoner:status` | read-only run status view |
 
 Command bodies in `.gemini/commands/*.toml` are POINTERS to the canonical
 `skills/summoner/SKILL.md` + `commands/<name>.md` — never a paraphrase.

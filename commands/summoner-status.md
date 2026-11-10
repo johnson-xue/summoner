@@ -1,0 +1,39 @@
+---
+description: 只读状态视图 — 渲染当前 run 的阶段路线/visit 状态/已验产物版本/未满足标准/等待谁/默认 recall/预算余量/沙箱档位；有 pending checkpoint 时附检查点块。只读，不改任何状态。
+allowed-tools:
+  - Bash("${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}')
+  - Bash("${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{"session_id":"*"}')
+---
+
+# /summoner:status
+
+Read-only viewer. It never starts, advances, or mutates a run — rendering only.
+
+## Steps
+
+1. Run exactly this and nothing else (read-only; `{}` resolves the project's
+   single live run when the session id is unknown):
+
+   ```
+   "${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}'
+   ```
+
+   When the session id is known (e.g. quoted from a hook message), pass it:
+
+   ```
+   "${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{"session_id":"<id>"}'
+   ```
+
+2. **Paste the binary's output VERBATIM into your reply.** Never summarize,
+   reformat, or hand-write a status or checkpoint render — the canonical format
+   lives in `references/checkpoint-protocol.md`, and a pending checkpoint's
+   block (its id + nonce) is what display verification binds to.
+
+3. Interpret for the user, briefly, below the pasted block: what is awaited
+   (their decision / a reviewer / reconciliation probes), unmet criteria, and
+   budget remaining. If the output names multiple live runs, relay all names —
+   the viewer refuses to guess, and so must you.
+
+Exit 2 from the binary means unreadable input only; any state problem is
+printed in the output itself. Nothing here advances the run: decisions go
+through AskUserQuestion at a rendered checkpoint, never through this command.
