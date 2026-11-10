@@ -688,6 +688,73 @@ func (r *RunState) clearDroppedCriteria(criteria []string) {
 	r.CriteriaDrops = kept
 }
 
+// RecordCriteriaDrop records ONE user-explicit criterion drop observed in a
+// decision call's drop:/keep: ride-along (spec §3 冻结验收视图: 信封 criteria
+// 集 = 冻结集 − 有记录的用户显式 drop——逐 id、逐次决定). Drops are an
+// observation of the DECISION channel: legal only in WAIT_USER, at the
+// CURRENT checkpoint (a superseded checkpoint is by definition not current),
+// after its display was bound, and only for an id among that checkpoint's
+// pending criteria ∪ the frozen acceptance view. The entry carries the
+// platform tool_use_id of the answering call — the same binding decisions
+// get. Re-dropping an id ALREADY dropped at this checkpoint is an idempotent
+// no-op ((false, nil), nothing re-recorded — a replayed callback re-observes
+// the same answer); a LATER checkpoint may drop the same id again. This
+// method never clears: a subsequent accepting decision re-accepts the
+// criterion and clears the entry through decidePhase → clearDroppedCriteria.
+func (r *RunState) RecordCriteriaDrop(checkpointID, criterionID, toolUseID string) (recorded bool, err error) {
+	if criterionID == "" {
+		return false, errors.New("RecordCriteriaDrop: criterion id is required")
+	}
+	if toolUseID == "" {
+		return false, errors.New("RecordCriteriaDrop: tool_use_id is required (the drop binds to the answering AskUserQuestion call)")
+	}
+	recorded = false
+	err = r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusWaitUser, "RecordCriteriaDrop"); err != nil {
+			return err
+		}
+		cur := s.CurrentCheckpoint()
+		if cur == nil {
+			return errors.New("RecordCriteriaDrop: no open checkpoint")
+		}
+		if cur.ID != checkpointID {
+			return fmt.Errorf("RecordCriteriaDrop: checkpoint %q is not the open checkpoint %q", checkpointID, cur.ID)
+		}
+		if !cur.Displayed {
+			return fmt.Errorf("RecordCriteriaDrop: checkpoint %s is not displayed (a drop rides a display-verified ask)", checkpointID)
+		}
+		legal := containsID(cur.CriteriaIDs, criterionID)
+		if !legal {
+			for _, fr := range s.AcceptanceView().Requirements {
+				if containsID(fr.CriteriaIDs, criterionID) {
+					legal = true
+					break
+				}
+			}
+		}
+		if !legal {
+			return fmt.Errorf("RecordCriteriaDrop: criterion %q is neither among the checkpoint's criteria (%v) nor the frozen acceptance view", criterionID, cur.CriteriaIDs)
+		}
+		for _, d := range s.CriteriaDrops {
+			if d.ID == criterionID && d.CheckpointID == checkpointID {
+				return nil // per id per checkpoint: idempotent re-observation
+			}
+		}
+		s.CriteriaDrops = append(s.CriteriaDrops, CriteriaDrop{
+			ID:           criterionID,
+			At:           nowUTC(),
+			CheckpointID: checkpointID,
+			ToolUseID:    toolUseID,
+		})
+		recorded = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
+}
+
 // planRecall resolves the recall target — the most recent accepted prior
 // phase visit (spec §4 default), or the checkpoint's own phase when none
 // exists.
@@ -1384,6 +1451,54 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 		return err
 	}
 	return protocolErr
+}
+
+// RecordReviewProtocolError routes a reviewer protocol error the result
+// recorder could not accept — T17's evidence reconciliation failures (a
+// claimed evidence id that is not a tool_use record of the reviewer's own
+// transcript: forged evidence, spec §3 证据对账). It is the mirror of
+// RecordReviewResult's landed problem path: the in-flight review
+// (PREPARED/RUNNING) is marked FAILED, the failure routes to a REVIEW_RESULT
+// checkpoint so the run stays decidable (WAIT_USER), and the routing IS
+// persisted — the returned error reports the problem AFTER the state is
+// durable. Returns (routed, err): routed=true means the FAILED routing
+// persisted (err then carries the problem for the caller to trace/log);
+// routed=false means nothing was routed and err says why (illegal status,
+// unknown or already-concluded review, or a failed Save — commit rollback
+// leaves memory and disk untouched).
+func (r *RunState) RecordReviewProtocolError(reviewID, reason string) (bool, error) {
+	if reason == "" {
+		return false, errors.New("RecordReviewProtocolError: reason is required")
+	}
+	var problem error
+	err := r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusReviewPending, "RecordReviewProtocolError"); err != nil {
+			return err
+		}
+		rv := s.findReview(reviewID)
+		if rv == nil {
+			return fmt.Errorf("RecordReviewProtocolError: unknown review %q", reviewID)
+		}
+		if rv.Status != ReviewPrepared && rv.Status != ReviewRunning {
+			return fmt.Errorf("RecordReviewProtocolError: review %s already concluded (%s) — late protocol errors must not affect a concluded review", reviewID, rv.Status)
+		}
+		rv.Status = ReviewFailed
+		rv.ConcludedAt = nowUTC()
+		// Same recoverability contract as RecordReviewResult's problem path:
+		// a protocol error must not brick the run — route it to a checkpoint
+		// a human can still decide, persist that routing, then report.
+		cp, err := s.addCheckpoint(CheckpointReviewResult, "", "FAILED "+reason, nil, nil)
+		if err != nil {
+			return err
+		}
+		s.Status = StatusWaitUser
+		problem = fmt.Errorf("RecordReviewProtocolError: %s — review %s marked FAILED, routed to checkpoint %s", reason, reviewID, cp.ID)
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, problem
 }
 
 // --- OUTCOME_UNKNOWN recovery (spec §5) ---------------------------------------------

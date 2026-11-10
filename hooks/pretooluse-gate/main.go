@@ -108,7 +108,7 @@ func runGate(stdin io.Reader, errW io.Writer) int {
 		// No active Summoner run: not our business — unless the model is
 		// trying to drive the protocol without a run.
 		if in.ToolName == "Skill" {
-			if skill := stringField(in.ToolInput, "skill"); skill == skillPhaseSubmit || skill == skillChange {
+			if skill := stringField(in.ToolInput, "skill"); skill == skillPhaseSubmit || skill == skillChange || skill == skillReviewSubmit {
 				fmt.Fprintf(errW, "summoner gate: %s requires an active run — this session has none\n", skill)
 				return 2
 			}

@@ -233,6 +233,10 @@ type CriteriaDrop struct {
 	ID           string `json:"id"`
 	At           string `json:"at,omitempty"`
 	CheckpointID string `json:"checkpoint_id,omitempty"`
+	// ToolUseID binds the drop to the platform AskUserQuestion call whose
+	// drop: answer produced it (T17 ride-along channel) — the same binding
+	// DecisionToolUseID gives decisions.
+	ToolUseID string `json:"tool_use_id,omitempty"`
 }
 
 // CheckpointState is one human checkpoint (spec §4). A decision is accepted

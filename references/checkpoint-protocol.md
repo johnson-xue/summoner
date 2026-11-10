@@ -154,6 +154,35 @@ current phase (revise the work or the submission), then re-render the
 checkpoint and re-ask. Keyword cues: 方案/方向/漏了/不对/应该/边界/错了 (CN),
 wrong/misses/should/redo (EN). When in doubt, re-ask — never advance.
 
+### Drop ride-along questions (per-id criteria drops)
+
+The decision call may ALSO carry nonce-free **drop questions** — one per
+criterion the user might explicitly remove from the acceptance view
+(`信封 criteria 集 = 冻结集 − 显式 drop`, spec §3). They ride the SAME
+AskUserQuestion call as the nonce decision question; the gate admits the call
+untouched (its nonce predicate keys on the decision question), and
+PostToolUse records them:
+
+- **Shape**: exactly two options — `keep: <id>` (the default) and
+  `drop: <id>` — naming the SAME criterion id; the question text names the id
+  too. Question text must NOT carry the nonce (the nonce binds the decision
+  question). One criterion id per question; several questions may ride along.
+- **Legal ids**: the checkpoint's own pending criteria ∪ the frozen
+  acceptance view (dropping a frozen criterion at a LATER checkpoint is the
+  channel's purpose). Anything else is rejected.
+- **Recording order**: answered `drop:` entries record BEFORE the decision —
+  a `continue:` that re-accepts the criterion CLEARS its drop again
+  (acceptance governs; the drop ledger is per id per checkpoint, idempotent
+  under replay). `keep` and unanswered questions record nothing.
+- **Trace**: one `criterion.dropped` per newly recorded drop (checkpoint id +
+  criterion id + the platform tool_use_id of the answering call).
+- **Failure**: a malformed drop question (missing keep, mismatched ids,
+  nonce-carrying, foreign id) or a drop answer that is not one of the two
+  labels fails the WHOLE callback — `decision_rejected`, nothing recorded.
+- **Partial answers**: a drop answered while the decision question is not
+  answered records the drop observation and rejects the decision (the
+  checkpoint stays open).
+
 ## CHANGE_CONFIRM checkpoint (requirement-change close)
 
 A requirement change (CHANGE_OPEN) closes through ONE confirm checkpoint —

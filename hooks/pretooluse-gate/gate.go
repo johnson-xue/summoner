@@ -25,6 +25,13 @@ const skillPhaseSubmit = "summoner:phase-submit"
 // into the change loop).
 const skillChange = "summoner:change"
 
+// skillReviewSubmit is the envelope-registration micro-skill (T17, spec §3 ⑤):
+// its args are ONE review envelope (strict JSON) which the gate decodes,
+// validates against the run's frozen acceptance view minus recorded drops and
+// the project's check registry, then registers through RequestReview — legal
+// only in REVIEW_PENDING (a [v] decision's obligation or the 终局⑤ path).
+const skillReviewSubmit = "summoner:review-submit"
+
 // decision is decide()'s verdict: allow with an effect plan, or deny with a
 // human-readable reason (the exit-2 stderr text). A deny may also carry a
 // submission rejection to trace: phase_submitted.rejected is the record of
@@ -50,6 +57,7 @@ type effects struct {
 	submit        *shared.PhaseSubmission  // SubmitPhase payload (ruling 6)
 	delegation    string                   // subagent_type — StartDelegation + delegation.started
 	delegateRevID string                   // review_id bound to the delegation, when reviewer
+	reviewSubmit  *shared.Envelope         // RequestReview + review.prepared (summoner:review-submit)
 	changeOpen    *changeOpenEffect        // OpenRequirementChangeAt + change.opened (summoner:change open)
 	changeApply   *shared.RequirementDelta // ApplyRequirementDelta + change.delta_applied (summoner:change apply)
 }
@@ -133,6 +141,10 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		return decideChangeSkill(in, run)
 	}
 
+	if skill == skillReviewSubmit {
+		return decideReviewSubmit(in, run)
+	}
+
 	if skill == skillPhaseSubmit {
 		args, ok := in.ToolInput["args"].(string)
 		if !ok {
@@ -144,6 +156,15 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		}
 		if sub.PhaseID == "" {
 			return denySubmit("", "Summoner gate: summoner:phase-submit payload requires phase_id.")
+		}
+		// T17 standalone-review scope freeze: on the standalone review/ship
+		// routes the pre-review phase's submission IS the scope freeze — its
+		// criteria must come from the effective verification_spec, or the run
+		// would freeze a scope no rubric can verify.
+		if entry := standaloneReviewEntryPhase(run.Workflow); entry != "" && sub.PhaseID == entry {
+			if reason := checkReviewScopeCriteria(sub.CriteriaIDs); reason != "" {
+				return denySubmit(sub.PhaseID, reason)
+			}
 		}
 		eff := &effects{submit: &sub}
 		// Ruling 3 fallback: with no open phase, auto-open the payload's
@@ -264,6 +285,110 @@ func decideChangeSkill(in *gateInput, run *shared.RunState) decision {
 	default:
 		return deny(fmt.Sprintf("Summoner gate: summoner:change subcommand must be open or apply, got %q.", sub))
 	}
+}
+
+// decideReviewSubmit maps Skill(summoner:review-submit) onto the envelope
+// channel (T17): decode the args strictly, validate the envelope against the
+// run's frozen acceptance view minus recorded drops with the project manifest's
+// check registry, and hand the envelope to apply() for the reducer-first
+// registration (RequestReview → review.prepared). Legal ONLY in
+// REVIEW_PENDING; every payload-shape or validation failure is an exit-2
+// denial ONLY — untraced (standing ruling: non-phase-submit denials are
+// untraced). The WAIT_USER discipline in decideSkill already refuses the
+// channel while a checkpoint is pending.
+func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
+	if run.Status != shared.StatusReviewPending {
+		return deny(fmt.Sprintf(
+			"Summoner gate: summoner:review-submit is the envelope registration channel and is legal only in REVIEW_PENDING (a [v] decision's obligation or the 终局⑤ path), status is %s.",
+			run.Status))
+	}
+	args, ok := in.ToolInput["args"].(string)
+	if !ok {
+		return deny("Summoner gate: summoner:review-submit requires args — a JSON string carrying the review envelope (skills/review-submit/SKILL.md).")
+	}
+	env, err := shared.DecodeEnvelope([]byte(args))
+	if err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit args is not a valid review envelope: %v", err))
+	}
+	// Belt for the reducer's in-flight rule: a NEW review id while another
+	// review is PREPARED/RUNNING is refused with the rule's own words (the
+	// reducer's status gate would otherwise mask it in REVIEW_PENDING without
+	// an outstanding obligation). A re-send of the IN-FLIGHT review's own
+	// envelope stays idempotent (RequestReview's fast path).
+	for i := range run.Reviews {
+		rv := &run.Reviews[i]
+		if (rv.Status == shared.ReviewPrepared || rv.Status == shared.ReviewRunning) && rv.ReviewID != env.ReviewID {
+			return deny(fmt.Sprintf(
+				"Summoner gate: summoner:review-submit refused — review %s is still in flight (one review at a time); re-send ITS envelope idempotently or conclude it before requesting another.",
+				rv.ReviewID))
+		}
+	}
+	// The check registry comes from the project manifest; a corrupt manifest
+	// fails CLOSED — the registry must never silently degrade to empty and
+	// let a mechanical criterion through unfrozen.
+	var registry []shared.CheckDef
+	if m, err := shared.LoadRuntimeManifest(); err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit cannot load the project manifest: %v", err))
+	} else if m != nil {
+		registry = m.CheckRegistry
+	}
+	if err := shared.ValidateEnvelope(env, run.AcceptanceView(), run.CriteriaDrops, registry); err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit envelope rejected: %v", err))
+	}
+	return allow(&effects{reviewSubmit: &env})
+}
+
+// standaloneReviewEntryPhase returns the phase id whose submission freezes the
+// standalone review scope: the phase immediately before "review" on the
+// STANDALONE review/ship routes only (context / prepare). The dev routes
+// (fix/new) embed their review phase after project-shaped work — their
+// acceptance view is not review-rubric-shaped and is not constrained here.
+func standaloneReviewEntryPhase(workflow string) string {
+	if workflow != "review" && workflow != "ship" {
+		return ""
+	}
+	seq, err := shared.WorkflowPhases(workflow)
+	if err != nil {
+		return ""
+	}
+	for i, id := range seq {
+		if id == "review" && i > 0 {
+			return seq[i-1]
+		}
+	}
+	return ""
+}
+
+// checkReviewScopeCriteria validates one standalone-review scope submission
+// against the effective verification_spec: the framework default full-rubric
+// set PLUS the project manifest's declared additions (a manifest extends the
+// default axes, never replaces them — references/manifest-spec.md). A missing
+// manifest is the no-manifest flow (defaults only); an unparseable one fails
+// CLOSED. Returns "" when every criterion id is in the effective set.
+func checkReviewScopeCriteria(ids []string) string {
+	allowed := shared.DefaultReviewCriteriaIDs()
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil {
+		return fmt.Sprintf("Summoner gate: summoner:phase-submit cannot verify the review scope — the project manifest is unparseable (fail-closed): %v", err)
+	}
+	if m != nil {
+		allowed = append(allowed, m.ReviewCriteriaIDs...)
+	}
+	for _, id := range ids {
+		known := false
+		for _, a := range allowed {
+			if a == id {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Sprintf(
+				"Summoner gate: summoner:phase-submit criterion %q is not in the effective verification_spec (the framework default full-rubric axes plus the manifest's declared additions) — a standalone review may only freeze criteria the rubric can verify (references/manifest-spec.md).",
+				id)
+		}
+	}
+	return ""
 }
 
 // decideWrite — the write-eligibility matrix (ruling 4). POST_GAME_PENDING
@@ -561,6 +686,38 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		}
 		if err := appendAll(events); err != nil {
 			return err // state already moved (WAIT_USER at the confirm checkpoint) — deny fail-closed
+		}
+		run.CountToolCall()
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+			return err
+		}
+		return nil
+	}
+
+	// --- review-submit path (summoner:review-submit): reducer first, like the
+	// submit path — a reducer rejection (illegal status, envelope/consumption
+	// problems the pre-checks could not see) consumes nothing, leaves NO trace
+	// (standing ruling: non-phase-submit denials untraced) and denies with its
+	// reason. On success tool.started + review.prepared append (exactly one
+	// review.prepared per successful call), then the budget counter.
+	if eff != nil && eff.reviewSubmit != nil {
+		if _, err := run.RequestReview(*eff.reviewSubmit); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: summoner:review-submit rejected — %v\n", err)
+			return err
+		}
+		events := []shared.TraceEvent{
+			{
+				Type:    shared.EventToolStarted,
+				Payload: map[string]interface{}{"tool_name": in.ToolName},
+			},
+			{
+				Type:    shared.EventReviewPrepared,
+				Payload: map[string]interface{}{"review_id": eff.reviewSubmit.ReviewID},
+			},
+		}
+		if err := appendAll(events); err != nil {
+			return err // state already moved (REVIEW_PENDING) — deny fail-closed
 		}
 		run.CountToolCall()
 		if err := run.Save(); err != nil {

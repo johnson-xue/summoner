@@ -126,12 +126,35 @@ func passingResult(revID string) shared.ReviewResult {
 }
 
 // writeTranscript writes a small hand-written agent transcript (JSONL, the
-// platform's agent_transcript_path shape) whose SubagentHandback tool_use
-// blocks carry the given messages, in order.
+// platform's agent_transcript_path shape): one REAL evidence tool_use (the
+// reviewer reading an artifact — the id a well-formed result cites in
+// evidence_tool_call_ids) followed by SubagentHandback tool_use blocks that
+// carry the given messages, in order.
 func writeTranscript(t *testing.T, handbackMsgs ...string) string {
 	t.Helper()
 	var b strings.Builder
 	b.WriteString(`{"type":"user","message":{"role":"user","content":"run the review envelope rev-x"}}` + "\n")
+	readLine := map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"role": "assistant",
+			"content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "verifying artifacts myself"},
+				map[string]interface{}{
+					"type":  "tool_use",
+					"id":    "toolu-rev-1",
+					"name":  "Read",
+					"input": map[string]interface{}{"file_path": "fix.md"},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(readLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Write(raw)
+	b.WriteByte('\n')
 	for i, msg := range handbackMsgs {
 		line := map[string]interface{}{
 			"type": "assistant",
@@ -639,4 +662,166 @@ func TestEscapeHatchBothBinaries(t *testing.T) {
 			t.Fatalf("no live run → no events, got %v", traceTypesOf(evs))
 		}
 	})
+}
+
+// --- T17: evidence reconciliation before acceptance --------------------------------
+
+// TestSubagentStopForgedEvidenceRoutesProtocolError: a claimed evidence id
+// that is NOT a tool_use record of the reviewer's own transcript is a forged
+// id (spec §3 证据对账) — ReconcileEvidence runs BEFORE the verdict is
+// accepted, the failure routes through RecordReviewProtocolError (FAILED +
+// REVIEW_RESULT checkpoint + WAIT_USER, persisted), review.failed is traced,
+// and the run stays decidable: the routed checkpoint accepts a decision.
+func TestSubagentStopForgedEvidenceRoutesProtocolError(t *testing.T) {
+	useSubagentEnv(t)
+	r := startRun(t)
+	startRunningReview(t, r, "rev-1")
+
+	// The transcript holds real tool_use ids toolu-rev-1 and toolu_hb_1; the
+	// result claims one real and one FORGED id.
+	res := passingResult("rev-1")
+	res.EvidenceToolCallIDs = []string{"toolu-rev-1", "toolu-forged-1"}
+	resJSON, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, string(resJSON))
+
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 — a routed protocol error never bricks the subagent (stderr: %q)", code, stderr)
+	}
+
+	disk := reloadRun(t, "run-1")
+	rv := reviewByID(t, disk, "rev-1")
+	if rv.Status != shared.ReviewFailed {
+		t.Fatalf("review status = %s, want FAILED (forged evidence id)", rv.Status)
+	}
+	if rv.Verdict != "" {
+		t.Fatalf("a FAILED review carries no verdict, got %q", rv.Verdict)
+	}
+	cp := disk.CurrentCheckpoint()
+	if cp == nil || cp.Kind != shared.CheckpointReviewResult || disk.Status != shared.StatusWaitUser {
+		t.Fatalf("after routing: status %s checkpoint %+v, want WAIT_USER at a REVIEW_RESULT checkpoint", disk.Status, cp)
+	}
+	if !strings.HasPrefix(cp.Note, "FAILED ") || !strings.Contains(cp.Note, "toolu-forged-1") {
+		t.Fatalf("checkpoint note %q must lead with FAILED and name the forged id", cp.Note)
+	}
+
+	evs := readTrace(t, "run-1")
+	failed := eventsOfType(evs, shared.EventReviewFailed)
+	if len(failed) != 1 {
+		t.Fatalf("review.failed events = %d, want 1 (trace: %v)", len(failed), traceTypesOf(evs))
+	}
+	if failed[0].Payload["review_id"] != "rev-1" || !strings.Contains(failed[0].Payload["reason"].(string), "toolu-forged-1") {
+		t.Fatalf("review.failed payload = %v, want rev-1 + the forged id in the reason", failed[0].Payload)
+	}
+	if n := len(eventsOfType(evs, shared.EventReviewVerdict)); n != 0 {
+		t.Fatalf("a forged-evidence result never records a verdict, got %d review.verdict", n)
+	}
+
+	// Decidable: decide the routed checkpoint like any other.
+	r = disk
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionStop, ""); err != nil {
+		t.Fatalf("the run must stay decidable after a forged-evidence protocol error: %v", err)
+	}
+	if after := reloadRun(t, "run-1"); after.Status != shared.StatusPostGamePending {
+		t.Fatalf("status = %s, want POST_GAME_PENDING after STOP at the FAILED checkpoint", after.Status)
+	}
+}
+
+// TestSubagentStopForgedEvidenceCrashWindow: the PREPARED crash window
+// reconciles identically — a forged id in a re-discovered result routes to
+// FAILED without a delegation ever having been recorded.
+func TestSubagentStopForgedEvidenceCrashWindow(t *testing.T) {
+	useSubagentEnv(t)
+	r := startRun(t)
+	if _, err := r.RequestReview(reviewEnvelope("rev-1")); err != nil {
+		t.Fatal(err)
+	}
+	res := passingResult("rev-1")
+	res.EvidenceToolCallIDs = []string{"toolu-forged-1"}
+	resJSON, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	disk := reloadRun(t, "run-1")
+	if rv := reviewByID(t, disk, "rev-1"); rv.Status != shared.ReviewFailed {
+		t.Fatalf("review = %s, want FAILED from the PREPARED crash window", rv.Status)
+	}
+	if disk.Status != shared.StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER at the routed checkpoint", disk.Status)
+	}
+}
+
+// TestSubagentStopLateDuplicateSkipsReconciliation: a late duplicate result
+// naming an ALREADY-concluded review while a new generation runs must not be
+// treated as a forged-evidence protocol error against the NEW review — the
+// result's review id gates reconciliation, and the refusal stays a refusal.
+func TestSubagentStopLateDuplicateSkipsReconciliation(t *testing.T) {
+	useSubagentEnv(t)
+	r := startRun(t)
+	startRunningReview(t, r, "rev-1")
+
+	// First result claims an id the transcript does not carry but names a
+	// review that is NOT the in-flight one — reconciliation is gated on the
+	// result's own review id; RecordReviewResult refuses the unknown id.
+	res := shared.ReviewResult{
+		ReviewID:            "rev-other",
+		RunStatus:           shared.ReviewRunCompleted,
+		Verdict:             shared.VerdictPass,
+		EvidenceToolCallIDs: []string{"toolu-forged-1"},
+	}
+	resJSON, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	disk := reloadRun(t, "run-1")
+	if rv := reviewByID(t, disk, "rev-1"); rv.Status != shared.ReviewRunning {
+		t.Fatalf("in-flight review = %s, want RUNNING untouched", rv.Status)
+	}
+	if disk.Status != shared.StatusReviewPending || disk.CurrentCheckpoint() != nil {
+		t.Fatalf("nothing must route for a foreign-id result: %s / %+v", disk.Status, disk.CurrentCheckpoint())
+	}
+	if n := len(eventsOfType(readTrace(t, "run-1"), shared.EventReviewFailed)); n != 0 {
+		t.Fatalf("review.failed events = %d, want 0", n)
+	}
+}
+
+// TestSubagentStopBlockedResultWithoutEvidencePasses: a BLOCKED result claims
+// no evidence ids (legitimate — BLOCKED reports a reason code, not a quality
+// conclusion); reconciliation is skipped and the result records normally.
+func TestSubagentStopBlockedResultWithoutEvidencePasses(t *testing.T) {
+	useSubagentEnv(t)
+	r := startRun(t)
+	startRunningReview(t, r, "rev-1")
+
+	res := shared.ReviewResult{ReviewID: "rev-1", RunStatus: shared.ReviewRunBlocked, ReasonCode: "sandbox-inactive"}
+	resJSON, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	disk := reloadRun(t, "run-1")
+	rv := reviewByID(t, disk, "rev-1")
+	if rv.Status != shared.ReviewBlocked || rv.ReasonCode != "sandbox-inactive" {
+		t.Fatalf("review = %+v, want BLOCKED with the reason code", rv)
+	}
+	if disk.Status != shared.StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER at the review-result checkpoint", disk.Status)
+	}
 }

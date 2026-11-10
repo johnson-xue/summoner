@@ -35,6 +35,11 @@
       "name": "change",
       "path": "skills/change/SKILL.md",
       "description": "ONLY to open or apply a requirement change in a live Summoner run; never for anything else. Not user-invocable; it is the main session's single channel into the requirement-change loop (open freezes the development position, apply submits the delta + impact)."
+    },
+    {
+      "name": "review-submit",
+      "path": "skills/review-submit/SKILL.md",
+      "description": "ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING); never for anything else. Not user-invocable; it is the main session's single envelope-registration channel (validates against the frozen acceptance view minus drops, consumes the [v] obligation, prepares the review)."
     }
   ],
   "agents": [

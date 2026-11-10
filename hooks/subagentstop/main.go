@@ -199,16 +199,41 @@ func runSubagentStop(stdin io.Reader, errW io.Writer) int {
 // review, illegal status, LATE duplicate of a concluded review) is a stderr
 // note — never an error for the subagent's exit.
 func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer) {
-	if inFlightReview(run) == nil {
+	rv := inFlightReview(run)
+	if rv == nil {
 		return // nothing to backfill: registration only
 	}
 	res, ok := parseReviewResult(in.TranscriptPath)
 	if !ok {
 		return // absent/unparseable: registration only
 	}
+	// T17 evidence reconciliation (spec §3 证据对账) runs BEFORE the verdict is
+	// accepted — and only for a result naming the IN-FLIGHT review (a late
+	// duplicate's ids are the old generation's business; its refusal stays
+	// RecordReviewResult's) and only when evidence ids are claimed (BLOCKED
+	// reports a reason code, not a quality conclusion — nothing to join). A
+	// forged id routes through RecordReviewProtocolError: FAILED + a
+	// review-result checkpoint the user can still decide, persisted.
+	if res.ReviewID == rv.ReviewID && len(res.EvidenceToolCallIDs) > 0 {
+		if problem := shared.ReconcileEvidence(res.EvidenceToolCallIDs, in.TranscriptPath); problem != nil {
+			routeReviewProtocolError(run, in, res.ReviewID, problem, errW)
+			return
+		}
+	}
 	if err := run.RecordReviewResult(res); err != nil {
 		fmt.Fprintf(errW, "summoner subagentstop: review backfill for %s refused (state untouched or routed per reducer) — late or invalid results never affect a new generation: %v\n",
 			res.ReviewID, err)
+		// RecordReviewResult's own protocol-error paths (enum violations, the
+		// rubber-stamp rule) land the review FAILED with the routing already
+		// persisted — record the same review.failed the reconciliation path
+		// does. Refusals that touched nothing (unknown id, late duplicate)
+		// leave no FAILED record and no event.
+		for i := range run.Reviews {
+			if run.Reviews[i].ReviewID == res.ReviewID && run.Reviews[i].Status == shared.ReviewFailed {
+				appendReviewFailed(run, in, res.ReviewID, err.Error(), errW)
+				break
+			}
+		}
 		return
 	}
 	payload := map[string]interface{}{
@@ -224,6 +249,36 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 		Payload: payload,
 	}); err != nil {
 		fmt.Fprintf(errW, "summoner subagentstop: review.verdict trace append failed (conclusion persisted): %v\n", err)
+	}
+}
+
+// routeReviewProtocolError concludes a review through the reducer's protocol
+// error path (FAILED + REVIEW_RESULT checkpoint + WAIT_USER, all persisted —
+// the run stays decidable) and traces review.failed. When the reducer refuses
+// to route (status changed underneath, review already concluded, failed Save)
+// nothing is traced and the review stays as it was — a stderr note only,
+// never an error for the subagent's exit.
+func routeReviewProtocolError(run *shared.RunState, in *subagentStopInput, reviewID string, problem error, errW io.Writer) {
+	routed, err := run.RecordReviewProtocolError(reviewID, problem.Error())
+	if !routed {
+		fmt.Fprintf(errW, "summoner subagentstop: protocol error for review %s NOT routed (state untouched, review stays in flight): %v\n", reviewID, err)
+		return
+	}
+	appendReviewFailed(run, in, reviewID, problem.Error(), errW)
+	fmt.Fprintf(errW, "summoner subagentstop: review %s marked FAILED and routed to a review-result checkpoint (the run stays decidable): %v\n", reviewID, err)
+}
+
+// appendReviewFailed records one review.failed event (failure persisted first).
+func appendReviewFailed(run *shared.RunState, in *subagentStopInput, reviewID, reason string, errW io.Writer) {
+	if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
+		Type:   shared.EventReviewFailed,
+		Source: subagentStopSource,
+		Payload: map[string]interface{}{
+			"review_id": reviewID,
+			"reason":    reason,
+		},
+	}); err != nil {
+		fmt.Fprintf(errW, "summoner subagentstop: review.failed trace append failed (FAILED routing persisted): %v\n", err)
 	}
 }
 

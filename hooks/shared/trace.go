@@ -55,6 +55,12 @@ const (
 	// the answer is never recorded, and the rejection is not a hook error.
 	EventCheckpointDecisionRejected = "checkpoint.decision_rejected"
 
+	// EventCriterionDropped records ONE user-explicit criterion drop observed
+	// in an AskUserQuestion call (spec §3 冻结验收视图, T17): the criterion
+	// leaves the acceptance view from this drop on. Emitted only when the
+	// reducer actually records a NEW entry (replays are idempotent and silent).
+	EventCriterionDropped = "criterion.dropped"
+
 	EventRecallApplied = "recall.applied"
 
 	EventChangeOpened       = "change.opened"
@@ -101,6 +107,7 @@ var allEventTypes = []string{
 	EventWorkflowStarted, EventWorkflowEnded, EventWorkflowAborted,
 	EventPhaseStarted, EventPhaseClosed, EventPhaseSubmittedRejected,
 	EventCheckpointOpened, EventCheckpointDisplayed, EventCheckpointDecided, EventCheckpointDecisionRejected,
+	EventCriterionDropped,
 	EventRecallApplied,
 	EventChangeOpened, EventChangeDeltaApplied, EventChangeResumed,
 	EventToolStarted, EventToolResult, EventToolFailed, EventToolOutcomeUnknown, EventToolResolved,

@@ -2112,3 +2112,320 @@ func TestOpenRequirementChangeAtSaveFailureAtomic(t *testing.T) {
 		t.Fatalf("disk after retry = %+v — the retry must persist the position for real", disk.Change)
 	}
 }
+
+// --- T17: per-id criteria drops + review protocol-error routing ------------------
+
+// openDecidableCheckpoint drives one accepted phase (its criteria frozen into
+// the acceptance view) and a second submitted+displayed checkpoint — the
+// state a drop ride-along answers in: frozen ids are droppable at the later
+// checkpoint, pending ids at their own checkpoint.
+func openDecidableCheckpoint(t *testing.T, r *RunState, frozen, pending []string) CheckpointState {
+	t.Helper()
+	openAndSubmit(t, r, "context", frozen...)
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	cp := openAndSubmit(t, r, "diagnosis", pending...)
+	displayCurrent(t, r)
+	return cp
+}
+
+// dropLedgerIDs lists the ledger's criterion ids in order.
+func dropLedgerIDs(r *RunState) []string {
+	ids := make([]string, 0, len(r.CriteriaDrops))
+	for _, d := range r.CriteriaDrops {
+		ids = append(ids, d.ID)
+	}
+	return ids
+}
+
+// TestRecordCriteriaDrop: the drop ledger records per id, bound to the
+// deciding checkpoint and the platform tool_use_id; ids outside checkpoint
+// criteria ∪ frozen view are rejected; per id per checkpoint the record is
+// idempotent (a replayed callback re-records nothing).
+func TestRecordCriteriaDrop(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	cp := openDecidableCheckpoint(t, r, []string{"crit-a", "crit-b"}, []string{"crit-b"})
+
+	// Unknown id: neither a pending criterion of this checkpoint nor in the
+	// frozen acceptance view.
+	if _, err := r.RecordCriteriaDrop(cp.ID, "crit-ghost", "tu-drop-0"); err == nil {
+		t.Fatal("RecordCriteriaDrop must reject an id outside checkpoint criteria ∪ frozen view")
+	}
+
+	// Drop a pending criterion of the deciding checkpoint.
+	recorded, err := r.RecordCriteriaDrop(cp.ID, "crit-b", "tu-drop-1")
+	if err != nil || !recorded {
+		t.Fatalf("RecordCriteriaDrop(crit-b) = (%v, %v), want (true, nil)", recorded, err)
+	}
+	// Drop a frozen-view-only criterion at this later checkpoint — the channel
+	// exists precisely to trim frozen criteria (信封 criteria 集 = 冻结集 − drops).
+	recorded, err = r.RecordCriteriaDrop(cp.ID, "crit-a", "tu-drop-2")
+	if err != nil || !recorded {
+		t.Fatalf("RecordCriteriaDrop(crit-a) = (%v, %v), want (true, nil)", recorded, err)
+	}
+	if ids := dropLedgerIDs(r); !reflect.DeepEqual(ids, []string{"crit-b", "crit-a"}) {
+		t.Fatalf("drop ledger = %v, want [crit-b crit-a]", ids)
+	}
+	for _, d := range r.CriteriaDrops {
+		if d.CheckpointID != cp.ID || d.At == "" || d.ToolUseID == "" {
+			t.Fatalf("ledger entry %+v must carry checkpoint id, timestamp and tool_use_id", d)
+		}
+	}
+
+	// Per-id idempotency at one checkpoint: the same callback replayed (same
+	// tool_use_id) and a genuinely new answer (different tool_use_id) both
+	// re-record nothing — the ledger is 逐 id、逐次决定, one entry per id per
+	// checkpoint.
+	for _, replay := range []string{"tu-drop-1", "tu-drop-9"} {
+		recorded, err := r.RecordCriteriaDrop(cp.ID, "crit-b", replay)
+		if err != nil || recorded {
+			t.Fatalf("re-drop of crit-b (%s) = (%v, %v), want (false, nil) — idempotent per id", replay, recorded, err)
+		}
+	}
+	if ids := dropLedgerIDs(r); len(ids) != 2 {
+		t.Fatalf("drop ledger after replays = %v, want still 2 entries", ids)
+	}
+
+	// A later checkpoint may drop the same id again (a fresh decision). SKIP
+	// decides cp without accepting anything (no clearing), then a fresh
+	// context/diagnosis cycle opens the next decidable checkpoint. The round-2
+	// context re-freeze REPLACES the context entry (last-entry-wins per phase
+	// id), so crit-a must ride the round-2 criteria to stay droppable.
+	if err := r.RecordDecision(cp.ID, DecisionSkip, "tu-dec-1"); err != nil {
+		t.Fatalf("RecordDecision(SKIP): %v", err)
+	}
+	cp2 := openDecidableCheckpoint(t, r, []string{"crit-a", "crit-d"}, []string{"crit-c"})
+	recorded, err = r.RecordCriteriaDrop(cp2.ID, "crit-a", "tu-drop-3")
+	if err != nil || !recorded {
+		t.Fatalf("RecordCriteriaDrop(crit-a) at the later checkpoint = (%v, %v), want (true, nil)", recorded, err)
+	}
+
+	// The envelope arithmetic follows: expected = frozen − drops. The frozen
+	// view is the LAST freeze per phase id — context→[crit-a, crit-d] (the
+	// round-2 re-acceptance replaced round-1's entry); the skipped diagnosis
+	// visits froze nothing. Drops: crit-b@cp1, crit-a@cp2 → survivors {crit-d}.
+	dropped := map[string]bool{}
+	for _, d := range r.CriteriaDrops {
+		dropped[d.ID] = true
+	}
+	var survivors []Criterion
+	for _, fr := range r.AcceptanceView().Requirements {
+		for _, id := range fr.CriteriaIDs {
+			if !dropped[id] {
+				survivors = append(survivors, Criterion{ID: id, Method: MethodJudgment})
+			}
+		}
+	}
+	if len(survivors) != 1 || survivors[0].ID != "crit-d" {
+		t.Fatalf("survivors = %v, want exactly [crit-d] (frozen − drops)", survivors)
+	}
+	env := Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-drop", ArtifactSet: []ArtifactRef{{Path: "x.md", Digest: "d"}}, ExitCriteria: survivors}
+	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {
+		t.Fatalf("envelope over frozen−drops must validate: %v", err)
+	}
+	env.ExitCriteria = nil
+	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err == nil {
+		t.Fatal("an envelope trimming a surviving frozen criterion must be rejected")
+	}
+}
+
+// TestRecordCriteriaDropLegality: the drop channel is the decision channel's
+// ride-along — WAIT_USER at the named CURRENT, DISPLAYED checkpoint only.
+func TestRecordCriteriaDropLegality(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+
+	// ACTIVE (no checkpoint pending): refused.
+	if _, err := r.RecordCriteriaDrop("cp-1", "crit-a", "tu-1"); err == nil {
+		t.Fatal("RecordCriteriaDrop outside WAIT_USER must be refused")
+	}
+
+	cp := openDecidableCheckpoint(t, r, []string{"crit-a"}, []string{"crit-a"})
+
+	// Wrong checkpoint id: refused.
+	if _, err := r.RecordCriteriaDrop("cp-99", "crit-a", "tu-2"); err == nil {
+		t.Fatal("RecordCriteriaDrop must refuse a checkpoint id that is not the open checkpoint")
+	}
+	_ = cp
+
+	// Undisplayed checkpoint: refused (the drop rides a display-verified ask).
+	r2 := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r2, "context", "crit-a")
+	if _, err := r2.RecordCriteriaDrop("cp-1", "crit-a", "tu-3"); err == nil {
+		t.Fatal("RecordCriteriaDrop must refuse an undisplayed checkpoint")
+	}
+
+	// Superseded checkpoint: refused (the change loop's re-render decides).
+	r3 := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r3, "context", "crit-a")
+	if err := r3.OpenRequirementChange("late break"); err != nil {
+		t.Fatalf("OpenRequirementChange: %v", err)
+	}
+	if _, err := r3.RecordCriteriaDrop("cp-1", "crit-a", "tu-4"); err == nil {
+		t.Fatal("RecordCriteriaDrop must refuse a superseded checkpoint")
+	}
+}
+
+// TestReacceptanceClearsRecordedDrop: a CONTINUE that re-accepts the dropped
+// id clears its ledger entry (decidePhase → clearDroppedCriteria — the T7
+// mechanism, invoked by the decision, not duplicated by the drop).
+func TestReacceptanceClearsRecordedDrop(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	cp := openDecidableCheckpoint(t, r, []string{"crit-a"}, []string{"crit-b"})
+
+	if recorded, err := r.RecordCriteriaDrop(cp.ID, "crit-b", "tu-drop-1"); err != nil || !recorded {
+		t.Fatalf("RecordCriteriaDrop = (%v, %v), want (true, nil)", recorded, err)
+	}
+	if ids := dropLedgerIDs(r); len(ids) != 1 {
+		t.Fatalf("drop ledger = %v, want one entry", ids)
+	}
+	if err := r.RecordDecision(cp.ID, DecisionContinue, "tu-dec-1"); err != nil {
+		t.Fatalf("RecordDecision(CONTINUE): %v", err)
+	}
+	if ids := dropLedgerIDs(r); len(ids) != 0 {
+		t.Fatalf("re-acceptance must clear the dropped id's ledger entry, got %v", ids)
+	}
+	// The frozen view still carries the re-accepted criterion: a later
+	// envelope must include it again.
+	env := Envelope{
+		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-clear",
+		ArtifactSet:  []ArtifactRef{{Path: "x.md", Digest: "d"}},
+		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}, {ID: "crit-b", Method: MethodJudgment}},
+	}
+	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {
+		t.Fatalf("re-accepted criterion must be back in the expected envelope set: %v", err)
+	}
+}
+
+// TestRecordReviewProtocolError: a reviewer protocol error that the result
+// recorder could not accept (forged evidence id) routes to FAILED + a
+// REVIEW_RESULT checkpoint + WAIT_USER, all persisted — the run stays
+// decidable (mirror of RecordReviewResult's landed problem path).
+func TestRecordReviewProtocolError(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	env := Envelope{
+		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr",
+		ArtifactSet:  []ArtifactRef{{Path: "fix.md", Digest: "d"}},
+		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}},
+	}
+	if _, err := r.RequestReview(env); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if err := r.StartDelegation("rev-perr", true); err != nil {
+		t.Fatalf("StartDelegation: %v", err)
+	}
+
+	routed, err := r.RecordReviewProtocolError("rev-perr", `evidence reconciliation: evidence id "forged" is not a tool_use record — forged evidence id (spec §3)`)
+	if err == nil || !routed {
+		t.Fatalf("RecordReviewProtocolError = (%v, %v), want (true, non-nil problem)", routed, err)
+	}
+	rv := r.findReview("rev-perr")
+	if rv == nil || rv.Status != ReviewFailed || rv.ConcludedAt == "" {
+		t.Fatalf("review record = %+v, want FAILED with concluded_at", rv)
+	}
+	cp := r.CurrentCheckpoint()
+	if cp == nil || cp.Kind != CheckpointReviewResult || r.Status != StatusWaitUser {
+		t.Fatalf("after routing: status %s checkpoint %+v, want WAIT_USER at a REVIEW_RESULT checkpoint", r.Status, cp)
+	}
+	if !strings.HasPrefix(cp.Note, "FAILED ") {
+		t.Fatalf("checkpoint note %q must lead with FAILED", cp.Note)
+	}
+	// Decidable: the routed checkpoint accepts a decision like any other.
+	if err := r.MarkDisplayed(cp.ID, CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, DecisionContinue, "tu-dec-1"); err != nil {
+		t.Fatalf("the run must stay decidable after a protocol error: %v", err)
+	}
+	if r.Status != StatusActive {
+		t.Fatalf("status = %s, want ACTIVE after deciding the FAILED checkpoint", r.Status)
+	}
+}
+
+// TestRecordReviewProtocolErrorLegality: nothing routes when the review is
+// unknown, already concluded, or the run is not REVIEW_PENDING — state stays
+// untouched.
+func TestRecordReviewProtocolErrorLegality(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+
+	// ACTIVE: nothing in flight.
+	routed, err := r.RecordReviewProtocolError("rev-x", "problem")
+	if routed || err == nil {
+		t.Fatalf("ACTIVE routing = (%v, %v), want (false, error)", routed, err)
+	}
+	if r.Status != StatusActive || len(r.Checkpoints) != 0 {
+		t.Fatalf("state must stay untouched, got %s / %d checkpoints", r.Status, len(r.Checkpoints))
+	}
+
+	env := Envelope{
+		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr",
+		ArtifactSet:  []ArtifactRef{{Path: "fix.md", Digest: "d"}},
+		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}},
+	}
+	if _, err := r.RequestReview(env); err != nil {
+		t.Fatal(err)
+	}
+	// Unknown review id.
+	routed, err = r.RecordReviewProtocolError("rev-ghost", "problem")
+	if routed || err == nil {
+		t.Fatalf("unknown review routing = (%v, %v), want (false, error)", routed, err)
+	}
+	// Conclude the review, then route again: refused, state unchanged.
+	if err := r.StartDelegation("rev-perr", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-perr", RunStatus: ReviewRunCompleted, Verdict: VerdictNeedsFix}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(r.Checkpoints)
+	routed, err = r.RecordReviewProtocolError("rev-perr", "problem")
+	if routed || err == nil {
+		t.Fatalf("concluded review routing = (%v, %v), want (false, error)", routed, err)
+	}
+	if len(r.Checkpoints) != before || r.Status != StatusWaitUser {
+		t.Fatal("a refused routing must not mutate the run")
+	}
+}
+
+// TestRecordReviewProtocolErrorSaveFailureAtomic: a failed Save routes
+// nothing — memory and disk keep the review RUNNING (commit rollback).
+func TestRecordReviewProtocolErrorSaveFailureAtomic(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block writes")
+	}
+	r := startTestRun(t, BudgetLimits{})
+	env := Envelope{
+		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr",
+		ArtifactSet:  []ArtifactRef{{Path: "fix.md", Digest: "d"}},
+		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}},
+	}
+	if _, err := r.RequestReview(env); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.StartDelegation("rev-perr", true); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	routed, err := r.RecordReviewProtocolError("rev-perr", "problem")
+	if routed || err == nil {
+		t.Fatalf("blocked-save routing = (%v, %v), want (false, error)", routed, err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod repair: %v", err)
+	}
+	if rv := r.findReview("rev-perr"); rv == nil || rv.Status != ReviewRunning {
+		t.Fatalf("memory after failed Save: review = %+v — commit must roll back", rv)
+	}
+	if r.Status != StatusReviewPending || r.CurrentCheckpoint() != nil {
+		t.Fatalf("memory after failed Save: %s / %+v — nothing routed", r.Status, r.CurrentCheckpoint())
+	}
+	disk, err := LoadRun("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rv := disk.findReview("rev-perr"); rv == nil || rv.Status != ReviewRunning {
+		t.Fatalf("disk after failed Save: review = %+v", rv)
+	}
+}

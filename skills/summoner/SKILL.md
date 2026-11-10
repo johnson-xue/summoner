@@ -179,6 +179,15 @@ request is nonce-free content feedback — record nothing, re-ask with the
 other page. Exactly ONE nonce-carrying question per call: two or more fail
 closed (decision_rejected, nothing recorded).
 
+## The review channel
+
+After a `[v]` (REVIEW_PENDING): register the review via
+`Skill(summoner:review-submit, args=<envelope JSON>)` — payload contract in
+`skills/review-submit/SKILL.md`; then `Agent(reviewer)` carrying the PREPARED
+id. Claimed evidence ids are reconciled against the reviewer's transcript
+before any verdict (forged → review FAILED, run decidable). `drop: <id>` /
+`keep: <id>` ride-alongs record per-id drops (`criterion.dropped`).
+
 ## Phase 0 memory (the `context` phase)
 
 Before first domain work in any workflow: read `project.name` from

@@ -46,10 +46,12 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 
 	// 1. Find the decision question: the tool_input question whose text
 	// carries the CURRENT checkpoint's nonce (the gate enforced this before
-	// the question was asked; re-verify).
+	// the question was asked; re-verify). T17: its rejection is DEFERRED to
+	// step 5 — the drop ride-along channel records answered drops even in a
+	// callback the gate would never have admitted (partial-answer semantics).
 	q, notFound := findDecisionQuestion(run, cp, in.ToolInput)
-	if q == nil {
-		return reject(notFound)
+	if q != nil {
+		notFound = ""
 	}
 
 	// 2. The answer object must be the platform-injected shape.
@@ -69,10 +71,52 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		return reject("dialog auto-resolved by afk timeout (afkTimeoutMs present) — not a human decision")
 	}
 
-	// 5. The chosen answer must exist for exactly the decision question.
-	answers, ok := resp[fieldAnswers].(map[string]interface{})
-	if !ok {
-		return reject("tool_response carries no answers object")
+	// 4.5 The T17 drop ride-along channel: validate every drop question and
+	// drop ANSWER first (all-or-nothing — a malformed drop question fails the
+	// whole callback and records nothing), then record the answered drops
+	// BEFORE the decision: a CONTINUE that re-accepts a dropped criterion
+	// clears its ledger entry (decidePhase → clearDroppedCriteria in the
+	// reducer), which requires the drop to land first. keep is the default
+	// and records nothing; an unanswered drop question records nothing.
+	drops, problem := parseDropQuestions(run, cp, in.ToolInput)
+	if problem != "" {
+		return reject(problem)
+	}
+	answers, hasAnswers := resp[fieldAnswers].(map[string]interface{})
+	if hasAnswers {
+		if problem := validateDropAnswers(drops, answers); problem != "" {
+			return reject(problem)
+		}
+	}
+	for _, dq := range drops {
+		ans, _ := answers[dq.text].(string)
+		if ans == "" || ans == dq.keepLabel {
+			continue // unanswered or keep (the default): nothing to record
+		}
+		// ans == dq.dropLabel — validated above.
+		recorded, err := run.RecordCriteriaDrop(cp.ID, dq.id, in.ToolUseID)
+		if err != nil {
+			return reject(err.Error())
+		}
+		if !recorded {
+			continue // idempotent replay: the observation is already on disk
+		}
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type: shared.EventCriterionDropped,
+			Payload: map[string]interface{}{
+				"checkpoint_id": cp.ID,
+				"criterion_id":  dq.id,
+			},
+		}, errW); err != nil {
+			return 2
+		}
+	}
+
+	// 5. The chosen answer must exist for exactly the decision question —
+	// the deferred step-1 rejection lands here (after the drop channel), so a
+	// drop-only callback records its drops and still refuses the decision.
+	if q == nil {
+		return reject(notFound)
 	}
 	answer, ok := answers[q.text].(string)
 	if !ok || answer == "" {
@@ -172,6 +216,160 @@ func findDecisionQuestion(run *shared.RunState, cp *shared.CheckpointState, tool
 		}
 	}
 	return nil, fmt.Sprintf("no question carries the current checkpoint %s nonce %s — the answer cannot bind to the checkpoint", cp.ID, cp.Nonce)
+}
+
+// --- T17: the drop:/keep: ride-along channel ----------------------------------------
+
+// dropQuestion is one parsed nonce-free drop question: the criterion id it
+// offers and its two option labels (keep is the default, drop the explicit
+// drop), keyed by the question's full text (the answers map key).
+type dropQuestion struct {
+	id        string
+	text      string
+	keepLabel string
+	dropLabel string
+}
+
+// parseDropQuestions extracts and validates every drop question of the call
+// ("" problem = all well-formed). A question is a DROP question iff any option
+// label leads with the keyword drop or keep — the same leading-keyword rule
+// the decision labels obey; nonce-free by construction (a drop question
+// carrying the nonce is malformed: the nonce binds the DECISION question).
+// Shape contract: exactly two options, `drop: <id>` and `keep: <id>` naming
+// ONE id (the question text must contain it), and the id must be droppable at
+// this checkpoint — among the checkpoint's criteria or the frozen acceptance
+// view (pure pre-check; RecordCriteriaDrop re-validates inside its commit).
+// Any violation rejects the WHOLE callback (keep-default enforcement): a
+// malformed drop question must not launder a decision or a drop past the
+// channel.
+func parseDropQuestions(run *shared.RunState, cp *shared.CheckpointState, toolInput map[string]interface{}) ([]dropQuestion, string) {
+	qs, _ := toolInput[fieldQuestions].([]interface{})
+	var drops []dropQuestion
+	for _, raw := range qs {
+		m, _ := raw.(map[string]interface{})
+		if m == nil {
+			continue
+		}
+		options, _ := m[fieldOptions].([]interface{})
+		text, _ := m[fieldQuestion].(string)
+		// Detection: any option leading with drop/keep marks the question.
+		isDrop := false
+		for _, opt := range options {
+			om, _ := opt.(map[string]interface{})
+			label, _ := om[fieldLabel].(string)
+			switch labelKeyword(label) {
+			case "drop", "keep":
+				isDrop = true
+			}
+			if isDrop {
+				break
+			}
+		}
+		if !isDrop {
+			continue
+		}
+		var id, keepLabel, dropLabel string
+		for _, opt := range options {
+			om, _ := opt.(map[string]interface{})
+			label, _ := om[fieldLabel].(string)
+			keyword, rest := splitLabelKeyword(label)
+			switch keyword {
+			case "drop":
+				if dropLabel != "" {
+					return nil, fmt.Sprintf("drop question %q carries two drop: options — exactly one drop: and one keep: naming the same criterion id", truncate(text, 80))
+				}
+				dropLabel = label
+				if id == "" {
+					id = rest
+				} else if id != rest {
+					return nil, fmt.Sprintf("drop question %q offers drop: %s and keep: %s — the two options must name the SAME criterion id", truncate(text, 80), rest, id)
+				}
+			case "keep":
+				if keepLabel != "" {
+					return nil, fmt.Sprintf("drop question %q carries two keep: options — exactly one drop: and one keep: naming the same criterion id", truncate(text, 80))
+				}
+				keepLabel = label
+				if id == "" {
+					id = rest
+				} else if id != rest {
+					return nil, fmt.Sprintf("drop question %q offers drop: %s and keep: %s — the two options must name the SAME criterion id", truncate(text, 80), id, rest)
+				}
+			}
+		}
+		switch {
+		case dropLabel == "" || keepLabel == "":
+			return nil, fmt.Sprintf("drop question %q must carry exactly a keep: and a drop: option (keep is the default)", truncate(text, 80))
+		case len(options) != 2:
+			return nil, fmt.Sprintf("drop question %q must carry exactly two options (keep: and drop:), got %d", truncate(text, 80), len(options))
+		case id == "":
+			return nil, fmt.Sprintf("drop question %q options name no criterion id", truncate(text, 80))
+		case !strings.Contains(text, id):
+			return nil, fmt.Sprintf("drop question %q must name the criterion id it offers (%s)", truncate(text, 80), id)
+		case strings.Contains(text, cp.Nonce):
+			return nil, fmt.Sprintf("drop question %q carries the checkpoint nonce — the nonce binds the DECISION question; drop questions ride along nonce-free", truncate(text, 80))
+		}
+		if !droppableAt(run, cp, id) {
+			return nil, fmt.Sprintf("drop question offers criterion %q which is neither among the checkpoint %s criteria nor the frozen acceptance view — nothing else may be dropped", id, cp.ID)
+		}
+		drops = append(drops, dropQuestion{id: id, text: text, keepLabel: keepLabel, dropLabel: dropLabel})
+	}
+	return drops, ""
+}
+
+// validateDropAnswers checks every ANSWERED drop question against its two
+// offered labels — the same offered-option rule the decision answer obeys.
+// Unanswered drop questions are keep-by-default and fine; an invalid answer
+// rejects the whole callback.
+func validateDropAnswers(drops []dropQuestion, answers map[string]interface{}) string {
+	for _, dq := range drops {
+		ans, _ := answers[dq.text].(string)
+		if ans == "" {
+			continue // unanswered: keep is the default
+		}
+		if ans != dq.keepLabel && ans != dq.dropLabel {
+			return fmt.Sprintf("drop question answer %q is not one of its offered labels (%q / %q)", truncate(ans, 80), dq.keepLabel, dq.dropLabel)
+		}
+	}
+	return ""
+}
+
+// droppableAt reports whether the criterion id may be dropped at this
+// checkpoint: among the checkpoint's pending criteria or the frozen
+// acceptance view (信封 criteria 集 = 冻结集 − drops — the channel exists to
+// trim frozen criteria at later checkpoints).
+func droppableAt(run *shared.RunState, cp *shared.CheckpointState, id string) bool {
+	for _, c := range cp.CriteriaIDs {
+		if c == id {
+			return true
+		}
+	}
+	for _, fr := range run.AcceptanceView().Requirements {
+		for _, c := range fr.CriteriaIDs {
+			if c == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// labelKeyword returns the leading keyword of an option label (normalized).
+func labelKeyword(label string) string {
+	keyword, _ := splitLabelKeyword(label)
+	return keyword
+}
+
+// splitLabelKeyword splits one option label into its leading keyword
+// (lowercased, punctuation-stripped) and the remainder trimmed of label
+// punctuation ("drop: crit-a" → "drop", "crit-a").
+func splitLabelKeyword(label string) (keyword, rest string) {
+	fields := strings.Fields(label)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	keyword = normalizeKeyword(fields[0])
+	rest = strings.TrimSpace(strings.Trim(strings.TrimSpace(strings.TrimPrefix(label, fields[0])), ":,;!?. "))
+	return keyword, rest
 }
 
 // matchOfferedLabel returns the offered option label the answer exactly

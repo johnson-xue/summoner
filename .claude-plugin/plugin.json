@@ -19,7 +19,15 @@
     "personas"
   ],
   "commands": "./commands",
-  "skills": "./skills",
+  "skills": [
+    "./skills/summoner/SKILL.md",
+    "./skills/summoner-setup/SKILL.md",
+    "./skills/summoner-release/SKILL.md",
+    "./skills/auto-setup-summoner/SKILL.md",
+    "./skills/phase-submit/SKILL.md",
+    "./skills/change/SKILL.md",
+    "./skills/review-submit/SKILL.md"
+  ],
   "agents": [
     "./agents/code-reviewer.md",
     "./agents/security-auditor.md",
