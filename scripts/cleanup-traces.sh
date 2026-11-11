@@ -6,7 +6,7 @@
 # script existed that promise pointed at nothing (caught by validate-repo.sh's
 # dead-reference check).
 #
-# Layout convention (matches scripts/stability-test.sh globbing):
+# Layout convention (the trace-name glob every consumer relies on):
 #   $TRACES_ROOT/<project>/*-<workflow>-*.jsonl
 #
 # The keep-newest-N step is python3, not `xargs ls -t | tail`: past ARG_MAX,

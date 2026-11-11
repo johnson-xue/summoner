@@ -1,5 +1,10 @@
 # Summoner Graph & Node-Contract Upgrade — Design Spec
 
+> **ARCHIVED — superseded.** 已被 2026-11-09 单模式设计取代
+> (`docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md`).
+> Kept as dated history; no live skill, command, or runtime may load or
+> execute this design.
+
 > Date: 2026-07-27
 > Source article: 煎鱼《Loop Engineering is dead. Long live Graph Engineering?》(WeChat, 2026-07)
 > Spec author: brainstorming session, approved direction = 方案 A (incremental compat)

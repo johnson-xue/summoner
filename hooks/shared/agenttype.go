@@ -6,7 +6,7 @@ package shared
 // gate as "summoner:reviewer" / "summoner:worker" in production; the bare
 // names remain valid for tests and back-compat. The prefix is the framework's
 // OWN fixed plugin name — never project data and never a wildcard: any other
-// namespace ("other:reviewer", "summoner:fork", "summoner:code-reviewer")
+// namespace ("other:reviewer", "summoner:fork", "summoner:unregistered")
 // stays a foreign type.
 
 // SummonerPluginPrefix is the plugin namespace the framework's agents are

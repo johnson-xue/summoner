@@ -53,10 +53,10 @@ publish、merge、decide）是命令内部时序，唯一来源是
 | plan | `superpowers:writing-plans` | roster alternate `planning-with-files`（T11 删） | plan phase 内解析 |
 | implement / fix | `superpowers:executing-plans` | —（Summoner 从未自带实现方法论 skill） | implement/fix phase 内解析 |
 | test / reproduce | `superpowers:test-driven-development` | roster alternate `tdd`（T11 删——同义双注册） | test/reproduce phase 内解析 |
-| diagnosis | `superpowers:systematic-debugging` | agents/ 目录的 `debug-agent` 岗位 persona（spec §2 删除裁定；文件+注册删除在 T14 执行） | debug/diagnosis phase 内解析；/summoner:debug 只诊断不改码 |
+| diagnosis | `superpowers:systematic-debugging` | walker 岗位 persona 花名册（diagnosis 方法论岗位）已随 2026-11 单模式切换删除 | debug/diagnosis phase 内解析；/summoner:debug 只诊断不改码 |
 | verify / regression | `superpowers:verification-before-completion` | — | verify/regression phase 内解析 |
 | ops | 无通用 provider（roster 示例 `default: none`；项目必须配 inline skill） | — | /summoner:ops 路由；`phases.ops` 绑定（键=动词，phase id 是 operate） |
-| review（⑤） | `phases.review.verification_spec` + 单一 `reviewer` Agent（`agents/reviewer.md`） | agents/ 目录的 `code-reviewer`、`security-auditor`、`test-engineer` fan-out persona（spec §2：审查维度并入唯一 rubric——crit-correctness/idiom/architecture/security/impact/prove-it 是 criteria，不是岗位；删除在 T14 执行） | /summoner:review「这份变更有哪些问题」（findings+evidence，不改码） |
+| review（⑤） | `phases.review.verification_spec` + 单一 `reviewer` Agent（`agents/reviewer.md`） | 多岗位 fan-out persona 花名册已随 2026-11 单模式切换删除——crit-correctness/idiom/architecture/security/impact/prove-it 是 verification_spec 的 criteria，不是岗位 | /summoner:review「这份变更有哪些问题」（findings+evidence，不改码） |
 | release | `skills/summoner-release/SKILL.md`——框架默认发布实现，**可替换能力**（spec §6.11），不是待删重复；项目可在 `phases.release` 覆盖 | — | /summoner:release『发版』 |
 
 **review vs ship 边界（成文）**：review 回答「这份变更有哪些问题」（findings
@@ -74,7 +74,7 @@ GO/NO-GO，不重复同一审查。`commands/review.md` 与 `commands/ship.md` �
 | skill `summoner-release` | 控制（默认实现） | yes | "Version release automation … Keeps ALL THREE version manifests synchronized … Use when user invokes /summoner:release." |
 | skill `phase-submit` | 控制通道 | **false** | "ONLY to submit a completed phase result — invoke when a phase's work is done; never for anything else" |
 | skill `change` | 控制通道 | **false** | "ONLY to open or apply a requirement change in a live Summoner run; never for anything else" |
-| skill `review-submit` | 控制通道 | **false** | "ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING); never for anything else" |
+| skill `review-submit` | 控制通道 | **false** | "ONLY to register one review envelope in a live Summoner run — REVIEW_PENDING or the terminal default review position; never for anything else" |
 | skill `probe-submit` | 控制通道 | **false** | "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else" |
 | agent `reviewer` | ⑤契约 | — | 单一 reviewer 定义：黑盒重导出 + evidence_tool_call_ids（空证据的 PASS 是 rubber-stamp 协议错误） |
 | agent `worker` | 受限 worker | — | 在盘未注册（T15 评测放行后再决定注册；validate-repo PENDING_AGENTS 豁免保留） |
@@ -88,8 +88,8 @@ probe-submit 恰是模型的提交通道；`user-invocable: false` 隐藏用户�
 ## 防回潮基线（Step 4 grep）
 
 skills 与 commands 的**注册字段**无 superpowers/内置同义方法论（T11 执行后
-应为 0 命中；marketplace 检索 keywords 如 `tdd` 是搜索元数据而非注册，
-随 T14 的 manifest 收敛一并复核）：
+应为 0 命中；marketplace 检索 keywords 是搜索元数据而非注册，单模式切换时
+已随 manifest 收敛复核——`personas` 检索词已移除）：
 
 ```bash
 grep -nEi '"(name|path)": *"[^"]*(brainstorm|writing-plan|executing-plan|test-driven|tdd|systematic-debug|verification-before|grill-me|planning-with-files)[^"]*"' \
@@ -97,9 +97,10 @@ grep -nEi '"(name|path)": *"[^"]*(brainstorm|writing-plan|executing-plan|test-dr
 ```
 
 `skills/roster.yaml` 的 superpowers:* 条目是上表的主选路由行本身（唯一
-default），不是重复注册。agents 面的四个岗位 persona（code-reviewer/
-security-auditor/test-engineer/debug-agent）按上表裁定删除，文件+注册删除
-在 T14 执行（其 brief 明确拥有该步骤）；T11 不越权代办。
+default），不是重复注册。agents 面的多岗位 fan-out persona 花名册已随
+2026-11 单模式切换删除（文件与注册项一并移除）；存留的 agent 定义只有
+`agents/reviewer.md`（已注册）与 `agents/worker.md`（在盘，注册待行为
+批准，见注册面行）。
 
 可用使用信号（如 skill_activated 遥测，可选）复核：未观测到使用的推荐项
 降级或移除。

@@ -1,4 +1,4 @@
-description = "Standalone code review via code-reviewer persona"
+description = "Standalone code review via the verification_spec route — one independent reviewer, no code changes"
 
 prompt = """
 Invoke the Summoner workflow 'review'.

@@ -53,21 +53,34 @@ jobs:
 
       - name: Build + cross-compile
         working-directory: hooks
-        run: make release
+        # make build FIRST so the unsuffixed (tree) binaries are produced
+        # from THIS source too — `make release` alone would leave the
+        # uploaded unsuffixed set as the committed copies.
+        run: |
+          make build
+          make release
 
       - uses: actions/upload-artifact@v4
         with:
           name: hooks-bin
-          # platform-suffixed set + unsuffixed hooks (excludes .gitkeep)
+          # platform-suffixed set (wildcard) + ALL NINE unsuffixed hooks the
+          # Makefile's HOOKS list builds (session-start pretooluse-gate stop
+          # validate-manifest posttooluse subagentstop userpromptsubmit
+          # summoner-status summoner-sandbox-probe); excludes .gitkeep
           path: |
             hooks/bin/*-*
             hooks/bin/session-start
-            hooks/bin/pretooluse-skill
+            hooks/bin/pretooluse-gate
             hooks/bin/stop
             hooks/bin/validate-manifest
+            hooks/bin/posttooluse
+            hooks/bin/subagentstop
+            hooks/bin/userpromptsubmit
+            hooks/bin/summoner-status
+            hooks/bin/summoner-sandbox-probe
 
   build-cli-linux:
-    name: summoner-ctx + summoner-walker (linux-amd64, cgo)
+    name: summoner-ctx (linux-amd64, cgo)
     runs-on: ubuntu-latest
     needs: verify
     steps:
@@ -80,7 +93,6 @@ jobs:
       - name: Build
         run: |
           go build -o dist/summoner-ctx-linux-amd64 ./cmd/summoner-ctx
-          CGO_ENABLED=0 go build -o dist/summoner-walker-linux-amd64 ./cmd/summoner-walker
 
       - uses: actions/upload-artifact@v4
         with:
@@ -88,7 +100,7 @@ jobs:
           path: dist/*
 
   build-cli-darwin:
-    name: summoner-ctx + summoner-walker (darwin amd64/arm64, cgo)
+    name: summoner-ctx (darwin amd64/arm64, cgo)
     runs-on: macos-14
     needs: verify
     steps:
@@ -102,8 +114,6 @@ jobs:
         run: |
           CGO_ENABLED=1 GOARCH=arm64 go build -o dist/summoner-ctx-darwin-arm64 ./cmd/summoner-ctx
           CGO_ENABLED=1 GOARCH=amd64 go build -o dist/summoner-ctx-darwin-amd64 ./cmd/summoner-ctx
-          CGO_ENABLED=0 GOARCH=arm64 go build -o dist/summoner-walker-darwin-arm64 ./cmd/summoner-walker
-          CGO_ENABLED=0 GOARCH=amd64 go build -o dist/summoner-walker-darwin-amd64 ./cmd/summoner-walker
 
       - uses: actions/upload-artifact@v4
         with:

@@ -145,6 +145,11 @@ else
 fi
 
 # ------------------------------------------------------- 3. dead references
+# T14: scan extended to agents/ and scripts/ (spec §6.12 lint closure) —
+# every path-shaped reference a live layer makes must resolve. validate-repo.sh
+# itself is excluded: its own text names paths only as invariants (e.g. the
+# negative hooks/hooks existence probe), which is the same self-exclusion
+# precedent as section 4's denylist.
 DEAD=0
 while IFS= read -r token; do
   [[ -z "$token" ]] && continue
@@ -154,9 +159,10 @@ while IFS= read -r token; do
   [[ -z "$token" ]] && continue
   [[ -e "$token" ]] || { fail "dead reference: $token"; DEAD=1; }
 done < <(grep -rhoE '(references|scripts|skills|hooks|agents|commands)/[A-Za-z0-9._/-]+' \
-           --include="*.md" --include="*.json" \
-           commands/ skills/*/SKILL.md references/ hooks/hooks.json 2>/dev/null | sort -u)
-[[ $DEAD -eq 0 ]] && ok "no dead path references (commands/, skills/, references/, hooks.json)"
+           --include="*.md" --include="*.json" --include="*.sh" \
+           commands/ skills/*/SKILL.md references/ agents/ hooks/hooks.json scripts/ \
+           --exclude="validate-repo.sh" 2>/dev/null | sort -u)
+[[ $DEAD -eq 0 ]] && ok "no dead path references (commands/, skills/, references/, agents/, scripts/, hooks.json)"
 
 # ------------------------------------------- 4. hardcoded project names
 # Routing + script + gemini-pointer layers, case-insensitive. Examples in

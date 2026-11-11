@@ -1,5 +1,11 @@
 # Graph & Node-Contract Upgrade Implementation Plan
 
+> **ARCHIVED — superseded.** 已被 2026-11-09 单模式设计取代
+> (`docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md`;
+> implementation: `docs/superpowers/plans/2026-11-09-single-mode-rewrite.md`).
+> The walker/graph runtime it built was deleted with the single-mode switch.
+> Kept as dated history; no live skill or command may load this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Upgrade Summoner from a linear phase-chain to a graph + node-contract architecture: every node becomes a closed-loop agent (①⓪②③④) with a walker-scheduled separate-context ⑤ Review-agent, declared as a per-task graph, enforced by a real Go walker + deterministic scorers — so machine-checked acceptance at node boundaries offloads the human quality-read (the §1.3 "人疏忽就遗漏" failure mode).

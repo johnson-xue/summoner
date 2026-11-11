@@ -35,7 +35,7 @@ var ErrRunNotFound = errors.New("run state not found")
 // --- persistence ----------------------------------------------------------------
 
 // runStateDirOverride redirects v2 run-state into a test directory so the
-// suite stays hermetic (same pattern as internal/graph.stateDirOverride).
+// suite stays hermetic (production resolves the real root below).
 // Empty in production.
 var runStateDirOverride string
 

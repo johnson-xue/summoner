@@ -82,7 +82,11 @@ echo "   ✓ installed content byte-identical to checkout (version $CHECKOUT_VER
 # hooks present, executable, AND WIRED: `claude plugin validate` does not
 # check that hooks.json paths resolve (audit: a typo'd hooks entry passed the
 # whole gate and installed with zero active hooks), so assert it here.
-for b in session-start pretooluse-gate stop validate-manifest posttooluse subagentstop userpromptsubmit; do
+# The loop asserts ALL NINE binaries the hooks Makefile builds — including
+# summoner-status and summoner-sandbox-probe, which hooks.json does not wire
+# (validate-manifest is invoked directly; status/probe are command/contract
+# surfaces), so the wiring check below cannot substitute for them.
+for b in session-start pretooluse-gate stop validate-manifest posttooluse subagentstop userpromptsubmit summoner-status summoner-sandbox-probe; do
   bin="$INSTALLED/hooks/bin/$b"
   if [[ ! -x "$bin" ]]; then
     echo "✗ hook binary missing or not executable: $bin"
@@ -119,13 +123,13 @@ if [[ "$repo_cmds" != "$inst_cmds" ]]; then
 fi
 echo "   ✓ commands complete ($inst_cmds)"
 
-# all four skills present
-for s in summoner summoner-setup summoner-release auto-setup-summoner; do
+# all eight registered skills present (must match plugin.json skills[])
+for s in summoner summoner-setup summoner-release auto-setup-summoner phase-submit change review-submit probe-submit; do
   if [[ ! -f "$INSTALLED/skills/$s/SKILL.md" ]]; then
     echo "✗ skill missing from installed tree: $s"
     exit 1
   fi
 done
-echo "   ✓ all 4 skills present"
+echo "   ✓ all 8 registered skills present"
 
 echo "✓ install smoke test passed — the checkout's distribution path works"

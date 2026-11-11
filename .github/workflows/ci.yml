@@ -30,18 +30,22 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Hooks module — build, vet, test
-        working-directory: hooks
-        run: |
-          go build ./...
-          go vet ./...
-          go test ./...
-
-      - name: Router contract — validate-manifest fixtures (skills_check ON)
+      # make build FIRST: the hooks contract tests EXECUTE the binaries in
+      # hooks/bin, so they must be built from THIS source before the suite
+      # runs (otherwise the tests exercise stale committed copies). Fresh
+      # -count=1 keeps the run honest across cached workspaces.
+      - name: Hooks module — build binaries, vet, test
         working-directory: hooks
         run: |
           make build
-          cd "$GITHUB_WORKSPACE"
+          go build ./...
+          go vet ./...
+          go test -count=1 ./...
+
+      # Router contract — binaries come from the step above (same job,
+      # same workspace); no second build here.
+      - name: Router contract — validate-manifest fixtures (skills_check ON)
+        run: |
           F=tests/fixtures/manifests
           S=$F/skills
           # valid manifests must pass (with skills-dir where relevant)
@@ -57,13 +61,26 @@ jobs:
           fi
 
   scorers:
-    name: Trace-fixture matrix (7 scorers × fixtures)
+    name: Trace-fixture matrix (5 scorers × fixtures)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Assert expected-outcome table
         run: bash scripts/run-trace-fixtures.sh
+
+  shellcheck:
+    name: ShellCheck — scripts/ + scorers/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Local ShellCheck is UNVERIFIED (denied install); this job is the
+      # enforcement site for shell hygiene on every push/PR.
+      - name: Run ShellCheck
+        run: |
+          shellcheck --version
+          shellcheck scripts/*.sh scorers/deterministic/*.sh
 
   lint:
     name: Repo mechanical invariants

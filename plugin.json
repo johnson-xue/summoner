@@ -1,6 +1,6 @@
 {
   "name": "summoner",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Summoner — AI Agent Orchestration Framework. Portable, project-agnostic workflow orchestration with checkpoint-based interruption and post-game review. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
   "author": "Jingshan Xue",
   "license": "MIT",
@@ -39,7 +39,7 @@
     {
       "name": "review-submit",
       "path": "skills/review-submit/SKILL.md",
-      "description": "ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING); never for anything else. Not user-invocable; it is the main session's single envelope-registration channel (validates against the frozen acceptance view minus drops, consumes the [v] obligation, prepares the review)."
+      "description": "ONLY to register one review envelope in a live Summoner run — REVIEW_PENDING or the terminal default review position; never for anything else. Not user-invocable; it is the main session's single envelope-registration channel (validates against the frozen acceptance view minus drops, prepares the review)."
     },
     {
       "name": "probe-submit",
@@ -48,26 +48,6 @@
     }
   ],
   "agents": [
-    {
-      "name": "code-reviewer",
-      "path": "agents/code-reviewer.md",
-      "description": "Senior Staff Engineer — 5-axis code review (correctness, idiom, architecture, security, impact)"
-    },
-    {
-      "name": "security-auditor",
-      "path": "agents/security-auditor.md",
-      "description": "Security Engineer — OWASP Top 10 vulnerability audit, secrets handling, dependency analysis"
-    },
-    {
-      "name": "test-engineer",
-      "path": "agents/test-engineer.md",
-      "description": "QA Engineer — test strategy, coverage analysis, Prove-It pattern for bug fixes"
-    },
-    {
-      "name": "debug-agent",
-      "path": "agents/debug-agent.md",
-      "description": "Root Cause Analyst — systematic error diagnosis, stack trace analysis, log correlation, hypothesis-driven debugging"
-    },
     {
       "name": "reviewer",
       "path": "agents/reviewer.md",
