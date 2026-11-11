@@ -195,6 +195,20 @@ try:
 except ValueError:
     pass
 
+# N-3: a real-run environment cannot redirect platform session discovery.
+old_stub = os.environ.pop("PAIRED_EVAL_CLAUDE_CMD", None)
+os.environ["PAIRED_EVAL_PROJECTS_DIR"] = os.path.join(td, "fake-projects")
+if pe.projects_dir() != os.path.abspath(os.path.expanduser("~/.claude/projects")):
+    problems.append("real run honored the selftest projects-dir override")
+os.environ["PAIRED_EVAL_CLAUDE_CMD"] = "stub-only"
+if pe.projects_dir() != os.path.abspath(os.environ["PAIRED_EVAL_PROJECTS_DIR"]):
+    problems.append("stub-runner projects-dir override stopped working")
+if old_stub is None:
+    os.environ.pop("PAIRED_EVAL_CLAUDE_CMD", None)
+else:
+    os.environ["PAIRED_EVAL_CLAUDE_CMD"] = old_stub
+os.environ.pop("PAIRED_EVAL_PROJECTS_DIR", None)
+
 print("OK" if not problems else "; ".join(problems))
 UNITPY
 
@@ -610,6 +624,8 @@ PINNED="$PROJROOT/$SLUG/stub-session-main.jsonl"
 printf 'fake producer platform session\n' > "$PINNED"
 printf 'sibling session one\n' > "$PROJROOT/$SLUG/other-session.jsonl"
 printf 'sibling session two\n' > "$PROJROOT/$SLUG/yet-another.jsonl"
+mkdir -p "$PROJROOT/$SLUG/subagents/nested"
+printf 'nested child session\n' > "$PROJROOT/$SLUG/subagents/nested/child.jsonl"
 
 OUT=$(PAIRED_EVAL_PROJECTS_DIR="$PROJROOT" RUN run g5-a producer --run-id g5-a.producer.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
       --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
@@ -637,7 +653,7 @@ FORK_RD=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RE
 OUT=$(PAIRED_EVAL_PROJECTS_DIR="$PROJROOT" RUN run g5-a self-review --run-id g5-a.self-review.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
       --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
 expect_exit 0 "$RC" "stub fork-arm run"
-P8SETTINGS=$(PINNED="$PINNED" SIBS="$PROJROOT/$SLUG/other-session.jsonl:$PROJROOT/$SLUG/yet-another.jsonl" \
+P8SETTINGS=$(PINNED="$PINNED" SIBS="$PROJROOT/$SLUG/other-session.jsonl:$PROJROOT/$SLUG/yet-another.jsonl:$PROJROOT/$SLUG/subagents/nested/child.jsonl" \
     FORK_SETTINGS="$FORK_RD/settings.json" PATH="$STUBBED_PATH" python3 -c "
 import json, os
 pinned, sibs = os.environ['PINNED'], os.environ['SIBS'].split(':')

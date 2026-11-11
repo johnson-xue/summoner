@@ -38,10 +38,28 @@ fi
 SIDECAR="${TRACE_FILE}.score.json"
 
 SCORE_TABLE=$(
-  python3 - "$TRACE_FILE" "$SIDECAR" "$SCORERS_DIR" <<'PYEOF'
+  python3 - "$TRACE_FILE" "$SIDECAR" "$SCORERS_DIR" "$(dirname "$SCRIPT_DIR")/hooks/bin/summoner-status" <<'PYEOF'
 import datetime, hashlib, json, os, subprocess, sys
 
-trace, sidecar, scorers_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+trace, sidecar, scorers_dir, verifier = sys.argv[1:]
+# The Go verifier owns canonical hashing. Never reimplement its algorithm in
+# Python/shell, infer a run-id path, or certify scores when it is unavailable.
+original = open(trace, "rb").read()
+trace_digest = hashlib.sha256(original).hexdigest()
+chain = {"status": "FAIL", "detail": "Go verifier unavailable"}
+try:
+    verified = subprocess.run([verifier, "--verify-trace", trace],
+                              capture_output=True, text=True)
+    if verified.returncode == 0:
+        proof = json.loads(verified.stdout)
+        if proof.get("trace_sha256") == trace_digest:
+            chain = {"status": "PASS", "detail": "Go canonical chain verified on exact input"}
+        else:
+            chain["detail"] = "verified bytes differ from scoring input"
+    else:
+        chain["detail"] = (verified.stderr or "Go verifier failed").strip()
+except (OSError, ValueError) as exc:
+    chain["detail"] = "Go verifier unavailable or malformed: " + str(exc)
 scorers = ["schema-check", "review-evidence-check", "user-gate-check",
            "recovery-check", "post-game-check"]
 status_by_code = {0: "PASS", 1: "FAIL", 2: "NA_JUSTIFIED",
@@ -59,17 +77,20 @@ for name in scorers:
         detail = f"scorer error (exit {proc.returncode}): {detail}"
     results.append({"name": name, "status": status, "detail": detail})
 
+if open(trace, "rb").read() != original:
+    chain = {"status": "FAIL", "detail": "input changed while deriving scores"}
 counts = {s: sum(1 for r in results if r["status"] == s)
           for s in ("PASS", "NA_JUSTIFIED", "MISSING_EVIDENCE", "FAIL")}
 doc = {
     "schema_version": "2",
     "trace_file": os.path.basename(trace),
-    "trace_sha256": hashlib.sha256(open(trace, "rb").read()).hexdigest(),
+    "trace_sha256": trace_digest,
+    "chain_verification": chain,
     "generated_at": datetime.datetime.now(datetime.timezone.utc)
                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
     "scorers": results,
     "overall": {
-        "status": "PASS" if counts["FAIL"] == 0
+        "status": "PASS" if chain["status"] == "PASS" and counts["FAIL"] == 0
                   and counts["MISSING_EVIDENCE"] == 0 else "FAIL",
         **counts,
     },
@@ -78,6 +99,7 @@ with open(sidecar, "w", encoding="utf-8") as f:
     json.dump(doc, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
+print(f'chain-verification\t{chain["status"]}\t{chain["detail"].splitlines()[0]}')
 for r in results:
     print(f'{r["name"]}\t{r["status"]}\t{r["detail"]}')
 print(f'OVERALL\t{doc["overall"]["status"]}')

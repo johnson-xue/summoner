@@ -920,9 +920,20 @@ def build_settings(case, arm, run_dir, control_dir, producer_session_file=None):
                 if not os.path.isdir(slug_dir):
                     continue
                 if os.path.dirname(producer_session_file) == slug_dir:
-                    for f in sorted(os.listdir(slug_dir)):
-                        if os.path.join(slug_dir, f) != producer_session_file:
-                            read_denied.append("Read(%s)" % os.path.join(slug_dir, f))
+                    # Construction-time snapshot, recursively including child
+                    # transcripts. Files created after launch are NOT covered by
+                    # these per-file denies; this is not path-containment proof.
+                    for root, dirs, files in os.walk(slug_dir, followlinks=False):
+                        dirs.sort()
+                        for name in sorted(files):
+                            path = os.path.join(root, name)
+                            if path != producer_session_file:
+                                read_denied.append("Read(%s)" % path)
+                        for name in dirs:
+                            # Directory denies also bound future descendants in
+                            # existing child directories, but not future siblings
+                            # created directly beside the pinned file.
+                            read_denied.append("Read(%s/**)" % os.path.join(root, name))
                 else:
                     read_denied.append("Read(%s/**)" % slug_dir)
         allow_extra = ["Read(%s)" % producer_session_file]
@@ -1815,8 +1826,10 @@ def execute_stub_or_real(argv, cwd, env, transcript_path):
 def projects_dir():
     """The platform session-store root (~/.claude/projects). PAIRED_EVAL_PROJECTS_DIR
     is a selftest seam ONLY — real runs always use the platform path."""
-    return os.path.abspath(os.environ.get(
-        "PAIRED_EVAL_PROJECTS_DIR", os.path.expanduser("~/.claude/projects")))
+    override = os.environ.get("PAIRED_EVAL_PROJECTS_DIR")
+    if override and os.environ.get("PAIRED_EVAL_CLAUDE_CMD"):
+        return os.path.abspath(override)
+    return os.path.abspath(os.path.expanduser("~/.claude/projects"))
 
 
 def session_slug_dir(run_dir):

@@ -151,6 +151,12 @@ fi
 # negative hooks/hooks existence probe), which is the same self-exclusion
 # precedent as section 4's denylist.
 DEAD=0
+# Token guard (final-fix wave): the prefix must START the path token — a
+# leading word character means the match is a substring of a longer name
+# ("subagents/nested" is not a reference to "agents/nested"), and a leading
+# "/" means it is a deeper path rooted elsewhere (evals/paired/agents/… is
+# not the top-level agents/ tree). The guard char is stripped before the
+# existence test.
 while IFS= read -r token; do
   [[ -z "$token" ]] && continue
   # strip only TRAILING sentence punctuation captured by the greedy token
@@ -158,10 +164,11 @@ while IFS= read -r token; do
   token="$(sed -E 's/[.,;:!?]+$//' <<< "$token")"
   [[ -z "$token" ]] && continue
   [[ -e "$token" ]] || { fail "dead reference: $token"; DEAD=1; }
-done < <(grep -rhoE '(references|scripts|skills|hooks|agents|commands)/[A-Za-z0-9._/-]+' \
+done < <(grep -rhoE '(^|[^A-Za-z0-9_/-])(references|scripts|skills|hooks|agents|commands)/[A-Za-z0-9._/-]+' \
            --include="*.md" --include="*.json" --include="*.sh" \
            commands/ skills/*/SKILL.md references/ agents/ hooks/hooks.json scripts/ \
-           --exclude="validate-repo.sh" 2>/dev/null | sort -u)
+           --exclude="validate-repo.sh" 2>/dev/null \
+         | sed -E 's/^[^A-Za-z0-9_-]//' | sort -u)
 [[ $DEAD -eq 0 ]] && ok "no dead path references (commands/, skills/, references/, agents/, scripts/, hooks.json)"
 
 # ------------------------------------------- 4. hardcoded project names
