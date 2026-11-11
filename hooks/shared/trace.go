@@ -30,6 +30,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -363,6 +364,33 @@ func VerifyChain(runID string) error {
 		}
 		return err
 	}
+	return verifyChainBytes(b)
+}
+
+// VerifyTraceFile verifies the EXACT supplied file with the Go-owned canonical
+// chain algorithm, independent of run-id/project path resolution. Its digest is
+// over the same bytes just verified, so callers can detect replacement while
+// deriving scores. This read-only operation grants no workflow authority.
+func VerifyTraceFile(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if len(b) == 0 || b[len(b)-1] != '\n' {
+		return "", errors.New("verify chain: empty or torn trace file")
+	}
+	for _, line := range bytes.Split(b[:len(b)-1], []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			return "", errors.New("verify chain: blank noncanonical line")
+		}
+	}
+	if err := verifyChainBytes(b); err != nil {
+		return "", err
+	}
+	return hashHex(b), nil
+}
+
+func verifyChainBytes(b []byte) error {
 	lines := traceLines(b)
 	prevCanonical := hashHex(nil) // sha256 of the empty string
 	for i, raw := range lines {

@@ -92,6 +92,16 @@ func DecisionMenuLabels(kind CheckpointKind) []string {
 			"recall: 回城——回到指定历史阶段重做",
 			"stop: 停止——保留状态退出",
 		}
+	case CheckpointReviewDebt:
+		// The mandatory ⑤ debt menu: NO done (the debt is what done could
+		// not discharge — re-offering it here would wedge); skip IS the
+		// explicit UNREVIEWED finish (spec §0 item 2).
+		return []string{
+			"review: [v] 完成终局审查（默认必经）",
+			"skip: 跳过终局审查——以 UNREVIEWED 收尾（不能伪造 PASS）",
+			"continue: 返回继续开发",
+			"stop: 停止——保留状态退出",
+		}
 	default: // PHASE, REVIEW_RESULT
 		return []string{
 			"continue: 继续下一阶段",

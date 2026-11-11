@@ -21,7 +21,21 @@ func startTestRun(t *testing.T, limits BudgetLimits) *RunState {
 	prev := runStateDirOverride
 	runStateDirOverride = t.TempDir()
 	t.Cleanup(func() { runStateDirOverride = prev })
-	r, err := StartRun("run-1", "sess-1", "fix", limits)
+	// Real project dir so artifact hashing (the C1 staging/mint path) reads
+	// files the tests actually write — never the package checkout. (Go 1.16:
+	// no t.Setenv; restore by hand.)
+	prevDir := os.Getenv("CLAUDE_PROJECT_DIR")
+	if err := os.Setenv("CLAUDE_PROJECT_DIR", t.TempDir()); err != nil {
+		t.Fatalf("set project dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if prevDir == "" {
+			os.Unsetenv("CLAUDE_PROJECT_DIR")
+			return
+		}
+		os.Setenv("CLAUDE_PROJECT_DIR", prevDir)
+	})
+	r, err := StartRun("run-1", "sess-1", "debug", limits)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -33,17 +47,33 @@ func openAndSubmit(t *testing.T, r *RunState, phaseID string, criteria ...string
 	if err := r.OpenPhase(phaseID); err != nil {
 		t.Fatalf("OpenPhase(%s): %v", phaseID, err)
 	}
+	// REAL artifact bytes on disk with the hook-computed digest — the staging
+	// contract (final-fix wave C1) pins current bytes, never producer claims.
+	path := phaseID + ".md"
+	content := "content-" + phaseID + "\n"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(projectDirForTest(), path)), 0o755); err != nil {
+		t.Fatalf("artifact dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDirForTest(), path), []byte(content), 0o644); err != nil {
+		t.Fatalf("artifact write: %v", err)
+	}
+	digest, err := HashArtifactFile(path)
+	if err != nil {
+		t.Fatalf("HashArtifactFile(%s): %v", path, err)
+	}
 	sub := PhaseSubmission{
 		PhaseID:     phaseID,
 		CriteriaIDs: criteria,
-		Artifacts:   []ArtifactRef{{Path: phaseID + ".md", Digest: "digest-" + phaseID, Kind: "doc"}},
+		Artifacts:   []ArtifactRef{{Path: path, Digest: digest, Kind: "doc"}},
 	}
-	cp, err := r.SubmitPhase(sub)
+	cp, err := r.SubmitPhaseUnstaged(sub)
 	if err != nil {
 		t.Fatalf("SubmitPhase(%s): %v", phaseID, err)
 	}
 	return cp
 }
+
+func projectDirForTest() string { return ProjectDir() }
 
 func displayCurrent(t *testing.T, r *RunState) {
 	t.Helper()
@@ -113,7 +143,7 @@ func TestIllegalTransitions(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 
 	// SubmitPhase with no open phase.
-	if _, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"}); err == nil {
+	if _, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p1"}); err == nil {
 		t.Error("SubmitPhase before OpenPhase: want error, got nil")
 	}
 
@@ -123,7 +153,7 @@ func TestIllegalTransitions(t *testing.T) {
 	}
 
 	// Duplicate submit while the first checkpoint is pending (WAIT_USER).
-	if _, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"}); err == nil {
+	if _, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p1"}); err == nil {
 		t.Error("SubmitPhase while WAIT_USER: want error, got nil")
 	}
 
@@ -142,10 +172,10 @@ func TestIllegalTransitions(t *testing.T) {
 	if err := r.OpenPhase("p2"); err != nil {
 		t.Fatalf("OpenPhase(p2): %v", err)
 	}
-	if _, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"}); err == nil {
+	if _, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p1"}); err == nil {
 		t.Error("SubmitPhase with wrong phase id: want error, got nil")
 	}
-	cp2, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p2"})
+	cp2, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p2"})
 	if err != nil {
 		t.Fatalf("SubmitPhase(p2): %v", err)
 	}
@@ -165,7 +195,7 @@ func TestIllegalTransitions(t *testing.T) {
 	if r.Change == nil {
 		t.Fatal("OpenRequirementChange did not open a change")
 	}
-	if _, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p3"}); err == nil {
+	if _, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p3"}); err == nil {
 		t.Error("SubmitPhase during CHANGE_OPEN: want error, got nil")
 	}
 	if _, err := r.ApplyRequirementDelta(RequirementDelta{Note: "csv", Affected: []string{"c1"}}); err != nil {
@@ -184,10 +214,10 @@ func TestIllegalTransitions(t *testing.T) {
 	r.Status = StatusClosed
 	checks := map[string]func() error{
 		"OpenPhase":             func() error { return r.OpenPhase("p9") },
-		"SubmitPhase":           func() error { _, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p9"}); return err },
+		"SubmitPhase":           func() error { _, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p9"}); return err },
 		"MarkDisplayed":         func() error { return r.MarkDisplayed("cp-999", "digest") },
 		"RecordDecision":        func() error { return r.RecordDecision("cp-999", DecisionContinue, "") },
-		"RequestReview":         func() error { _, err := r.RequestReview(testEnvelope()); return err },
+		"RequestReview":         func() error { _, err := r.RequestReview(testEnvelope(), nil); return err },
 		"RecordReviewResult":    func() error { return r.RecordReviewResult(ReviewResult{ReviewID: "rev-1"}) },
 		"OpenRequirementChange": func() error { return r.OpenRequirementChange("late change") },
 		"ApplyRequirementDelta": func() error { _, err := r.ApplyRequirementDelta(RequirementDelta{}); return err },
@@ -201,20 +231,11 @@ func TestIllegalTransitions(t *testing.T) {
 	}
 }
 
+// testIdentity is the identity-only review registration ({schema_version,
+// run_id, review_id}) — the entire producer wire form since the final-fix
+// wave; every semantic byte comes from the reducer's mint.
 func testEnvelope() Envelope {
-	return Envelope{
-		SchemaVersion: "1",
-		RunID:         "run-1",
-		ReviewID:      "rev-1",
-		ArtifactSet:   []ArtifactRef{{Path: "pkg/x.go", Digest: "abc", Kind: "code"}},
-		Requirements: FrozenView{Version: 1, Requirements: []FrozenRequirement{
-			{ID: "req-1", CriteriaIDs: []string{"c1"}, Artifacts: []string{"pkg/x.go"}},
-		}},
-		ExitCriteria: []Criterion{
-			{ID: "c1", Goal: "export works", Method: MethodMechanical, CheckID: "check-export"},
-		},
-		VerificationScope: VerificationScope{Readable: []string{"pkg/"}, CheckIDs: []string{"check-export"}},
-	}
+	return Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-1"}
 }
 
 // --- display binding --------------------------------------------------------
@@ -461,18 +482,18 @@ func TestBudgetCounting(t *testing.T) {
 	if err := r.OpenPhase("p1"); err != nil {
 		t.Fatalf("OpenPhase(p1): %v", err)
 	}
-	r.CountToolCall()
+	r.CountToolCall("")
 	if exhausted, _ := r.BudgetExhausted(); exhausted {
 		t.Fatal("1 of 2 tool calls must not exhaust the phase budget")
 	}
-	r.CountToolCall()
+	r.CountToolCall("")
 	exhausted, reason := r.BudgetExhausted()
 	if !exhausted || !strings.Contains(reason, "phase") {
 		t.Fatalf("BudgetExhausted = (%v, %q), want phase exhaustion", exhausted, reason)
 	}
 
 	// Per-phase scope: opening a new phase resets the phase tool-call counter.
-	cp, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"})
+	cp, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p1"})
 	if err != nil {
 		t.Fatalf("SubmitPhase(p1): %v", err)
 	}
@@ -689,7 +710,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err := r.OpenRequirementChange("late change"); err != nil {
 		t.Fatalf("OpenRequirementChange: %v", err)
 	}
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
 	if err := r.MarkReviewRunning("rev-1"); err != nil {
@@ -736,7 +757,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	// Wire types round-trip with every field populated (json tags on every field).
-	env := testEnvelope()
+	env := testSemanticEnvelope()
 	env.ExitCriteria = append(env.ExitCriteria, Criterion{
 		ID: "c2", Goal: "no injection", Scope: "all", Method: MethodJudgment,
 		Expected: "no unsafe paths", Required: true, Rubric: "rubrics/security.md",
@@ -745,12 +766,25 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)
 	}
-	var env2 Envelope
+	var env2 SemanticEnvelope
 	if err := json.Unmarshal(b, &env2); err != nil {
 		t.Fatalf("unmarshal envelope: %v", err)
 	}
 	if !reflect.DeepEqual(env, env2) {
-		t.Errorf("Envelope round-trip: %+v vs %+v", env, env2)
+		t.Errorf("SemanticEnvelope round-trip: %+v vs %+v", env, env2)
+	}
+
+	// The identity wire form round-trips exactly its three fields.
+	idb, err := json.Marshal(testEnvelope())
+	if err != nil {
+		t.Fatalf("marshal identity envelope: %v", err)
+	}
+	var id2 Envelope
+	if err := json.Unmarshal(idb, &id2); err != nil {
+		t.Fatalf("unmarshal identity envelope: %v", err)
+	}
+	if !reflect.DeepEqual(testEnvelope(), id2) {
+		t.Errorf("Envelope round-trip: %+v vs %+v", testEnvelope(), id2)
 	}
 
 	res := ReviewResult{
@@ -796,7 +830,7 @@ func TestRequestReviewResendSameEnvelope(t *testing.T) {
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionContinue)
 
-	id, err := r.RequestReview(testEnvelope())
+	id, err := r.RequestReview(testEnvelope(), nil)
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
@@ -805,7 +839,7 @@ func TestRequestReviewResendSameEnvelope(t *testing.T) {
 	}
 
 	// Crash + reconnect: same envelope re-sent while REVIEW_PENDING.
-	again, err := r.RequestReview(testEnvelope())
+	again, err := r.RequestReview(testEnvelope(), nil)
 	if err != nil {
 		t.Fatalf("same-envelope re-send while REVIEW_PENDING: %v", err)
 	}
@@ -813,17 +847,25 @@ func TestRequestReviewResendSameEnvelope(t *testing.T) {
 		t.Errorf("re-send: again=%s reviews=%d status=%s, want idempotent no-op", again, len(r.Reviews), r.Status)
 	}
 
-	// Same id with a tampered envelope is refused.
-	tampered := testEnvelope()
-	tampered.ArtifactSet[0].Digest = "tampered"
-	if _, err := r.RequestReview(tampered); err == nil {
-		t.Error("same id with different envelope: want error, got nil")
+	// Same id whose re-minted content differs is refused: with an identity-only
+	// wire the tamper surface is the PINNED SNAPSHOT — mutate the artifact
+	// bytes after registration and the re-send's mint refuses on drift.
+	path := filepath.Join(projectDirForTest(), "p1.md")
+	if err := os.WriteFile(path, []byte("tampered after registration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RequestReview(testEnvelope(), nil); err == nil {
+		t.Error("same id over drifted snapshot: want error, got nil")
+	}
+	// Restore the pinned bytes so later steps mint cleanly.
+	if err := os.WriteFile(path, []byte("content-p1\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	// A new review id while one is in flight is refused.
 	fresh := testEnvelope()
 	fresh.ReviewID = "rev-2"
-	if _, err := r.RequestReview(fresh); err == nil {
+	if _, err := r.RequestReview(fresh, nil); err == nil {
 		t.Error("new review id while one is in flight: want error, got nil")
 	}
 
@@ -831,12 +873,12 @@ func TestRequestReviewResendSameEnvelope(t *testing.T) {
 	if err := r.MarkReviewRunning("rev-1"); err != nil {
 		t.Fatalf("MarkReviewRunning: %v", err)
 	}
-	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: "COMPLETED", Verdict: "PASS", EvidenceToolCallIDs: []string{"toolu-1"}}); err != nil {
+	if err := r.RecordReviewResult(coveringResult(r, "rev-1", "pass")); err != nil {
 		t.Fatalf("RecordReviewResult: %v", err)
 	}
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionContinue)
-	if _, err := r.RequestReview(testEnvelope()); err == nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err == nil {
 		t.Error("concluded review id re-request: want error, got nil")
 	}
 }
@@ -849,7 +891,7 @@ func TestReviewFailureRoutesToCheckpoint(t *testing.T) {
 	openAndSubmit(t, r, "p1", "c1")
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionContinue)
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
 	if err := r.MarkReviewRunning("rev-1"); err != nil {
@@ -1092,16 +1134,15 @@ func TestSessionRunsDirEntryFailsClosed(t *testing.T) {
 
 // --- delegation start (review round 2, R1) --------------------------------------
 
-// preparedReview drives a run to REVIEW_PENDING with one PREPARED review.
+// preparedReview drives a run to REVIEW_PENDING with one PREPARED review
+// minted from a REAL accepted phase (identity-only registration).
 func preparedReview(t *testing.T, r *RunState) string {
 	t.Helper()
-	env := Envelope{
-		SchemaVersion: "2",
-		RunID:         r.RunID,
-		ReviewID:      "rev-1",
-		ArtifactSet:   []ArtifactRef{{Path: "a.md", Digest: "ddd"}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	env := Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-1"}
+	if _, err := r.RequestReview(env, nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
 	return env.ReviewID
@@ -1109,17 +1150,18 @@ func preparedReview(t *testing.T, r *RunState) string {
 
 // TestStartDelegation: one method, one Save — reviewer PREPARED→RUNNING in
 // REVIEW_PENDING, worker only in ACTIVE, both consuming a delegation slot
-// and a tool call atomically.
+// and a tool call atomically. The reviewer dispatch stamps the ATTEMPT
+// receipt with the admitted parent tool_use id (C3).
 func TestStartDelegation(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	revID := preparedReview(t, r)
 
 	// Worker delegation needs ACTIVE — REVIEW_PENDING refuses.
-	if err := r.StartDelegation("", false); err == nil {
+	if err := r.StartDelegation("", false, ""); err == nil {
 		t.Fatal("StartDelegation(worker) in REVIEW_PENDING: want error, got nil")
 	}
 	// Reviewer happy path: PREPARED → RUNNING, counters consumed, one Save.
-	if err := r.StartDelegation(revID, true); err != nil {
+	if err := r.StartDelegation(revID, true, "parent-tu-1"); err != nil {
 		t.Fatalf("StartDelegation(reviewer): %v", err)
 	}
 	if r.Reviews[0].Status != ReviewRunning {
@@ -1128,8 +1170,10 @@ func TestStartDelegation(t *testing.T) {
 	if r.Counters.Delegations != 1 {
 		t.Fatalf("counters = %+v, want delegations=1", r.Counters)
 	}
-	// M1b: the phase tool-call budget charges only an OPEN phase — this run
-	// never opened one, so PhaseToolCalls stays zero through both delegations.
+	att := r.Reviews[0].ActiveAttempt(r.Reviews[0].ActiveAttemptID)
+	if att == nil || att.ParentToolUseID != "parent-tu-1" || att.State != "RUNNING" {
+		t.Fatalf("attempt receipt = %+v, want parent tool_use parent-tu-1 RUNNING", att)
+	}
 	// The persisted file agrees (single Save actually happened).
 	disk, err := LoadRun("run-1")
 	if err != nil {
@@ -1138,29 +1182,35 @@ func TestStartDelegation(t *testing.T) {
 	if disk.Reviews[0].Status != ReviewRunning || disk.Counters.Delegations != 1 {
 		t.Fatalf("disk state = %s %+v — StartDelegation must persist atomically", disk.Reviews[0].Status, disk.Counters)
 	}
+	// A reviewer dispatch without the parent tool_use id never binds.
+	r2 := startTestRun(t, BudgetLimits{})
+	rev2 := preparedReview(t, r2)
+	if err := r2.StartDelegation(rev2, true, ""); err == nil {
+		t.Fatal("reviewer dispatch without the parent Agent tool_use_id: want error")
+	}
 
 	// Idempotence guards: unknown review, non-PREPARED review, wrong status.
-	if err := r.StartDelegation("nope", true); err == nil {
+	if err := r.StartDelegation("nope", true, "tu-x"); err == nil {
 		t.Fatal("StartDelegation(unknown review): want error")
 	}
-	if err := r.StartDelegation(revID, true); err == nil {
+	if err := r.StartDelegation(revID, true, "tu-y"); err == nil {
 		t.Fatal("StartDelegation on a RUNNING review: want error")
 	}
 
 	// Worker delegation in ACTIVE works and counts.
-	if err := r.RecordReviewResult(ReviewResult{ReviewID: revID, RunStatus: ReviewRunBlocked, ReasonCode: "x"}); err != nil {
+	if err := r.RecordReviewResult(ReviewResult{ReviewID: revID, RunStatus: ReviewRunBlocked, ReasonCode: "x", ArtifactDigest: r.Reviews[0].ArtifactDigest}); err != nil {
 		t.Fatalf("RecordReviewResult: %v", err)
 	}
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionContinue) // review-result checkpoint → ACTIVE
-	if err := r.StartDelegation("", false); err != nil {
+	if err := r.StartDelegation("", false, ""); err != nil {
 		t.Fatalf("StartDelegation(worker) in ACTIVE: %v", err)
 	}
 	if r.Counters.Delegations != 2 {
 		t.Fatalf("counters = %+v, want delegations=2", r.Counters)
 	}
-	if r.Counters.PhaseToolCalls != 0 {
-		t.Fatalf("counters = %+v, want PhaseToolCalls=0 (no open phase, M1b)", r.Counters)
+	if r.Counters.PhaseToolCalls != 1 {
+		t.Fatalf("counters = %+v, want PhaseToolCalls=1 (final-fix I1: the continue decision authorized the upcoming visit bucket — a pre-provider Agent dispatch charges it; 'no open phase' alone no longer exempts)", r.Counters)
 	}
 }
 
@@ -1181,7 +1231,7 @@ func TestStartDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
 
-	if err := r.StartDelegation(revID, true); err == nil {
+	if err := r.StartDelegation(revID, true, "tu-test"); err == nil {
 		t.Fatal("StartDelegation with an unwritable state dir must fail")
 	}
 
@@ -1286,7 +1336,7 @@ func TestB2ReviewOnDemandObligation(t *testing.T) {
 	}
 
 	// Requesting the review consumes the obligation and binds its source.
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview under obligation: %v", err)
 	}
 	if r.ReviewObligation != nil {
@@ -1311,7 +1361,7 @@ func TestB2ReviewOnDemandObligation(t *testing.T) {
 	if reloaded.ReviewObligation == nil {
 		t.Fatal("the obligation must persist across a crash")
 	}
-	if _, err := reloaded.RequestReview(testEnvelope()); err != nil {
+	if _, err := reloaded.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview after crash-reload: %v", err)
 	}
 	if reloaded.ReviewObligation != nil || reloaded.Reviews[0].SourceCheckpointID != cp2.ID {
@@ -1443,13 +1493,16 @@ func TestB4RecoveryPriorFrozenPerEpisode(t *testing.T) {
 // run left REVIEW_PENDING (CLOSED / WAIT_USER / OUTCOME_UNKNOWN all refuse).
 func TestM1aRequestReviewStatusGateFirst(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview from ACTIVE: %v", err)
 	}
 	// Force states a PREPARED review should not authorize a re-send from.
 	for _, st := range []RunStatus{StatusClosed, StatusWaitUser, StatusOutcomeUnknown} {
 		r.Status = st
-		if _, err := r.RequestReview(testEnvelope()); err == nil {
+		if _, err := r.RequestReview(testEnvelope(), nil); err == nil {
 			t.Fatalf("same-envelope re-send with status %s: want error, got nil", st)
 		}
 	}
@@ -1462,15 +1515,15 @@ func TestM1aRequestReviewStatusGateFirst(t *testing.T) {
 // charges only while a phase is open.
 func TestM1bCountToolCallRequiresOpenPhase(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
-	r.CountToolCall()
-	r.CountToolCall()
+	r.CountToolCall("")
+	r.CountToolCall("")
 	if r.Counters.PhaseToolCalls != 0 {
 		t.Fatalf("CountToolCall with no open phase: %d, want 0 (no-op)", r.Counters.PhaseToolCalls)
 	}
 	if err := r.OpenPhase("p1"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	r.CountToolCall()
+	r.CountToolCall("")
 	if r.Counters.PhaseToolCalls != 1 {
 		t.Fatalf("CountToolCall with an open phase: %d, want 1", r.Counters.PhaseToolCalls)
 	}
@@ -1570,12 +1623,15 @@ func TestM9CommitRollsBackOnSaveFailure(t *testing.T) {
 		t.Skip("running as root: permission bits do not block writes")
 	}
 	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
 	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Skipf("chmod: %v", err)
 	}
 
-	if _, err := r.RequestReview(testEnvelope()); err == nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err == nil {
 		t.Fatal("RequestReview with an unwritable state dir must fail")
 	}
 	if len(r.Reviews) != 0 || r.Status != StatusActive {
@@ -1585,7 +1641,7 @@ func TestM9CommitRollsBackOnSaveFailure(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatalf("chmod repair: %v", err)
 	}
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("retry after repair: %v", err)
 	}
 	if len(r.Reviews) != 1 || r.Reviews[0].Status != ReviewPrepared {
@@ -1631,7 +1687,7 @@ func TestM10StaleClearedOnReaccept(t *testing.T) {
 		CriteriaIDs: []string{"c1"},
 		Artifacts:   []ArtifactRef{{Path: "p1.md", Digest: "d2", Kind: "doc"}},
 	}
-	cp, err := r.SubmitPhase(sub)
+	cp, err := r.SubmitPhaseUnstaged(sub)
 	if err != nil {
 		t.Fatalf("resubmit p1: %v", err)
 	}
@@ -1695,7 +1751,7 @@ func TestM12BlockedCompletedExclusivity(t *testing.T) {
 		openAndSubmit(t, r, "p1", "c1")
 		displayCurrent(t, r)
 		decideCurrent(t, r, DecisionContinue)
-		if _, err := r.RequestReview(testEnvelope()); err != nil {
+		if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 			t.Fatalf("RequestReview: %v", err)
 		}
 		return r
@@ -1724,7 +1780,7 @@ func TestM12BlockedCompletedExclusivity(t *testing.T) {
 
 	// A clean BLOCKED result notes BLOCKED (plus reason) without a verdict.
 	r3 := pendingReview(t)
-	if err := r3.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunBlocked, ReasonCode: "L3-UNAVAILABLE"}); err != nil {
+	if err := r3.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunBlocked, ReasonCode: "L3-UNAVAILABLE", ArtifactDigest: r3.Reviews[0].ArtifactDigest}); err != nil {
 		t.Fatalf("clean BLOCKED: %v", err)
 	}
 	cp := r3.CurrentCheckpoint()
@@ -1757,7 +1813,7 @@ func TestMinorNonceRedrawsOnCollision(t *testing.T) {
 	if err := r.OpenPhase("p1"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cp, err := r.SubmitPhase(PhaseSubmission{PhaseID: "p1"})
+	cp, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "p1"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -1869,10 +1925,10 @@ func TestF1ReviewResultRecallDoesNotTouchDecidedCheckpoint(t *testing.T) {
 	cp2 := openAndSubmit(t, r, "p2", "c-2")
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionReviewOnDemand) // cp-2 decided [v]
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
-	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass, EvidenceToolCallIDs: []string{"toolu-1"}}); err != nil {
+	if err := r.RecordReviewResult(coveringResult(r, "rev-1", "pass")); err != nil {
 		t.Fatalf("RecordReviewResult: %v", err)
 	}
 	displayCurrent(t, r)
@@ -1917,13 +1973,13 @@ func TestF2StartRunRejectsEmptyWorkflow(t *testing.T) {
 // guard, so direct reducer callers cannot exceed the limit either.
 func TestStartDelegationEnforcesOwnBudget(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{Delegations: 1})
-	if err := r.OpenPhase("p1"); err != nil {
-		t.Fatalf("OpenPhase: %v", err)
-	}
-	if err := r.StartDelegation("", false); err != nil {
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if err := r.StartDelegation("", false, "tu-test"); err != nil {
 		t.Fatalf("first delegation within budget: %v", err)
 	}
-	if err := r.StartDelegation("", false); err == nil {
+	if err := r.StartDelegation("", false, "tu-test"); err == nil {
 		t.Fatal("StartDelegation past the delegation limit: want error (reducer-level guard), got nil")
 	}
 	if r.Counters.Delegations != 1 {
@@ -1931,10 +1987,10 @@ func TestStartDelegationEnforcesOwnBudget(t *testing.T) {
 	}
 
 	// The reviewer path is guarded by the same budget.
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
-	if err := r.StartDelegation("rev-1", true); err == nil {
+	if err := r.StartDelegation("rev-1", true, "tu-test"); err == nil {
 		t.Fatal("reviewer StartDelegation past the limit: want error, got nil")
 	}
 	if r.Reviews[0].Status != ReviewPrepared {
@@ -2220,14 +2276,14 @@ func TestRecordCriteriaDrop(t *testing.T) {
 	for _, fr := range r.AcceptanceView().Requirements {
 		for _, id := range fr.CriteriaIDs {
 			if !dropped[id] {
-				survivors = append(survivors, Criterion{ID: id, Method: MethodJudgment})
+				survivors = append(survivors, Criterion{ID: id, Method: MethodJudgment, Goal: "goal " + id})
 			}
 		}
 	}
 	if len(survivors) != 1 || survivors[0].ID != "crit-d" {
 		t.Fatalf("survivors = %v, want exactly [crit-d] (frozen − drops)", survivors)
 	}
-	env := Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-drop", ArtifactSet: []ArtifactRef{{Path: "x.md", Digest: "d"}}, ExitCriteria: survivors}
+	env := SemanticEnvelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-drop", ArtifactSet: []ArtifactRef{{Path: "x.md", Digest: "d"}}, ExitCriteria: survivors}
 	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {
 		t.Fatalf("envelope over frozen−drops must validate: %v", err)
 	}
@@ -2294,10 +2350,10 @@ func TestReacceptanceClearsRecordedDrop(t *testing.T) {
 	}
 	// The frozen view still carries the re-accepted criterion: a later
 	// envelope must include it again.
-	env := Envelope{
+	env := SemanticEnvelope{
 		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-clear",
 		ArtifactSet:  []ArtifactRef{{Path: "x.md", Digest: "d"}},
-		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}, {ID: "crit-b", Method: MethodJudgment}},
+		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment, Goal: "a"}, {ID: "crit-b", Method: MethodJudgment, Goal: "b"}},
 	}
 	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {
 		t.Fatalf("re-accepted criterion must be back in the expected envelope set: %v", err)
@@ -2310,15 +2366,14 @@ func TestReacceptanceClearsRecordedDrop(t *testing.T) {
 // decidable (mirror of RecordReviewResult's landed problem path).
 func TestRecordReviewProtocolError(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
-	env := Envelope{
-		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr",
-		ArtifactSet:  []ArtifactRef{{Path: "fix.md", Digest: "d"}},
-		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}},
+	openAndSubmit(t, r, "fix", "crit-a")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	env := Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr"}
+	if _, err := r.RequestReview(env, nil); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.RequestReview(env); err != nil {
-		t.Fatalf("RequestReview: %v", err)
-	}
-	if err := r.StartDelegation("rev-perr", true); err != nil {
+	if err := r.StartDelegation("rev-perr", true, "tu-test"); err != nil {
 		t.Fatalf("StartDelegation: %v", err)
 	}
 
@@ -2364,12 +2419,11 @@ func TestRecordReviewProtocolErrorLegality(t *testing.T) {
 		t.Fatalf("state must stay untouched, got %s / %d checkpoints", r.Status, len(r.Checkpoints))
 	}
 
-	env := Envelope{
-		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr",
-		ArtifactSet:  []ArtifactRef{{Path: "fix.md", Digest: "d"}},
-		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	openAndSubmit(t, r, "fix", "crit-a")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	env := Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr"}
+	if _, err := r.RequestReview(env, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Unknown review id.
@@ -2378,10 +2432,10 @@ func TestRecordReviewProtocolErrorLegality(t *testing.T) {
 		t.Fatalf("unknown review routing = (%v, %v), want (false, error)", routed, err)
 	}
 	// Conclude the review, then route again: refused, state unchanged.
-	if err := r.StartDelegation("rev-perr", true); err != nil {
+	if err := r.StartDelegation("rev-perr", true, "tu-test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RecordReviewResult(ReviewResult{ReviewID: "rev-perr", RunStatus: ReviewRunCompleted, Verdict: VerdictNeedsFix}); err != nil {
+	if err := r.RecordReviewResult(coveringResult(r, "rev-perr", "fail")); err != nil {
 		t.Fatal(err)
 	}
 	before := len(r.Checkpoints)
@@ -2401,15 +2455,14 @@ func TestRecordReviewProtocolErrorSaveFailureAtomic(t *testing.T) {
 		t.Skip("running as root: permission bits do not block writes")
 	}
 	r := startTestRun(t, BudgetLimits{})
-	env := Envelope{
-		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr",
-		ArtifactSet:  []ArtifactRef{{Path: "fix.md", Digest: "d"}},
-		ExitCriteria: []Criterion{{ID: "crit-a", Method: MethodJudgment}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	openAndSubmit(t, r, "fix", "crit-a")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	env := Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-perr"}
+	if _, err := r.RequestReview(env, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.StartDelegation("rev-perr", true); err != nil {
+	if err := r.StartDelegation("rev-perr", true, "tu-test"); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
@@ -2480,12 +2533,12 @@ func TestCriteriaDropReplayAfterReacceptance(t *testing.T) {
 	// The envelope arithmetic is NOT weakened: the frozen view still carries
 	// crit-a (re-frozen by the re-acceptance) AND crit-b (accepted with the
 	// ride-along decision) — no drop is in force.
-	env := Envelope{
+	env := SemanticEnvelope{
 		SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-replay",
 		ArtifactSet: []ArtifactRef{{Path: "x.md", Digest: "d"}},
 		ExitCriteria: []Criterion{
-			{ID: "crit-a", Method: MethodJudgment},
-			{ID: "crit-b", Method: MethodJudgment},
+			{ID: "crit-a", Method: MethodJudgment, Goal: "a"},
+			{ID: "crit-b", Method: MethodJudgment, Goal: "b"},
 		},
 	}
 	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {

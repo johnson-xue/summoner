@@ -231,12 +231,12 @@ func TestExtendBudgetAppliesPersistedDelta(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	r.CountToolCall()
-	r.CountToolCall()
+	r.CountToolCall("")
+	r.CountToolCall("")
 	if ok, _ := r.BudgetExhausted(); !ok {
 		t.Fatal("expected exhaustion before the extension")
 	}
-	cp, err := r.SubmitPhase(PhaseSubmission{PhaseID: "diagnosis"})
+	cp, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatal(err)
 	}

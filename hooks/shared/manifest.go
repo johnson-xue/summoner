@@ -32,6 +32,11 @@ type RuntimeManifest struct {
 	// ReviewCriteriaIDs are the phases.review.verification_spec.criteria ids —
 	// additions to DefaultReviewCriteriaIDs, never replacements.
 	ReviewCriteriaIDs []string
+	// ReviewCriteria is the same set with COMPLETE meaning (goal/method/
+	// check_id, required by default) — the staging path merges these as
+	// manifest additions (final-fix wave C1), so a manifest-declared criterion
+	// never reaches an envelope as a bare id.
+	ReviewCriteria []Criterion
 	// CheckRegistry is the manifest's check_registry decoded into the
 	// canonical CheckDef (digest field names shared with the JSON form).
 	CheckRegistry []CheckDef
@@ -283,6 +288,18 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 			}
 			if c.ID != "" {
 				m.ReviewCriteriaIDs = append(m.ReviewCriteriaIDs, c.ID)
+				m.ReviewCriteria = append(m.ReviewCriteria, Criterion{
+					ID:       c.ID,
+					Goal:     c.Goal,
+					Method:   CriterionMethod(c.Method),
+					CheckID:  c.CheckID,
+					Required: true,
+					Scope:    "accepted artifacts",
+					// A manifest criterion without a stated goal still gets an
+					// honest expected-form line naming its source — complete
+					// meaning, never a bare id.
+					Expected: fmt.Sprintf("As declared in summoner.yaml phases.review.verification_spec.criteria (%s)", c.Method),
+				})
 			}
 		}
 	}

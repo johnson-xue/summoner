@@ -57,6 +57,15 @@ const (
 	CheckpointPhase         CheckpointKind = "PHASE"
 	CheckpointChangeConfirm CheckpointKind = "CHANGE_CONFIRM"
 	CheckpointReviewResult  CheckpointKind = "REVIEW_RESULT"
+	// CheckpointReviewDebt is the mandatory-terminal-⑤ debt checkpoint (spec
+	// §0 item 2, ruling 72 / controller QA-2): on a workflow WITH a fixed
+	// review phase, a DONE whose terminal review is unsettled (no concluded
+	// PASS over the CURRENT acceptance view, no explicit skip) parks here in
+	// WAIT_USER — review ([v]), skip (finish UNREVIEWED), continue working or
+	// stop. It deliberately offers NO done: the debt is the only thing DONE
+	// could not discharge, so re-asking it cannot wedge. Workflows without a
+	// review phase (ops/release) never mint this debt.
+	CheckpointReviewDebt CheckpointKind = "REVIEW_DEBT"
 	// CheckpointRecovery is the spec §5 recovery checkpoint: an
 	// OUTCOME_UNKNOWN episode that resolved failed/indeterminate must not
 	// auto-restore — the user decides retry/rollback/accept at this
@@ -113,9 +122,16 @@ type Criterion struct {
 
 // FrozenRequirement maps one accepted requirement to its criteria and scope.
 type FrozenRequirement struct {
-	ID          string   `json:"id"`
-	CriteriaIDs []string `json:"criteria_ids,omitempty"`
-	Artifacts   []string `json:"artifacts,omitempty"`
+	ID                 string        `json:"id"`
+	Content            string        `json:"content,omitempty"`
+	Version            int           `json:"version,omitempty"`
+	CriteriaIDs        []string      `json:"criteria_ids,omitempty"`
+	Artifacts          []string      `json:"artifacts,omitempty"`
+	ArtifactRefs       []ArtifactRef `json:"artifact_refs,omitempty"`
+	PlannedScope       []string      `json:"planned_scope,omitempty"`
+	SourceVisitID      string        `json:"source_visit_id,omitempty"`
+	SourceCheckpointID string        `json:"source_checkpoint_id,omitempty"`
+	AcceptedBy         string        `json:"accepted_by,omitempty"`
 }
 
 // FrozenView is the acceptance view frozen at user acceptance; producers
@@ -123,6 +139,29 @@ type FrozenRequirement struct {
 type FrozenView struct {
 	Version      int                 `json:"version,omitempty"`
 	Requirements []FrozenRequirement `json:"requirements,omitempty"`
+	Criteria     []Criterion         `json:"criteria,omitempty"`
+	ArtifactSet  []ArtifactRef       `json:"artifact_set,omitempty"`
+	CheckDefs    []CheckDef          `json:"check_defs,omitempty"`
+	// VerificationScope is the frozen scope authority of the view; envelope
+	// validation compares against it, and the wire form never re-carries it.
+	VerificationScope  VerificationScope       `json:"-"`
+	CheckScope         VerificationScope       `json:"check_scope,omitempty"`
+	Environment        VerificationEnvironment `json:"environment"`
+	SourceVisitID      string                  `json:"source_visit_id,omitempty"`
+	SourceCheckpointID string                  `json:"source_checkpoint_id,omitempty"`
+	AcceptedBy         string                  `json:"accepted_by,omitempty"`
+}
+
+// Only observed environment properties are frozen. Unknown properties disable
+// cross-review reuse; a declaration never certifies native isolation.
+type VerificationEnvironment struct {
+	OS             string   `json:"os"`
+	Arch           string   `json:"arch"`
+	Runtime        string   `json:"runtime"`
+	Tier           string   `json:"tier"`
+	DefaultsDigest string   `json:"defaults_digest"`
+	ManifestDigest string   `json:"manifest_digest,omitempty"`
+	Unknown        []string `json:"unknown,omitempty"`
 }
 
 // VerificationScope bounds what a reviewer may read and run.
@@ -132,22 +171,45 @@ type VerificationScope struct {
 	OutputSchema string   `json:"output_schema,omitempty"`
 }
 
-// Envelope is the sole review input contract (spec §3).
+// Envelope is the sole review input contract (spec §3). The producer's
+// registration args are identity-only ({schema_version, run_id, review_id});
+// the reducer mints the complete envelope from the pinned acceptance snapshot,
+// so the wire form carries no semantic transport at all (final-fix wave).
 type Envelope struct {
-	SchemaVersion     string            `json:"schema_version"`
-	RunID             string            `json:"run_id"`
-	ReviewID          string            `json:"review_id"`
-	ArtifactSet       []ArtifactRef     `json:"artifact_set"`
-	Requirements      FrozenView        `json:"requirements"`
-	ExitCriteria      []Criterion       `json:"exit_criteria"`
-	VerificationScope VerificationScope `json:"verification_scope"`
+	SchemaVersion string `json:"schema_version"`
+	RunID         string `json:"run_id"`
+	ReviewID      string `json:"review_id"`
+}
+
+// SemanticEnvelope is the COMPLETE minted review input: the reducer builds it
+// from the pinned acceptance snapshot (minus recorded user drops) — never from
+// producer-supplied semantics. Stored on ReviewRecord; one canonical JSON form
+// feeds the reviewer capsule and the digests.
+type SemanticEnvelope struct {
+	SchemaVersion     string                  `json:"schema_version"`
+	RunID             string                  `json:"run_id"`
+	ReviewID          string                  `json:"review_id"`
+	ArtifactSet       []ArtifactRef           `json:"artifact_set"`
+	Requirements      FrozenView              `json:"requirements"`
+	ExitCriteria      []Criterion             `json:"exit_criteria"`
+	VerificationScope VerificationScope       `json:"verification_scope"`
+	CheckDefs         []CheckDef              `json:"check_defs,omitempty"`
+	Environment       VerificationEnvironment `json:"environment"`
 }
 
 // CriterionVerdict is the per-criterion conclusion of a review.
 type CriterionVerdict struct {
-	CriterionID string `json:"criterion_id"`
-	Status      string `json:"status"`
-	Note        string `json:"note,omitempty"`
+	CriterionID string           `json:"criterion_id"`
+	Status      string           `json:"status"`
+	Note        string           `json:"note,omitempty"`
+	Evidence    []EvidenceAnchor `json:"evidence,omitempty"`
+}
+
+type EvidenceAnchor struct {
+	ToolUseID string `json:"tool_use_id"`
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	CheckID   string `json:"check_id,omitempty"`
 }
 
 // Finding is one review finding; it carries no next-phase choice.
@@ -162,6 +224,7 @@ type Finding struct {
 // ReviewResult is the structured reviewer return (spec §3 证据与 verdict).
 type ReviewResult struct {
 	ReviewID            string             `json:"review_id"`
+	AttemptID           string             `json:"attempt_id,omitempty"`
 	ArtifactDigest      string             `json:"artifact_digest"`
 	RunStatus           string             `json:"run_status"`            // COMPLETED|BLOCKED
 	ReasonCode          string             `json:"reason_code,omitempty"` // BLOCKED only
@@ -215,6 +278,7 @@ type ImpactReport struct {
 // keeps its history (Outcome "recalled"), and "the phase's" state is the
 // LAST visit with that id.
 type PhaseState struct {
+	VisitID          string   `json:"visit_id,omitempty"`
 	ID               string   `json:"id"`
 	Open             bool     `json:"open"`
 	OpenedAt         string   `json:"opened_at,omitempty"`
@@ -258,21 +322,29 @@ type CriteriaDropReceipt struct {
 // replaced: it is no longer current or decidable — its re-rendered successor
 // is (task-2.5 M2).
 type CheckpointState struct {
-	ID               string            `json:"id"`
-	Kind             CheckpointKind    `json:"kind"`
-	PhaseID          string            `json:"phase_id,omitempty"`
-	Note             string            `json:"note,omitempty"`
-	Nonce            string            `json:"nonce"`
-	ArtifactVersions map[string]string `json:"artifact_versions,omitempty"`
-	CriteriaIDs      []string          `json:"criteria_ids,omitempty"`
-	OpenedAt         string            `json:"opened_at,omitempty"`
-	Displayed        bool              `json:"displayed"`
-	DisplayDigest    string            `json:"display_digest,omitempty"`
-	DisplayedAt      string            `json:"displayed_at,omitempty"`
-	Decided          bool              `json:"decided"`
-	Superseded       bool              `json:"superseded,omitempty"`
-	Decision         Decision          `json:"decision,omitempty"`
-	DecidedAt        string            `json:"decided_at,omitempty"`
+	RunID             string            `json:"run_id,omitempty"`
+	Snapshot          FrozenView        `json:"snapshot"`
+	Limits            BudgetLimits      `json:"limits"`
+	Counters          BudgetCounters    `json:"counters"`
+	RecallTargets     []RecallTarget    `json:"recall_targets,omitempty"`
+	ReviewRetry       *ReviewRetry      `json:"review_retry,omitempty"`
+	ReviewID          string            `json:"review_id,omitempty"`
+	ReviewDisposition string            `json:"review_disposition,omitempty"`
+	ID                string            `json:"id"`
+	Kind              CheckpointKind    `json:"kind"`
+	PhaseID           string            `json:"phase_id,omitempty"`
+	Note              string            `json:"note,omitempty"`
+	Nonce             string            `json:"nonce"`
+	ArtifactVersions  map[string]string `json:"artifact_versions,omitempty"`
+	CriteriaIDs       []string          `json:"criteria_ids,omitempty"`
+	OpenedAt          string            `json:"opened_at,omitempty"`
+	Displayed         bool              `json:"displayed"`
+	DisplayDigest     string            `json:"display_digest,omitempty"`
+	DisplayedAt       string            `json:"displayed_at,omitempty"`
+	Decided           bool              `json:"decided"`
+	Superseded        bool              `json:"superseded,omitempty"`
+	Decision          Decision          `json:"decision,omitempty"`
+	DecidedAt         string            `json:"decided_at,omitempty"`
 	// DecisionToolUseID binds the decision to the platform AskUserQuestion
 	// call whose injected tool_response carried it (spec §7 平台关联键): the
 	// replay-idempotency key of RecordDecision — a replayed callback with the
@@ -298,23 +370,57 @@ type CheckpointState struct {
 // (task-2.5 B2): the on-demand review the user asked for and owes before any
 // work may (re)start. RequestReview consumes it into the review record.
 type ReviewObligation struct {
-	SourceCheckpointID string `json:"source_checkpoint_id"`
-	PhaseID            string `json:"phase_id,omitempty"`
-	At                 string `json:"at,omitempty"`
+	Snapshot           FrozenView `json:"snapshot"`
+	SourceCheckpointID string     `json:"source_checkpoint_id"`
+	PhaseID            string     `json:"phase_id,omitempty"`
+	At                 string     `json:"at,omitempty"`
 }
 
 // ReviewRecord is one ⑤ review's lifecycle record.
 type ReviewRecord struct {
-	ReviewID           string      `json:"review_id"`
-	Status             ReviewState `json:"status"`
-	SourceCheckpointID string      `json:"source_checkpoint_id,omitempty"` // set when [v]-originated (B2)
-	EnvelopeDigest     string      `json:"envelope_digest,omitempty"`
-	ArtifactDigest     string      `json:"artifact_digest,omitempty"`
-	Verdict            string      `json:"verdict,omitempty"`
-	ReasonCode         string      `json:"reason_code,omitempty"`
-	RequestedAt        string      `json:"requested_at,omitempty"`
-	StartedAt          string      `json:"started_at,omitempty"`
-	ConcludedAt        string      `json:"concluded_at,omitempty"`
+	Envelope           SemanticEnvelope `json:"envelope"`
+	ActiveAttemptID    string          `json:"active_attempt_id"`
+	Attempts           []ReviewAttempt `json:"attempts"`
+	Result             *ReviewResult   `json:"result,omitempty"`
+	DefaultDebt        bool            `json:"default_debt,omitempty"`
+	ReviewID           string          `json:"review_id"`
+	Status             ReviewState     `json:"status"`
+	SourceCheckpointID string          `json:"source_checkpoint_id,omitempty"` // set when [v]-originated (B2)
+	EnvelopeDigest     string          `json:"envelope_digest,omitempty"`
+	ArtifactDigest     string          `json:"artifact_digest,omitempty"`
+	Verdict            string          `json:"verdict,omitempty"`
+	ReasonCode         string          `json:"reason_code,omitempty"`
+	RequestedAt        string          `json:"requested_at,omitempty"`
+	StartedAt          string          `json:"started_at,omitempty"`
+	ConcludedAt        string          `json:"concluded_at,omitempty"`
+}
+
+// ReviewAttempt is one append-only dispatch receipt. Ownership binds the
+// platform-origin INITIAL child task record's exact capsule to exactly one
+// admitted parent Agent tool_use_id; absent/ambiguous correlation is
+// quarantine/BLOCKED, never guessed (controller QA-1).
+type ReviewAttempt struct {
+	AttemptID           string `json:"attempt_id"`
+	Token               string `json:"token,omitempty"`
+	ParentToolUseID     string `json:"parent_tool_use_id"`
+	DispatchedAt        string `json:"dispatched_at,omitempty"`
+	RetiredAt           string `json:"retired_at,omitempty"`
+	State               string `json:"state"` // PREPARED|RUNNING|RETIRED
+	ChildAgentID        string `json:"child_agent_id,omitempty"`
+	ChildTranscriptPath string `json:"child_transcript_path,omitempty"`
+	ResultReceiptDigest string `json:"result_receipt_digest,omitempty"`
+}
+
+// ReviewRetry pins the funded same-envelope retry obligation opened when a
+// wedged RUNNING attempt recovers with no usable result and no budget to
+// redispatch. It rides the existing REVIEW_RESULT checkpoint.
+type ReviewRetry struct {
+	ReviewID       string `json:"review_id"`
+	AttemptID      string `json:"attempt_id"`
+	EnvelopeDigest string `json:"envelope_digest"`
+	ResumeTarget   string `json:"resume_target"`
+	SkipLabel      string `json:"skip_label"`
+	RetryLabel     string `json:"retry_label"`
 }
 
 // OutcomeUnknown is one possibly-executed-but-unpersisted tool side effect
@@ -425,10 +531,21 @@ type PostGame struct {
 // is wired from AskUserQuestion annotations in Task 4; the field exists now
 // so the schema is complete (task-2.5 M11).
 type RecallRecord struct {
+	TargetVisitID string `json:"target_visit_id"`
+	Provenance    string `json:"provenance"`
+	Reason        string `json:"reason"`
+	Label         string `json:"label"`
 	FromPhaseID   string `json:"from_phase_id,omitempty"`
 	TargetPhaseID string `json:"target_phase_id,omitempty"`
-	Reason        string `json:"reason,omitempty"`
 	At            string `json:"at,omitempty"`
+}
+
+// RecallTarget is one offerable named recall destination rendered at a
+// checkpoint and pinned into its decision payload.
+type RecallTarget struct {
+	VisitID string `json:"visit_id"`
+	Label   string `json:"label"`
+	PhaseID string `json:"phase_id"`
 }
 
 // RunState is the persisted run document. State root:
@@ -465,6 +582,15 @@ type RunState struct {
 	OutcomeUnknowns []OutcomeUnknown      `json:"outcome_unknowns,omitempty"`
 	Limits          BudgetLimits          `json:"budget_limits"`
 	Counters        BudgetCounters        `json:"budget_counters"`
+	// Visit bucket (final-fix wave I1, adjudication §5): UpcomingVisit marks
+	// an authorized UPCOMING visit — a continue/skip decision returned the
+	// run to ACTIVE and the next phase is not open yet. Real work in that
+	// window charges Counters.PhaseToolCalls, and the next OpenPhase ADOPTS
+	// the accrual instead of resetting it; only the lifecycle decision
+	// boundary resets the bucket. ChargedToolUseIDs dedups admitted tool
+	// call ids (one call charges exactly once, hook replay included).
+	UpcomingVisit    bool     `json:"upcoming_visit,omitempty"`
+	ChargedToolUseIDs []string `json:"charged_tool_use_ids,omitempty"`
 	// BudgetConfirmed (T18) marks the run-start budget settlement observed at
 	// the first checkpoint (budget.confirmed); BudgetSettledBy binds it to the
 	// answering AskUserQuestion call; BudgetExtensions are the append-only
@@ -488,4 +614,39 @@ type PhaseSubmission struct {
 	Artifacts   []ArtifactRef `json:"artifacts,omitempty"`
 	CriteriaIDs []string      `json:"criteria_ids,omitempty"`
 	CheckRefs   []string      `json:"check_refs,omitempty"`
+	// Proposed semantics (final-fix wave): the model PROPOSES meaning; hooks
+	// validate/normalize it and hash CURRENT artifact bytes. Digests arriving
+	// here are advisory only — the hook recomputes from disk.
+	Criteria     []Criterion           `json:"criteria,omitempty"`
+	Requirements []ProposedRequirement `json:"requirements,omitempty"`
+}
+
+// StagedSnapshot is the GATE-BUILT, hook-verified semantic staging of one
+// phase submission (final-fix wave C1): hook-hashed CURRENT artifact digests
+// (digests the producer supplied are advisory and replaced), planned
+// (not-yet-existing) scope kept separate from frozen artifacts, COMPLETE
+// criterion meaning — the model's proposal merged with the shipped default
+// criteria and manifest additions on review-phase workflows — the frozen
+// check defs with RECOMPUTED digests, and the effective verification scope.
+// The reducer stages it on the pending checkpoint; only the verified
+// rendered platform acceptance freezes it into the run's cumulative view.
+// Nothing here is producer authority: every field is derived or validated by
+// the hooks.
+type StagedSnapshot struct {
+	Criteria     []Criterion           `json:"criteria,omitempty"`
+	Requirements []ProposedRequirement `json:"requirements,omitempty"`
+	ArtifactSet  []ArtifactRef         `json:"artifact_set,omitempty"`
+	PlannedScope []string              `json:"planned_scope,omitempty"`
+	CheckDefs    []CheckDef            `json:"check_defs,omitempty"`
+	CheckScope   VerificationScope     `json:"check_scope,omitempty"`
+}
+
+// ProposedRequirement is the model-authored requirement meaning of one
+// submission; acceptance freezes the normalized form.
+type ProposedRequirement struct {
+	ID          string   `json:"id"`
+	Content     string   `json:"content,omitempty"`
+	Version     int      `json:"version,omitempty"`
+	CriteriaIDs []string `json:"criteria_ids,omitempty"`
+	Artifacts   []string `json:"artifacts,omitempty"`
 }

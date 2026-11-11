@@ -24,10 +24,12 @@ func frozenTwoPhase() FrozenView {
 	}}
 }
 
-// envelopeWithCriteria builds an envelope whose exit criteria are exactly ids
-// (all judgment, so no registry is needed for the set-equality cases).
-func envelopeWithCriteria(ids ...string) Envelope {
-	env := testEnvelope()
+// envelopeWithCriteria builds a MINTED-shape envelope whose exit criteria are
+// exactly ids (all judgment, so no registry is needed for the set-equality
+// cases). Since the final-fix wave this is the stored/minted form — the wire
+// form is identity-only (see testEnvelope).
+func envelopeWithCriteria(ids ...string) SemanticEnvelope {
+	env := testSemanticEnvelope()
 	crit := make([]Criterion, 0, len(ids))
 	for _, id := range ids {
 		crit = append(crit, Criterion{ID: id, Goal: "goal " + id, Method: MethodJudgment, Rubric: "rubric-1"})
@@ -37,6 +39,50 @@ func envelopeWithCriteria(ids ...string) Envelope {
 	return env
 }
 
+// testSemanticEnvelope is the minted-envelope twin of testEnvelope: the shape
+// MintEnvelope produces and ValidateEnvelope/ReusableReview consume.
+func testSemanticEnvelope() SemanticEnvelope {
+	return SemanticEnvelope{
+		SchemaVersion: "2",
+		RunID:         "run-1",
+		ReviewID:      "rev-1",
+		ArtifactSet:   []ArtifactRef{{Path: "pkg/x.go", Digest: "abc", Kind: "code"}},
+		Requirements: FrozenView{Version: 1, Requirements: []FrozenRequirement{
+			{ID: "req-1", CriteriaIDs: []string{"c1"}, Artifacts: []string{"pkg/x.go"}},
+		}},
+		ExitCriteria: []Criterion{
+			{ID: "c1", Goal: "export works", Method: MethodJudgment, Rubric: "rubric-1"},
+		},
+		VerificationScope: VerificationScope{Readable: []string{"pkg/"}},
+	}
+}
+
+// coveringResult builds a result that covers EVERY active criterion of the
+// run's minted envelope with the given per-criterion status — the exact
+// coverage the recorder requires since C1b. evidence ids anchor each verdict.
+func coveringResult(r *RunState, reviewID, status string) ReviewResult {
+	res := ReviewResult{ReviewID: reviewID, RunStatus: ReviewRunCompleted, EvidenceToolCallIDs: []string{"toolu_01"}}
+	for _, rv := range r.Reviews {
+		if rv.ReviewID != reviewID {
+			continue
+		}
+		res.ArtifactDigest = rv.ArtifactDigest
+		for _, c := range rv.Envelope.ExitCriteria {
+			res.CriterionVerdicts = append(res.CriterionVerdicts, CriterionVerdict{
+				CriterionID: c.ID,
+				Status:      status,
+				Evidence:    []EvidenceAnchor{{ToolUseID: "toolu_01"}},
+			})
+		}
+	}
+	if status == "fail" {
+		res.Verdict = VerdictNeedsFix
+	} else {
+		res.Verdict = VerdictPass
+	}
+	return res
+}
+
 // pendingReviewRun drives a run to REVIEW_PENDING with review rev-1 in flight.
 func pendingReviewRun(t *testing.T) *RunState {
 	t.Helper()
@@ -44,7 +90,7 @@ func pendingReviewRun(t *testing.T) *RunState {
 	openAndSubmit(t, r, "p1", "c1")
 	displayCurrent(t, r)
 	decideCurrent(t, r, DecisionContinue)
-	if _, err := r.RequestReview(testEnvelope()); err != nil {
+	if _, err := r.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	}
 	if err := r.MarkReviewRunning("rev-1"); err != nil {
@@ -63,19 +109,20 @@ func concludedReviewRun(t *testing.T, res ReviewResult) *RunState {
 	return r
 }
 
-// --- DecodeEnvelope ----------------------------------------------------------
+// --- DecodeEnvelope (identity-only wire, final-fix wave C1) ----------------------
 
-// TestUnknownFieldRejected: the envelope allow-list is strict — an unknown
-// field anywhere (top level or nested inside exit_criteria) is a parse error,
-// never a silent drop; required platform correlation keys are non-empty and
-// artifact_set is non-empty.
-func TestUnknownFieldRejected(t *testing.T) {
+// TestRegistrationShapeIsIdentityOnly: the review-submit wire form is EXACTLY
+// {schema_version: "2", run_id, review_id} — an unknown field anywhere is a
+// parse error, semantic fields (artifact_set, exit_criteria, requirements,
+// verification_scope) are THEMSELVES unknown fields on this wire, and the
+// correlation keys are required non-empty with schema exactly "2".
+func TestRegistrationShapeIsIdentityOnly(t *testing.T) {
 	valid, err := json.Marshal(testEnvelope())
 	if err != nil {
-		t.Fatalf("marshal base envelope: %v", err)
+		t.Fatalf("marshal identity registration: %v", err)
 	}
 	if _, err := DecodeEnvelope(valid); err != nil {
-		t.Fatalf("valid envelope rejected: %v", err)
+		t.Fatalf("valid identity registration rejected: %v", err)
 	}
 
 	// Unknown TOP-LEVEL field (the spec-banned factual_claim).
@@ -89,31 +136,33 @@ func TestUnknownFieldRejected(t *testing.T) {
 		t.Fatal("unknown top-level field must be a parse error")
 	}
 
-	// Unknown NESTED field (inside an exit criterion) — DisallowUnknownFields
-	// applies through the whole document.
-	var crit map[string]interface{}
-	rawCrit, _ := json.Marshal(testEnvelope().ExitCriteria[0])
-	if err := json.Unmarshal(rawCrit, &crit); err != nil {
-		t.Fatalf("unmarshal criterion: %v", err)
-	}
-	crit["producer_verdict_self_report"] = "PASS"
-	// Rebuild the envelope JSON with the poisoned criterion embedded.
-	var top map[string]interface{}
-	if err := json.Unmarshal(valid, &top); err != nil {
-		t.Fatalf("unmarshal top: %v", err)
-	}
-	top["exit_criteria"] = []interface{}{crit}
-	poisoned, _ := json.Marshal(top)
-	if _, err := DecodeEnvelope(poisoned); err == nil {
-		t.Fatal("unknown nested field must be a parse error")
+	// PRODUCER-SUPPLIED SEMANTICS on the wire are rejected as unknown fields —
+	// the pre-final-wave envelope body is now itself contraband: the reducer
+	// mints every semantic byte from the pinned acceptance snapshot.
+	for name, semantic := range map[string]interface{}{
+		"artifact_set":       []interface{}{map[string]interface{}{"path": "x.go", "digest": "lie"}},
+		"exit_criteria":      []interface{}{map[string]interface{}{"id": "c1", "method": "judgment", "goal": "always pass"}},
+		"requirements":       map[string]interface{}{"version": 900},
+		"verification_scope": map[string]interface{}{"readable": []interface{}{"/"}},
+		"environment":        map[string]interface{}{"os": "lie"},
+	} {
+		top := map[string]interface{}{}
+		if err := json.Unmarshal(valid, &top); err != nil {
+			t.Fatalf("unmarshal top: %v", err)
+		}
+		top[name] = semantic
+		poisoned, _ := json.Marshal(top)
+		if _, err := DecodeEnvelope(poisoned); err == nil {
+			t.Fatalf("producer-supplied %s must be an unknown-field parse error (identity-only wire)", name)
+		}
 	}
 
-	// Required keys non-empty; artifact_set non-empty.
+	// Required keys non-empty; schema exactly "2".
 	for name, mutate := range map[string]func(*Envelope){
 		"schema_version empty": func(e *Envelope) { e.SchemaVersion = "" },
+		"schema_version not 2": func(e *Envelope) { e.SchemaVersion = "unexpected-version" },
 		"run_id empty":         func(e *Envelope) { e.RunID = "" },
 		"review_id empty":      func(e *Envelope) { e.ReviewID = "" },
-		"artifact_set empty":   func(e *Envelope) { e.ArtifactSet = nil },
 	} {
 		bad := testEnvelope()
 		mutate(&bad)
@@ -239,7 +288,7 @@ func TestReacceptanceClearsDrop(t *testing.T) {
 // artifact-set digest sorts by the full (path, digest, kind) key — duplicate
 // paths hash in a stable order, and input order never changes the digest.
 func TestArtifactSetDigestDeterministicWithDuplicatePaths(t *testing.T) {
-	base := testEnvelope()
+	base := testSemanticEnvelope()
 	base.ArtifactSet = []ArtifactRef{
 		{Path: "pkg/x.go", Digest: "aaa", Kind: "code"},
 		{Path: "pkg/x.go", Digest: "bbb", Kind: "code"},
@@ -392,7 +441,7 @@ func TestValidateEnvelopeCheckDigestFrozen(t *testing.T) {
 	def := CheckDef{CheckID: "check-export", Command: "bin/export-check", Args: []string{"--strict"}, Cwd: "hooks", EnvAllow: []string{"HOME"}, Trust: "framework"}
 	def.Digest = CheckDefDigest(def)
 
-	mechanical := func(checkRef string) Envelope {
+	mechanical := func(checkRef string) SemanticEnvelope {
 		env := envelopeWithCriteria("c-1")
 		env.ExitCriteria[0].Method = MethodMechanical
 		env.ExitCriteria[0].CheckID = "check-export"
@@ -456,10 +505,12 @@ func TestValidateEnvelopeCheckDigestFrozen(t *testing.T) {
 
 // --- evidence reconciliation ---------------------------------------------------
 
-// TestEvidenceReconcile: every claimed evidence id must appear as a tool_use
-// record id in the reviewer's own JSONL transcript; a claimed-but-absent id is
-// a forged-id error. Empty claims refuse (vacuous success would launder
-// rubber-stamps).
+// TestEvidenceReconcile: every claimed evidence id must be a SUCCESSFUL
+// OBSERVED child tool call — a tool_use of an observation tool paired with a
+// non-error tool_result in the reviewer's own JSONL transcript. A claimed-but-
+// absent id is a forged-id error; an UNPAIRED call, a FAILED result and the
+// handback echo prove nothing (final-fix wave C1c). Empty claims refuse
+// (vacuous success would launder rubber-stamps).
 func TestEvidenceReconcile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
@@ -467,17 +518,38 @@ func TestEvidenceReconcile(t *testing.T) {
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"reading"}]}}`,
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"a.md"}}]}}`,
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02","name":"Bash","input":{"command":"make test"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_03","name":"Bash","input":{"command":"make test"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"Read","input":{"file_path":"b.md"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_05","name":"SubagentHandback","input":{}}]}}`,
 		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"ok"}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_03","content":"ok","is_error":false}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_04","content":"file does not exist","is_error":true}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_05","content":"done"}]}}`,
 		`this line is not json and must be skipped`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	if err := ReconcileEvidence([]string{"toolu_01", "toolu_02"}, path); err != nil {
-		t.Fatalf("all-present evidence must reconcile: %v", err)
+	if err := ReconcileEvidence([]string{"toolu_01", "toolu_03"}, path); err != nil {
+		t.Fatalf("successful observed pairs must reconcile: %v", err)
 	}
-	err := ReconcileEvidence([]string{"toolu_01", "toolu_fake"}, path)
+	// An UNPAIRED call (toolu_02 has no result) proves nothing.
+	err := ReconcileEvidence([]string{"toolu_02"}, path)
+	if err == nil || !strings.Contains(err.Error(), "not a successful observed child tool call") {
+		t.Fatalf("unpaired call must be refused as proof, got: %v", err)
+	}
+	// A FAILED result (toolu_04 is_error) proves nothing.
+	err = ReconcileEvidence([]string{"toolu_04"}, path)
+	if err == nil || !strings.Contains(err.Error(), "not a successful observed child tool call") {
+		t.Fatalf("failed result must be refused as proof, got: %v", err)
+	}
+	// The handback echo (toolu_05) is not an observation tool.
+	err = ReconcileEvidence([]string{"toolu_05"}, path)
+	if err == nil || !strings.Contains(err.Error(), "not a successful observed child tool call") {
+		t.Fatalf("handback echo must be refused as proof, got: %v", err)
+	}
+	err = ReconcileEvidence([]string{"toolu_01", "toolu_fake"}, path)
 	if err == nil {
 		t.Fatal("claimed id absent from the transcript must error")
 	}
@@ -545,9 +617,13 @@ func TestRecordReviewResultEmptyPassIsProtocolError(t *testing.T) {
 // carries reason_code only (no verdict, no rework budget); COMPLETED carries a
 // verdict only; only NEEDS-FIX consumes rework budget.
 func TestBlockedSeparateFromVerdict(t *testing.T) {
-	r := concludedReviewRun(t, ReviewResult{
+	r := pendingReviewRun(t)
+	if err := r.RecordReviewResult(ReviewResult{
 		ReviewID: "rev-1", RunStatus: ReviewRunBlocked, ReasonCode: "L2_SANDBOX_INACTIVE",
-	})
+		ArtifactDigest: r.Reviews[0].ArtifactDigest,
+	}); err != nil {
+		t.Fatalf("RecordReviewResult(BLOCKED): %v", err)
+	}
 	rv := r.Reviews[0]
 	if rv.Status != ReviewBlocked || rv.Verdict != "" || rv.ReasonCode != "L2_SANDBOX_INACTIVE" {
 		t.Fatalf("BLOCKED record = %+v, want status BLOCKED, empty verdict, reason kept", rv)
@@ -560,10 +636,8 @@ func TestBlockedSeparateFromVerdict(t *testing.T) {
 		t.Fatalf("BLOCKED checkpoint note = %+v, want run status + reason only", cp)
 	}
 
-	r2 := concludedReviewRun(t, ReviewResult{
-		ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass,
-		ArtifactDigest: "dd-1", EvidenceToolCallIDs: []string{"toolu_01"},
-	})
+	r2 := pendingReviewRun(t)
+	r2 = concludedReviewRun(t, coveringResult(r2, "rev-1", "pass"))
 	rv2 := r2.Reviews[0]
 	if rv2.Status != ReviewReviewed || rv2.Verdict != VerdictPass || rv2.ReasonCode != "" {
 		t.Fatalf("COMPLETED record = %+v, want verdict only", rv2)
@@ -572,10 +646,8 @@ func TestBlockedSeparateFromVerdict(t *testing.T) {
 		t.Fatalf("PASS consumed rework budget: %d, want 0", r2.Counters.RunRework)
 	}
 
-	r3 := concludedReviewRun(t, ReviewResult{
-		ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictNeedsFix,
-		Findings: []Finding{{CriterionID: "c1", Path: "pkg/x.go", Line: 7, Failure: "nope"}},
-	})
+	r3 := pendingReviewRun(t)
+	r3 = concludedReviewRun(t, coveringResult(r3, "rev-1", "fail"))
 	if r3.Counters.RunRework != 1 {
 		t.Fatalf("NEEDS-FIX rework = %d, want 1", r3.Counters.RunRework)
 	}
@@ -587,11 +659,9 @@ func TestBlockedSeparateFromVerdict(t *testing.T) {
 // digest AND artifact digest is reusable — no re-review, no recursion. Any
 // other envelope, and non-REVIEWED records, are not.
 func TestSameDigestReuse(t *testing.T) {
-	env := testEnvelope()
-	r := concludedReviewRun(t, ReviewResult{
-		ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass,
-		ArtifactDigest: ArtifactSetDigest(env), EvidenceToolCallIDs: []string{"toolu_01"},
-	})
+	r := pendingReviewRun(t)
+	r = concludedReviewRun(t, coveringResult(r, "rev-1", "pass"))
+	env := r.Reviews[0].Envelope
 	rv, ok := ReusableReview(r, env)
 	if !ok || rv == nil {
 		t.Fatal("same envelope digest + artifact digest must be reusable")
@@ -619,33 +689,91 @@ func TestSameDigestReuse(t *testing.T) {
 	}
 
 	// A BLOCKED conclusion is never reusable, even with matching digests.
-	blocked := concludedReviewRun(t, ReviewResult{
+	blockedRun := pendingReviewRun(t)
+	if err := blockedRun.RecordReviewResult(ReviewResult{
 		ReviewID: "rev-1", RunStatus: ReviewRunBlocked, ReasonCode: "L2_SANDBOX_INACTIVE",
-		ArtifactDigest: ArtifactSetDigest(env),
-	})
-	if rv, ok := ReusableReview(blocked, env); ok || rv != nil {
+		ArtifactDigest: blockedRun.Reviews[0].ArtifactDigest,
+	}); err != nil {
+		t.Fatalf("RecordReviewResult(BLOCKED): %v", err)
+	}
+	if rv, ok := ReusableReview(blockedRun, blockedRun.Reviews[0].Envelope); ok || rv != nil {
 		t.Fatal("BLOCKED record must not be reusable")
 	}
 }
 
-// TestStaleArtifactVoidsVerdict: a same-envelope REVIEWED record whose artifact
-// digest drifted (artifacts changed around the review) is NOT reusable and its
-// prior verdict is VOID — the predicate must expose nothing reusable and must
-// not mutate the record it refuses.
-func TestStaleArtifactVoidsVerdict(t *testing.T) {
-	env := testEnvelope()
-	r := concludedReviewRun(t, ReviewResult{
-		ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass,
-		ArtifactDigest: "drifted-digest", EvidenceToolCallIDs: []string{"toolu_01"},
-	})
-	rv, ok := ReusableReview(r, env)
-	if ok || rv != nil {
-		t.Fatal("artifact digest drift must not be reusable (verdict is void — re-review required)")
+// TestWrongArtifactDigestIsProtocolError pins C1b: a result whose
+// artifact_digest does not match the minted envelope's artifact set digest is
+// REJECTED at recording — the review is marked FAILED and routed to a
+// REVIEW_RESULT checkpoint, never stored as REVIEWED (the pre-final-wave bug
+// stored the lie verbatim). Drifted CURRENT bytes are equally refused
+// (freshness at conclusion).
+func TestWrongArtifactDigestIsProtocolError(t *testing.T) {
+	r := pendingReviewRun(t)
+	want := r.Reviews[0].ArtifactDigest
+	res := coveringResult(r, "rev-1", "pass")
+	res.ArtifactDigest = strings.Repeat("0", 64)
+	err := r.RecordReviewResult(res)
+	if err == nil || !strings.Contains(err.Error(), "artifact_digest") {
+		t.Fatalf("lying artifact digest must be a named protocol error, got: %v", err)
 	}
-	// Pure predicate: the prior record is untouched, still carrying the
-	// verdict callers must not cite.
-	if r.Reviews[0].Status != ReviewReviewed || r.Reviews[0].Verdict != VerdictPass {
-		t.Fatalf("predicate mutated the record: %+v", r.Reviews[0])
+	if r.Reviews[0].Status != ReviewFailed {
+		t.Fatalf("review = %s, want FAILED", r.Reviews[0].Status)
+	}
+	if r.Status != StatusWaitUser || r.CurrentCheckpoint() == nil || r.CurrentCheckpoint().Kind != CheckpointReviewResult {
+		t.Fatalf("protocol error must route to a REVIEW_RESULT checkpoint, status=%s", r.Status)
+	}
+
+	// Freshness at conclusion: correct digest but the artifact changed on disk
+	// since the mint — refused the same way.
+	r2 := pendingReviewRun(t)
+	res2 := coveringResult(r2, "rev-1", "pass")
+	path := filepath.Join(projectDirForTest(), r2.Reviews[0].Envelope.ArtifactSet[0].Path)
+	if err := os.WriteFile(path, []byte("tampered after mint\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = want
+	if err := r2.RecordReviewResult(res2); err == nil || !strings.Contains(err.Error(), "drifted") {
+		t.Fatalf("post-mint artifact drift must refuse conclusion, got: %v", err)
+	}
+	if r2.Reviews[0].Status != ReviewFailed {
+		t.Fatalf("drifted review = %s, want FAILED", r2.Reviews[0].Status)
+	}
+}
+
+// TestCoverageValidation pins C1b's exact-coverage rule through the real
+// recorder: a foreign criterion id, a missing active criterion and a
+// PASS-despite-FAIL aggregate are all protocol errors; complete coverage
+// records REVIEWED.
+func TestCoverageValidation(t *testing.T) {
+	r := pendingReviewRun(t)
+	active := r.Reviews[0].Envelope.ExitCriteria
+	if len(active) == 0 {
+		t.Fatal("minted envelope carries no active criteria")
+	}
+	// Foreign id.
+	res := coveringResult(r, "rev-1", "pass")
+	res.CriterionVerdicts[0].CriterionID = "not-an-accepted-criterion"
+	if err := r.RecordReviewResult(res); err == nil || !strings.Contains(err.Error(), "not an active criterion") {
+		t.Fatalf("foreign criterion must be a named protocol error, got: %v", err)
+	}
+
+	// Missing active criterion.
+	r2 := pendingReviewRun(t)
+	res2 := coveringResult(r2, "rev-1", "pass")
+	res2.CriterionVerdicts = res2.CriterionVerdicts[1:]
+	if err := r2.RecordReviewResult(res2); err == nil || !strings.Contains(err.Error(), "omits active criteria") {
+		t.Fatalf("missing criterion must be a named protocol error, got: %v", err)
+	}
+
+	// Aggregate PASS over a FAIL criterion.
+	r3 := pendingReviewRun(t)
+	res3 := coveringResult(r3, "rev-1", "pass")
+	res3.CriterionVerdicts[0].Status = "fail"
+	if err := r3.RecordReviewResult(res3); err == nil || !strings.Contains(err.Error(), "prevents PASS") {
+		t.Fatalf("PASS over FAIL must be a named protocol error, got: %v", err)
+	}
+	if r3.Reviews[0].Status != ReviewFailed {
+		t.Fatalf("review = %s, want FAILED", r3.Reviews[0].Status)
 	}
 }
 
@@ -655,15 +783,12 @@ func TestStaleArtifactVoidsVerdict(t *testing.T) {
 // environment), so a later ⑤ request that mints a fresh review_id over
 // identical content reuses the concluded review — no re-review, no recursion.
 func TestReuseFiresUnderNewReviewID(t *testing.T) {
-	first := testEnvelope()
-	r := concludedReviewRun(t, ReviewResult{
-		ReviewID: "rev-1", RunStatus: ReviewRunCompleted, Verdict: VerdictPass,
-		ArtifactDigest: ArtifactSetDigest(first), EvidenceToolCallIDs: []string{"toolu_01"},
-	})
+	r := pendingReviewRun(t)
+	r = concludedReviewRun(t, coveringResult(r, "rev-1", "pass"))
 
 	// The same content under a new review id: reusable, and the reusable
 	// record is the PRIOR review's.
-	second := testEnvelope()
+	second := r.Reviews[0].Envelope
 	second.ReviewID = "rev-2"
 	rv, ok := ReusableReview(r, second)
 	if !ok || rv == nil || rv.ReviewID != "rev-1" || rv.Verdict != VerdictPass {
@@ -671,13 +796,13 @@ func TestReuseFiresUnderNewReviewID(t *testing.T) {
 	}
 
 	// Any content-side change breaks the match: criteria, scope, artifact set.
-	mutants := map[string]func(*Envelope){
-		"artifact_set": func(e *Envelope) { e.ArtifactSet[0].Digest = "different" },
-		"criteria":     func(e *Envelope) { e.ExitCriteria[0].Goal = "different goal" },
-		"scope":        func(e *Envelope) { e.VerificationScope.Readable = []string{"elsewhere/"} },
+	mutants := map[string]func(*SemanticEnvelope){
+		"artifact_set": func(e *SemanticEnvelope) { e.ArtifactSet[0].Digest = "different" },
+		"criteria":     func(e *SemanticEnvelope) { e.ExitCriteria[0].Goal = "different goal" },
+		"scope":        func(e *SemanticEnvelope) { e.VerificationScope.Readable = []string{"elsewhere/"} },
 	}
 	for name, mutate := range mutants {
-		m := testEnvelope()
+		m := r.Reviews[0].Envelope
 		m.ReviewID = "rev-2"
 		mutate(&m)
 		if rv, ok := ReusableReview(r, m); ok || rv != nil {

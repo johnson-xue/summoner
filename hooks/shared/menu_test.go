@@ -192,13 +192,13 @@ func TestCheckpointsCarryMenuProjection(t *testing.T) {
 
 	// REVIEW_RESULT.
 	r3 := startTestRun(t, BudgetLimits{})
-	env := Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-1",
-		ArtifactSet: []ArtifactRef{{Path: "a.md", Digest: "d1"}}}
-	if _, err := r3.RequestReview(env); err != nil {
+	openAndSubmit(t, r3, "context", "c-1")
+	displayCurrent(t, r3)
+	decideCurrent(t, r3, DecisionContinue)
+	if _, err := r3.RequestReview(testEnvelope(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := r3.RecordReviewResult(ReviewResult{ReviewID: "rev-1", ArtifactDigest: "d1",
-		RunStatus: ReviewRunCompleted, Verdict: VerdictPass, EvidenceToolCallIDs: []string{"tu-1"}}); err != nil {
+	if err := r3.RecordReviewResult(coveringResult(r3, "rev-1", "pass")); err != nil {
 		t.Fatal(err)
 	}
 	rr := r3.CurrentCheckpoint()
