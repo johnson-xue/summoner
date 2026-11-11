@@ -47,7 +47,7 @@ for s in \
   cleanup-traces.sh create-baseline.sh init-memory-db.sh install-smoke-test.sh \
   regression-test.sh run-routing-evals.sh run-trace-fixtures.sh score-trace.sh \
   summoner-bp.sh summoner-init.sh summoner-setup.sh validate-manifest.sh \
-  validate-repo.sh; do
+  validate-repo.sh verify-release.sh; do
   assert_exec "$PLUGIN_ROOT/scripts/$s"
 done
 
