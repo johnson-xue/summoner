@@ -25,7 +25,7 @@ stale paraphrase is how pre-August-2026 integrations drifted.
 |----------|-------|
 | `fix` | debug(M) → reproduce → fix → verify → review |
 | `new` | define → plan → implement → test → review |
-| `ship` | fan-out(1-3 personas) → merge → GO/NO-GO |
+| `ship` | prepare → review (single ⑤ rubric) → merge → GO/NO-GO |
 | `debug` | diagnose only, no code changes |
 | `ops` | ops skill (delegated) |
 | `review` | code review only |
