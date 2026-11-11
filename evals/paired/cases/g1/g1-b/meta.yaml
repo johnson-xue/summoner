@@ -1,0 +1,11 @@
+case_id: g1-b
+group: 1
+split: train
+difficulty: easy
+repo: frozen_base
+setup: setup.patch
+workflow: fix
+est_context_tokens: 2000
+arm_notes: >
+  修复完整性测量点：实现 + 被俘获测试是否成对恢复；C2 标准在两臂下的
+  遵循差异（基线臂 security/test persona vs 候选臂 rubric reviewer）。

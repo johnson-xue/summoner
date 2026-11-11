@@ -1,0 +1,12 @@
+case_id: g2-b
+group: 2
+split: train
+difficulty: hard
+repo: frozen_base
+setup: setup.patch
+workflow: ship
+est_context_tokens: 2500
+arm_notes: >
+  审查误报率测量（组②核心）。三个陷阱分别钓：persona 的安全反射（panic）
+  /标准字面主义（float）/兼容性反射（错误包装）。多 persona 与单 rubric
+  谁的 FP 更低、谁会给『可发布』的明确结论。

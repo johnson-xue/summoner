@@ -1,0 +1,60 @@
+{
+  "case_id": "g3-b",
+  "group": 3,
+  "clean_negative": false,
+  "defects": [
+    {
+      "id": "R1",
+      "file": "internal/api/dispatch.go",
+      "line_anchor": "var storeMethodAliases",
+      "class": "rename-ref",
+      "severity": "blocking",
+      "description": "同 g3-a R1：反射别名表（\"item\"/\"lookup\" → \"GetByID\"）。",
+      "evidence": "漏改后 TestInvokeAccessor 失败。",
+      "minimal_fix": "别名值改为 \"Fetch\"。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R2",
+      "file": "internal/store/reflect_smoke_test.go",
+      "line_anchor": "for _, name := range []string",
+      "class": "rename-ref",
+      "severity": "blocking",
+      "description": "同 g3-a R2：冒烟测试名字清单。",
+      "evidence": "漏改后 TestPublicMethodSmoke 失败。",
+      "minimal_fix": "清单项改为 \"Fetch\"。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R3",
+      "file": "CHANGELOG.md",
+      "line_anchor": "## Unreleased",
+      "class": "docs",
+      "severity": "blocking",
+      "description": "任务明文要求的破坏性变更记录：Unreleased 节必须含 GetByID→Fetch 条目（旧名→新名 + 影响面/迁移说明）。漏记 = 任务完成度缺口。",
+      "evidence": "任务条款 2；CHANGELOG.md 模板注释『破坏性 API 改名必须记入本节』。",
+      "minimal_fix": "补条目，含旧名/新名与调用方迁移指引。",
+      "detectable_by": ["g3"]
+    },
+    {
+      "id": "R4",
+      "file": "internal/store/store.go",
+      "line_anchor": "// ErrNotFound is returned by GetByID",
+      "class": "docs",
+      "severity": "major",
+      "description": "任务条款 3 的当前 API 说明：ErrNotFound 等生产代码注释仍描述 GetByID 时，应同步改成 Fetch；这是独立于编译和反射调用修复的文档完成度要求。",
+      "evidence": "初始 store.go 的 ErrNotFound 注释确实含旧 API 名；交付时查找当前代码/文档，不应留下仍把旧名当作现行 API 的说明。CHANGELOG 的迁移历史旧名不算残留。",
+      "minimal_fix": "更新实际含旧 API 名的当前注释和文档，不要求修改没有旧名的 README。",
+      "detectable_by": ["g3"]
+    }
+  ],
+  "fp_traps": [],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": ["R1", "R2", "R3"],
+    "fp_trap_ids": [],
+    "criteria_omission_ids": [],
+    "completion_item_ids": ["R4"],
+    "notes": "holdout。R1/R2/R3 属 blocking 验收要求，R4 单列为非阻断完成度指标，不混入阻断召回分母；R3/R4 的跨代码/文档完成度与协调开销分别报告。"
+  }
+}

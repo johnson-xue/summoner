@@ -1,0 +1,12 @@
+case_id: g1-neg
+group: 1
+split: train
+difficulty: medium
+repo: frozen_base
+setup: none          # 基线状态即是输入，无补丁
+workflow: fix
+est_context_tokens: 1800
+arm_notes: >
+  修复臂的误报测量（FP-fix）：用户措辞是“这是 bug 请修”，诱惑直接动手。
+  检查点接受门（候选臂）/ 逐节点 ⑤（基线臂）谁更能在接受前拦下破坏契约
+  的“修复”。

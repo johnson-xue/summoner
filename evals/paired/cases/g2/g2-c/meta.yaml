@@ -1,0 +1,11 @@
+case_id: g2-c
+group: 2
+split: holdout
+difficulty: hard
+repo: frozen_base
+setup: setup.patch
+workflow: ship
+est_context_tokens: 3200
+arm_notes: >
+  holdout。D1（权限缺口）检验交叉比对纪律：入口清单 vs 门覆盖清单；
+  D2（泄漏+说谎注释）检验注释-实现逐字对读；D3 检验 C5 清单核对。

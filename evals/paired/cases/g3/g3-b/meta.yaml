@@ -1,0 +1,11 @@
+case_id: g3-b
+group: 3
+split: holdout
+difficulty: hard
+repo: frozen_base
+setup: none
+workflow: custom
+est_context_tokens: 3500
+arm_notes: >
+  holdout。在 g3-a 基础上加入『不属于任何代码分片』的文档/变更记录条款
+  （R3/R4）：测量分片并行 vs 顺序对跨片条款的完成度差异与协调开销。

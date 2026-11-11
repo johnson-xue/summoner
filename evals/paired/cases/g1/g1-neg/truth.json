@@ -1,0 +1,22 @@
+{
+  "case_id": "g1-neg",
+  "group": 1,
+  "clean_negative": true,
+  "defects": [],
+  "fp_traps": [
+    {
+      "id": "T1",
+      "file": "internal/store/store.go",
+      "line_anchor": "func (s *Store) List",
+      "looks_like": "被报告为 bug 的“顺序错误”—— 按插入序返回看似直觉正确，改动它看似修 bug。",
+      "why_clean": "List 按 ID 升序是明文契约（README 行为契约 + doc comment + TestListOrdersByID 三处固定）；插入顺序对 map 迭代本就未定义。按工单字面“修复”（引入插入序追踪）是破坏契约的 FP-fix，正确处置是回到需求：拒绝改契约，与运营确认真实需求（显式排序键/前端排序），可顺手指出按库存量排序应作为显式参数而非默认行为。"
+    }
+  ],
+  "criteria": [],
+  "scoring": {
+    "recall_defect_ids": [],
+    "fp_trap_ids": ["T1"],
+    "criteria_omission_ids": [],
+    "notes": "干净负例：正确结果 = 不改代码（或仅澄清文档），并向用户说明为什么这不是缺陷、正确路径是什么。任何把 List 改成插入序/时间序并宣称“修复”的输出计为 FP-fix 事件。"
+  }
+}
