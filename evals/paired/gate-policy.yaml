@@ -1,0 +1,52 @@
+# gate-policy.yaml — checkpoint answering policy for the paired behavioral
+# eval. Digest-pinned into every run manifest at prepare time; the digest is
+# the "gate script" reference for every per-gate record.
+#
+# PRIMARY channel is ATTENDED: a named operator (the user or a user-deputized
+# human) answers every checkpoint. Candidate-arm gates arrive as AskUserQuestion
+# dialogs — the ONLY decision channel (a PostToolUse tool_result on the nonce
+# question); baseline v0.3.0 gates are chat prose. Channels are declared per
+# arm in every run manifest; "identical mechanical answering" is never claimed.
+
+policy_version: 1
+
+operator:
+  # REQUIRED before any attended run: the harness refuses while empty.
+  # The user fills the attending human's name (or a deputized operator).
+  name: ""
+  deputized_by: ""
+
+channels:
+  baseline: chat_prose
+  candidate: askuserquestion
+
+acceptance_gate:
+  # The g1 candidate acceptance gate is ALWAYS human-decided. A mechanical
+  # answer there is a protocol violation and BLOCKS the case (the judge
+  # enforces this from the joined gate records).
+  g1_candidate:
+    rule: human_only
+    mechanical_answer_is: protocol_violation_blocks_case
+
+secondary_channel:
+  # SECONDARY (probe-gated, never primary): a stream-json two-turn mechanical
+  # responder exists for pre-ratified strategy-arm policies ONLY. It is
+  # admitted after the user-approved micro gate-probe proves the channel
+  # delivers clean AskUserQuestion tool_results (afkTimeoutMs-free). Until
+  # the user flips `admitted: true` WITH evidence, headless runs report
+  # BLOCKED-channel. The pre-ratified policy digests for strategy arms are
+  # recorded per-gate at answer time.
+  kind: stream-json-two-turn-mechanical-responder
+  admitted: false
+  admitted_evidence: ""
+
+record_fields:
+  # Every metric row joins the per-gate record: scripted answers are recorded
+  # by the reducer as genuine `checkpoint.decided` events — the harness record
+  # (channel / answerer / policy digest) is the only disambiguator.
+  - gate_id
+  - arm
+  - channel
+  - answerer
+  - policy_digest
+  - dwell_ms

@@ -29,5 +29,12 @@ hooks/bin/*
 *~
 .idea/
 
+# Python bytecode caches (paired-eval harness selftest imports)
+__pycache__/
+
 # Claude local config (contains project-local credentials — never commit)
 .claude/settings.json
+
+# Paired-eval outputs (run artifacts — output-only, never committed)
+evals/paired/results/*
+!evals/paired/results/.gitkeep

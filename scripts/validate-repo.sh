@@ -416,6 +416,18 @@ else
   [[ $P4 -eq 0 ]] && ok "gemini surface: $GEM_COUNT pointer-form tomls + complete GEMINI.md table"
 fi
 
+# ------------------------------- 12. paired-eval harness selftest (T15)
+# Deterministic, no model, no network (~12s): corpus digests, refusal gates,
+# PATH-stub zero-claude proofs, prepare/staging/preflight invariants and the
+# stub-runner pipeline. A red selftest is a repo violation — the harness is
+# the fold-and-measure gate's instrument, and an instrument that fails its
+# own calibration cannot gate a release.
+if PAIRED_SELFCHECK_OUT="$(bash "$SCRIPT_DIR/test-paired-harness.sh" 2>&1)"; then
+  ok "paired-eval harness selftest green ($(grep -c '^✓' <<< "$PAIRED_SELFCHECK_OUT") assertions)"
+else
+  fail "paired-eval harness selftest RED — run scripts/test-paired-harness.sh for detail"
+fi
+
 # ------------------------------------------------------------------ result
 echo "─"
 if [[ $ERRORS -eq 0 ]]; then

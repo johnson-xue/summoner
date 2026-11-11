@@ -1,0 +1,31 @@
+# tolerances.yaml — non-inferiority tolerances, critical-defect requirements
+# and stop conditions for the paired behavioral eval (the spec's
+# fold-and-measure gate).
+#
+# EVERY value below is an EMPTY placeholder, on purpose. The user decides and
+# fills all of them at the budget checkpoint BEFORE any model run; the harness
+# refuses to run or judge until a fully filled copy is passed via
+# --tolerances. No defaults are smuggled in: an empty value is an unfilled
+# value, and the refusal message names every missing knob.
+#
+# Copy this file, fill EVERY entry, and never move a tolerance after seeing
+# measured results (freeze discipline: corrections are applied symmetrically
+# or not at all).
+
+noninferiority:
+  # Max acceptable drop of the candidate arm versus its paired baseline arm.
+  blocking_recall_delta:      # recall of blocking defects
+  false_positive_delta:       # confirmed false positives (trap citations confirmed by adjudication)
+  elapsed_delta:              # active elapsed time (checkpoint dwell excluded)
+  criteria_omission_delta:    # criteria never checked against the rubric/criteria list
+
+critical_requirements:
+  # Absolute floors the candidate must clear regardless of deltas.
+  blocking_recall_floor:      # minimum blocking-defect recall for fix/review groups
+  digest_alarm:               # required: the deterministic connector-contract digest alarm stays green (form decided by the user)
+
+stop_conditions:
+  # When to halt the sweep early. Units are the user's to define.
+  max_cases_per_arm:          # stop after this many case-runs per arm
+  max_budget_units:           # stop when spent budget units exceed this
+  stop_on_blocked:            # how many BLOCKED cases before halting the sweep
