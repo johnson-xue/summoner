@@ -42,6 +42,9 @@ valid-postgame-emergency.jsonl|NA|NA|PASS|NA|PASS
 valid-change-loop.jsonl|NA|NA|PASS|NA|NA
 valid-crash-recovery.jsonl|NA|NA|NA|PASS|NA
 valid-checks-ladder.jsonl|NA|NA|MISSING|NA|NA
+valid-release-probe-match.jsonl|NA|NA|NA|PASS|NA
+valid-release-probe-mismatch.jsonl|NA|NA|NA|PASS|NA
+valid-release-probe-absent.jsonl|NA|NA|NA|PASS|NA
 missing-postgame-closure.jsonl|MISSING|NA|PASS|NA|MISSING
 missing-review-evidence.jsonl|NA|MISSING|NA|NA|NA
 missing-recovery-resolution.jsonl|NA|NA|NA|MISSING|NA

@@ -42,6 +42,9 @@ the script is the executable truth.
 | `valid-change-loop.jsonl` | T10 requirement-change loop (inherited, canonical AppendEvent trace): mid-phase `change.opened` → `change.delta_applied` → `checkpoint.displayed` → `checkpoint.decided` → `change.resumed`. Exercises the user-gate positional contract (below). |
 | `valid-crash-recovery.jsonl` | T19 OUTCOME_UNKNOWN episode (inherited, canonical): two dangling mutating intents → session-start marks → one read-class probe each → probe-submit resolves the batch (`accepted`). |
 | `valid-checks-ladder.jsonl` | T19 check trust ladder (inherited, canonical): L3 BLOCKED → L2 sandbox_unproven → paired-probe L2 pass → consumed-probe encore BLOCKED → fresh probe → L1 in-gate. Ends mid-turn right after `checkpoint.opened`, so user-gate records the render evidence as MISSING (the fixture ends before the Stop hook binds the display) — expected, asserted. |
+| `valid-release-probe-match.jsonl` | T13 release reconciliation branch 1 — exists+matches（已生效）: crashed publish `git tag` intent → session-start marks → ONE read-class probe observes the tag AND all three manifests at the new version → `accepted`, run restores (no recovery checkpoint). Generated through the canonical `shared.AppendEvent` chain. |
+| `valid-release-probe-mismatch.jsonl` | T13 release reconciliation branch 2 — exists+mismatch（不一致）: two dangling publish intents (version write + tag); probes observe the tag landed but root plugin.json still on the old version (the historical drift) → batch `failed` → recovery checkpoint displayed, trace ends WAIT_USER. Never a mutating fix, never silently passed. |
+| `valid-release-probe-absent.jsonl` | T13 release reconciliation branch 3 — missing（未生效）: the crashed version-write intent never landed (all three manifests still on the old version) → honest `failed` verdict → recovery checkpoint; re-running publish is the user's CONTINUE/RECALL/STOP decision, never an auto-replay. |
 | `missing-postgame-closure.jsonl` | `post_game.started(kind=normal)` with no terminal: closure evidence missing (schema + post-game exit 3). |
 | `missing-review-evidence.jsonl` | PASS verdict whose payload records NO `evidence_tool_call_ids` at all: the claim is unauditable from the trace (exit 3 — distinct from the rubber-stamp FAIL, which records an EMPTY list). |
 | `missing-recovery-resolution.jsonl` | `tool.outcome_unknown` never resolved by end of trace (exit 3). |
@@ -78,7 +81,7 @@ displayed-before-decided always.
 
 ## Harness
 
-- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (31
+- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (34
   fixtures × 5 scorers), adversarial message assertions, and sidecar /
   baseline self-checks. Run it in CI and after any scorer/fixture edit.
 - `scripts/score-trace.sh --trace <file>` — scores one trace and writes the

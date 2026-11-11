@@ -14,7 +14,10 @@ in `hooks/shared/workflow.go`). The manifest maps the CAPABILITY — the
 `phases.ops` skill binding (capability keys name the verb; `operate` is this
 route's internal phase id — never `phases.operate`) — never topology.
 Resolve the operate capability from `summoner.yaml`; no manifest → built-in
-default, declared「未配置项目专属能力」.
+default, declared「未配置项目专属能力」. User gates, trace, budgets and
+post-game run through the same single-loop reducer as every workflow
+(`references/checkpoint-protocol.md`; red flags / auto-skip table:
+`references/workflow-reference.md`) — no second execution chain.
 
 ## Rules
 

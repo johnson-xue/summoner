@@ -14,7 +14,7 @@ capability, it never rewrites the order):
 - `/summoner:review`: context → review（manifest `phases.review` verification_spec; one independent reviewer answers「这份变更有哪些问题」）
 - `/summoner:ship`: prepare → review → merge → decide（GO/NO-GO；commands/ship.md steps 1-4 verbatim）
 - `/summoner:ops`: context → operate（ops 能力承担领域步骤；operate 单验收门，批次编排是 skill 自己的事）
-- `/summoner:release`: planning → changelog → publish（framework-internal; implementation in skills/summoner-release/SKILL.md）
+- `/summoner:release`: planning → changelog → publish（fixed framework route; default implementation `skills/summoner-release/SKILL.md`, replaceable via manifest `phases.release`; publish 是变更阶段 — 只读对账探针先行）
 
 (M) = iron law: in fix/debug, writes are gate-denied until the diagnosis
 phase is ACCEPTED at its checkpoint.
