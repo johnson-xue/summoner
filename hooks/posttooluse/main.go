@@ -437,27 +437,45 @@ func observePostGame(run *shared.RunState, in *hookInput, errW io.Writer) int {
 		if _, afk := resp[fieldAFKTimeout]; afk {
 			return 0 // auto-resolved dialog: never a questionnaire answer
 		}
-		answers, _ := resp[fieldAnswers].(map[string]interface{})
-		typed, _ := resp[fieldResponse].(string)
-		qs, _ := in.ToolInput[fieldQuestions].([]interface{})
+		answers, ok := resp[fieldAnswers].(map[string]interface{})
+		qs, shapeOK := in.ToolInput[fieldQuestions].([]interface{})
+		if !ok || !shapeOK || len(qs) != 4 {
+			return 0
+		}
+		seen := map[string]bool{}
+		texts := map[string]bool{}
 		for _, raw := range qs {
-			m, _ := raw.(map[string]interface{})
-			text, _ := m[fieldQuestion].(string)
-			if text == "" || !strings.Contains(text, run.RunID) {
-				continue // the questionnaire binds to THIS run
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				return 0
 			}
-			for _, marker := range shared.PostGameMarkers() {
-				if !strings.Contains(text, shared.PostGameMarkerToken(marker)) {
+			text, _ := m[fieldQuestion].(string)
+			if !hasRunToken(text, run.RunID) || texts[text] {
+				return 0
+			}
+			texts[text] = true
+			marker := ""
+			for _, id := range shared.PostGameMarkers() {
+				count := strings.Count(text, shared.PostGameMarkerToken(id))
+				if count == 0 {
 					continue
 				}
-				if ans, _ := answers[text].(string); ans == "" && typed == "" {
-					continue // unanswered: not an observation
+				if count != 1 || marker != "" {
+					return 0
 				}
-				if _, err := run.RecordPostGameAnswer(marker, in.ToolUseID); err != nil {
-					fmt.Fprintf(errW, "summoner posttooluse: recording questionnaire answer %s failed — fail-closed: %v\n", marker, err)
-					return 2
-				}
+				marker = id
 			}
+			// Exactly one pinned marker per distinct answered question. A global
+			// typed response cannot stand in for four per-question answers.
+			ans, answered := answers[text].(string)
+			if marker == "" || seen[marker] || !answered || strings.TrimSpace(ans) == "" {
+				return 0
+			}
+			seen[marker] = true
+		}
+		if _, err := run.RecordPostGameQuestionnaire(in.ToolUseID); err != nil {
+			fmt.Fprintf(errW, "summoner posttooluse: recording questionnaire failed — fail-closed: %v\n", err)
+			return 2
 		}
 		return 0
 	}
@@ -477,6 +495,17 @@ func observePostGame(run *shared.RunState, in *hookInput, errW io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func hasRunToken(text, runID string) bool {
+	for _, token := range strings.FieldsFunc(text, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.')
+	}) {
+		if token == runID {
+			return true
+		}
+	}
+	return false
 }
 
 // maybeClosePostGame completes the post-game when every observation is on

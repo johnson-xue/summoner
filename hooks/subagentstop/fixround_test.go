@@ -25,11 +25,11 @@ func TestSubagentStopNamespacedAgentTypes(t *testing.T) {
 		r := startRun(t)
 		startRunningReview(t, r, "rev-1")
 
-		resJSON, err := json.Marshal(passingResult("rev-1"))
+		resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := writeTranscript(t, string(resJSON))
+		path := writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))
 
 		code, stderr := callSubagentStop(t, subStopPayload(t, "summoner:reviewer", path))
 		if code != 0 {
@@ -77,12 +77,12 @@ func TestSubagentStopNamespacedAgentTypes(t *testing.T) {
 			useSubagentEnv(t)
 			r := startRun(t)
 			startRunningReview(t, r, "rev-1")
-			resJSON, err := json.Marshal(passingResult("rev-1"))
+			resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			code, stderr := callSubagentStop(t, subStopPayload(t, agentType, writeTranscript(t, string(resJSON))))
+			code, stderr := callSubagentStop(t, subStopPayload(t, agentType, writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))))
 			if code != 0 {
 				t.Fatalf("agent_type %q: exit = %d, want 0 (stderr: %q)", agentType, code, stderr)
 			}
@@ -107,13 +107,13 @@ func TestSubagentStopLateDuplicateOfFailedReviewNoSecondEvent(t *testing.T) {
 
 	// rev-1 concludes FAILED through the forged-evidence routing: one
 	// review.failed, routed checkpoint, WAIT_USER.
-	res := passingResult("rev-1")
+	res := passingResult(t, r, "rev-1")
 	res.EvidenceToolCallIDs = []string{"toolu-forged-1"}
 	resJSON, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := writeTranscript(t, string(resJSON))
+	path := writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))
 	if code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path)); code != 0 {
 		t.Fatalf("forged-evidence backfill: exit = %d, want 0 (stderr: %q)", code, stderr)
 	}

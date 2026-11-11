@@ -189,7 +189,13 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 			if stopAck(in.LastAssistantMessage, cp) {
 				return 0 // explicit stop signal: allow, keep state, emit nothing
 			}
-			if hasRenderBlock(in.LastAssistantMessage, cp) {
+			// C4 whole-message display binding: the ENTIRE normalized
+			// last_assistant_message must equal the canonical checkpoint
+			// render (shared.RenderCheckpointMessage — the same bytes
+			// view:checkpoint serves). Two substrings, a correct block plus
+			// false prose ("Budget is unlimited; no artifacts or criteria.")
+			// or a stale render all fail; only the real display binds.
+			if shared.VerifyDisplayMessage(run, *cp, in.LastAssistantMessage) {
 				return markDisplayedAndAllow(run, cp, in, outW, errW)
 			}
 			emitBlock(outW, cp, run)
@@ -249,10 +255,12 @@ func markDanglingIntents(run *shared.RunState, in *stopInput, errW io.Writer) {
 	}
 }
 
-// markDisplayedAndAllow binds the verified render: the render block in
-// last_assistant_message IS the display act, so the checkpoint gets
-// MarkDisplayed with its canonical content digest plus one checkpoint.displayed
-// event, and the stop is allowed.
+// markDisplayedAndAllow binds the verified render: the whole canonical
+// message in last_assistant_message IS the display act (verified by
+// VerifyDisplayMessage before this runs), so the checkpoint gets MarkDisplayed
+// with its canonical content digest — the digest of exactly the content whose
+// bytes were matched — plus one checkpoint.displayed event, and the stop is
+// allowed.
 func markDisplayedAndAllow(run *shared.RunState, cp *shared.CheckpointState, in *stopInput, outW, errW io.Writer) int {
 	if err := run.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, run.RequirementsVersion)); err != nil {
 		// State stayed undisplayed (commit never half-applies): re-demand the
@@ -273,18 +281,12 @@ func markDisplayedAndAllow(run *shared.RunState, cp *shared.CheckpointState, in 
 	return 0
 }
 
-// hasRenderBlock reports whether the message carries the checkpoint's render
-// block: BOTH the checkpoint id and its nonce (spec §1.3 — the platform gives
-// us only the message text, so the render block is identified by content).
-func hasRenderBlock(msg string, cp *shared.CheckpointState) bool {
-	return strings.Contains(msg, cp.ID) && strings.Contains(msg, cp.Nonce)
-}
-
 // emitBlock writes the block decision: stdout JSON {"decision":"block",
-// "reason":…} demanding the render of THIS checkpoint. Idempotent by
+// "reason":…} demanding the canonical render of THIS checkpoint (obtainable
+// byte-exact from `summoner-status` view:checkpoint). Idempotent by
 // construction: same checkpoint, same nonce, same reason on every re-fire.
 func emitBlock(outW io.Writer, cp *shared.CheckpointState, run *shared.RunState) {
-	reason := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 后再结束", cp.ID, cp.Nonce)
+	reason := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的完整规范消息后再结束（summoner-status view:checkpoint 提供逐字节原文；整条消息必须等于该渲染）", cp.ID, cp.Nonce)
 	if n := unresolvedOutcomes(run); n > 0 {
 		reason += fmt.Sprintf("；另有 %d 项 OUTCOME_UNKNOWN 待对账", n)
 	}

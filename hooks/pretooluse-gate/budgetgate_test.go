@@ -166,11 +166,11 @@ func TestPostGamePendingBudgetExemptions(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	r.CountToolCall()
+	r.CountToolCall("")
 	if err := r.Save(); err != nil {
 		t.Fatal(err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +180,7 @@ func TestPostGamePendingBudgetExemptions(t *testing.T) {
 	if err := r.RecordDecision(cp.ID, shared.DecisionDone, "tu-done"); err != nil {
 		t.Fatal(err)
 	}
+	settleReviewDebt(t, r)
 	if err := r.StartPostGame("normal"); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestAskUserBudgetRideValidatedAtDoor(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatal(err)
 	}

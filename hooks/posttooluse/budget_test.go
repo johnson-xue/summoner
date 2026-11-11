@@ -22,7 +22,7 @@ func openUnsettledFirstCheckpoint(t *testing.T, r *shared.RunState) *shared.Chec
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -235,8 +235,8 @@ func TestExtendRideAppliesPersistedDelta(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.Limits.PhaseToolCalls = 1
-	run.CountToolCall()
-	cp2, err := run.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	run.CountToolCall("")
+	cp2, err := run.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func runIntoPostGame(t *testing.T) *shared.RunState {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	cp2, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	cp2, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +318,20 @@ func runIntoPostGame(t *testing.T) *shared.RunState {
 		t.Fatalf("done exit = %d (stderr %q)", code, stderr)
 	}
 	r = reloadHookRun(t)
+	// M4 (ruling 72): DONE on a review-phase workflow parks at the REVIEW_DEBT
+	// checkpoint — discharge it through the REAL hook with the explicit
+	// UNREVIEWED finish, landing POST_GAME_PENDING with the post-game ledger
+	// started exactly as the runtime would (post_game.started once).
+	if cpd := r.CurrentCheckpoint(); cpd != nil && cpd.Kind == shared.CheckpointReviewDebt {
+		if err := r.MarkDisplayed(cpd.ID, shared.CheckpointContentDigest(*cpd, r.RequirementsVersion)); err != nil {
+			t.Fatalf("MarkDisplayed(debt %s): %v", cpd.ID, err)
+		}
+		dq, dqtext := cpQuestion(cpd.Nonce, false, cpd.MenuPages[0].Labels...)
+		if code, stderr := callHook(t, askDecision(t, "tu-debt-skip", dq, dqtext, labelByKeyword(t, cpd.MenuPages[0].Labels, "skip"), nil)); code != 0 {
+			t.Fatalf("debt skip exit = %d (stderr %q)", code, stderr)
+		}
+		r = reloadHookRun(t)
+	}
 	if r.Status != shared.StatusPostGamePending {
 		t.Fatalf("fixture status = %s, want POST_GAME_PENDING", r.Status)
 	}

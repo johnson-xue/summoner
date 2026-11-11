@@ -365,7 +365,15 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	// normal questionnaire; STOP writes the minimal exit journal hook-side
 	// immediately (紧急 stop = 最小 journal + 补答). Both stay POST_GAME_PENDING
 	// — CLOSED comes only through CompletePostGame.
-	if d == shared.DecisionDone || d == shared.DecisionStop {
+	//
+	// M4 (ruling 72 / QA-2): a DONE whose mandatory terminal ⑤ is unsettled
+	// parks the run at a REVIEW_DEBT checkpoint in WAIT_USER — no post-game
+	// starts here. When that debt is later discharged by SKIP (finish
+	// UNREVIEWED), the run enters POST_GAME_PENDING off the SKIP decision and
+	// the normal questionnaire starts from THERE. The single rule: after any
+	// decision, post-game begins iff the run actually entered POST_GAME_PENDING.
+	if run.Status == shared.StatusPostGamePending &&
+		(d == shared.DecisionDone || d == shared.DecisionStop || d == shared.DecisionSkip) {
 		return concludeTerminalDecision(run, in, d == shared.DecisionStop, errW)
 	}
 	return 0

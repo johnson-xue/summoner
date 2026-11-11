@@ -45,7 +45,7 @@ func droppableCheckpointWithCriteria(t *testing.T, r *shared.RunState, frozen, p
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase(context): %v", err)
 	}
-	cp1, err := r.SubmitPhase(shared.PhaseSubmission{
+	cp1, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:     "context",
 		Summary:     "context done",
 		CriteriaIDs: frozen,
@@ -62,7 +62,7 @@ func droppableCheckpointWithCriteria(t *testing.T, r *shared.RunState, frozen, p
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatalf("OpenPhase(diagnosis): %v", err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:     "diagnosis",
 		Summary:     "diagnosis done",
 		CriteriaIDs: pending,
@@ -128,14 +128,15 @@ func TestDropRideAlongRecordedWithDecision(t *testing.T) {
 		t.Fatalf("checkpoint.decided events = %d, want 1", n)
 	}
 
-	// The arithmetic follows: an envelope must omit crit-a (frozen − drops).
-	env := shared.Envelope{
-		SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-drops",
-		ArtifactSet:  []shared.ArtifactRef{{Path: "x.md", Digest: "d"}},
-		ExitCriteria: []shared.Criterion{{ID: "crit-b", Method: shared.MethodJudgment}},
+	// The arithmetic follows: the review envelope must omit crit-a (frozen −
+	// drops). Assert the exact ids the validator enforces (C1 §1: the mint is
+	// the authority — hand-built envelopes are not a fixture lever anymore).
+	expected := shared.ExpectedCriteriaIDs(shared.ResolveFrozenView(disk.AcceptanceView()), disk.CriteriaDrops)
+	if expected["crit-a"] {
+		t.Fatal("frozen−drops must omit the ride-along-dropped crit-a")
 	}
-	if err := shared.ValidateEnvelope(env, disk.AcceptanceView(), disk.CriteriaDrops, nil); err != nil {
-		t.Fatalf("envelope over frozen−drops must validate after the ride-along drop: %v", err)
+	if !expected["crit-b"] {
+		t.Fatal("frozen−drops must keep crit-b")
 	}
 }
 
@@ -443,7 +444,7 @@ func TestDropReplayAfterReacceptanceRecordsNothing(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	cp3, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context", Summary: "context redone", CriteriaIDs: []string{"crit-a"}})
+	cp3, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context", Summary: "context redone", CriteriaIDs: []string{"crit-a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +457,7 @@ func TestDropReplayAfterReacceptanceRecordsNothing(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	cp4, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "diagnosis again", CriteriaIDs: []string{"crit-c"}})
+	cp4, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "diagnosis again", CriteriaIDs: []string{"crit-c"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,16 +491,12 @@ func TestDropReplayAfterReacceptanceRecordsNothing(t *testing.T) {
 	}
 	// The envelope arithmetic is NOT weakened: the frozen view still carries
 	// crit-a (re-frozen) and crit-b — no drop is in force.
-	env := shared.Envelope{
-		SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-replay",
-		ArtifactSet: []shared.ArtifactRef{{Path: "x.md", Digest: "d"}},
-		ExitCriteria: []shared.Criterion{
-			{ID: "crit-a", Method: shared.MethodJudgment},
-			{ID: "crit-b", Method: shared.MethodJudgment},
-		},
-	}
-	if err := shared.ValidateEnvelope(env, disk.AcceptanceView(), disk.CriteriaDrops, nil); err != nil {
-		t.Fatalf("the replay must not weaken envelope criteria: %v", err)
+	// The envelope arithmetic is NOT weakened: the frozen view still carries
+	// crit-a (re-frozen) and crit-b — no drop is in force. Assert the exact
+	// ids the validator enforces (C1 §1: the mint is the authority).
+	expected := shared.ExpectedCriteriaIDs(shared.ResolveFrozenView(disk.AcceptanceView()), disk.CriteriaDrops)
+	if !expected["crit-a"] || !expected["crit-b"] {
+		t.Fatalf("replay must leave both criteria in force: %v", expected)
 	}
 
 	// A FRESH tool_use_id with a fresh human answer may drop crit-a again.

@@ -91,38 +91,80 @@ func startRun(t *testing.T) *shared.RunState {
 	return r
 }
 
-// reviewEnvelope builds a minimal legal review envelope for one review id.
+// reviewEnvelope builds the identity-only registration for one review id —
+// the reducer mints the complete envelope from the pinned acceptance snapshot.
 func reviewEnvelope(revID string) shared.Envelope {
-	return shared.Envelope{
-		SchemaVersion: "2",
-		RunID:         "run-1",
-		ReviewID:      revID,
-		ArtifactSet:   []shared.ArtifactRef{{Path: "fix.md", Digest: "dd-1"}},
+	return shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: revID}
+}
+
+// acceptFixPhase drives one accepted phase with REAL artifact bytes (the C1
+// staging contract: hook-hashed current digests, never producer claims), so a
+// review may be minted over it.
+func acceptFixPhase(t *testing.T, r *shared.RunState) {
+	t.Helper()
+	if err := r.OpenPhase("fix"); err != nil {
+		t.Fatalf("OpenPhase(fix): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shared.ProjectDir(), "fix.md"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	digest, err := shared.HashArtifactFile("fix.md")
+	if err != nil {
+		t.Fatalf("HashArtifactFile: %v", err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
+		PhaseID: "fix", CriteriaIDs: []string{"c1"},
+		Artifacts: []shared.ArtifactRef{{Path: "fix.md", Digest: digest}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
+		t.Fatalf("RecordDecision: %v", err)
 	}
 }
 
-// startRunningReview registers revID and dispatches it: REVIEW_PENDING with the
-// review RUNNING — the state a reviewer subagent leaves behind while it works.
+// startRunningReview registers revID over the accepted phase and dispatches
+// it: REVIEW_PENDING with the review RUNNING — the state a reviewer subagent
+// leaves behind while it works.
 func startRunningReview(t *testing.T, r *shared.RunState, revID string) {
 	t.Helper()
-	if _, err := r.RequestReview(reviewEnvelope(revID)); err != nil {
+	acceptFixPhase(t, r)
+	if _, err := r.RequestReview(reviewEnvelope(revID), nil); err != nil {
 		t.Fatalf("RequestReview(%s): %v", revID, err)
 	}
-	if err := r.StartDelegation(revID, true); err != nil {
+	if err := r.StartDelegation(revID, true, "tu-test"); err != nil {
 		t.Fatalf("StartDelegation(%s): %v", revID, err)
 	}
 }
 
-// passingResult is a well-formed reviewer return for one review id.
-func passingResult(revID string) shared.ReviewResult {
-	return shared.ReviewResult{
+// passingResult is a well-formed COMPLETE reviewer return for one review id:
+// exact all-active-criterion coverage of the MINTED envelope, the minted
+// artifact digest, and evidence ids anchored per criterion (C1b/C1c).
+func passingResult(t *testing.T, r *shared.RunState, revID string) shared.ReviewResult {
+	t.Helper()
+	rv := r.FindReview(revID)
+	if rv == nil {
+		t.Fatalf("passingResult: review %s not found", revID)
+	}
+	res := shared.ReviewResult{
 		ReviewID:            revID,
-		ArtifactDigest:      "dd-1",
+		ArtifactDigest:      rv.ArtifactDigest,
 		RunStatus:           shared.ReviewRunCompleted,
 		Verdict:             shared.VerdictPass,
-		CriterionVerdicts:   []shared.CriterionVerdict{{CriterionID: "c1", Status: "pass"}},
 		EvidenceToolCallIDs: []string{"toolu-rev-1"},
 	}
+	for _, c := range rv.Envelope.ExitCriteria {
+		res.CriterionVerdicts = append(res.CriterionVerdicts, shared.CriterionVerdict{
+			CriterionID: c.ID,
+			Status:      "pass",
+			Evidence:    []shared.EvidenceAnchor{{ToolUseID: "toolu-rev-1"}},
+		})
+	}
+	return res
 }
 
 // writeTranscript writes a small hand-written agent transcript (JSONL, the
@@ -130,10 +172,18 @@ func passingResult(revID string) shared.ReviewResult {
 // reviewer reading an artifact — the id a well-formed result cites in
 // evidence_tool_call_ids) followed by SubagentHandback tool_use blocks that
 // carry the given messages, in order.
-func writeTranscript(t *testing.T, handbackMsgs ...string) string {
+// writeTranscript writes a small agent transcript (JSONL). The FIRST record
+// is the platform's initial task record — for a reviewer that must be the
+// EXACT admitted capsule (QA-1 ownership bind); pass the capsuleOf(...) bytes
+// whenever the fixture drives a review conclusion, any other string for
+// registration-only/worker fixtures.
+func writeTranscript(t *testing.T, initialTask string, handbackMsgs ...string) string {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString(`{"type":"user","message":{"role":"user","content":"run the review envelope rev-x"}}` + "\n")
+	b.WriteString(mustJSON(t, map[string]interface{}{
+		"type":    "user",
+		"message": map[string]interface{}{"role": "user", "content": initialTask},
+	}) + "\n")
 	readLine := map[string]interface{}{
 		"type": "assistant",
 		"message": map[string]interface{}{
@@ -150,6 +200,29 @@ func writeTranscript(t *testing.T, handbackMsgs ...string) string {
 		},
 	}
 	raw, err := json.Marshal(readLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Write(raw)
+	b.WriteByte('\n')
+	// The OBSERVED RESULT of that Read — a successful tool_result pair is what
+	// C1c evidence reconciliation credits (an unpaired or failed call proves
+	// nothing).
+	resultLine := map[string]interface{}{
+		"type": "user",
+		"message": map[string]interface{}{
+			"role": "user",
+			"content": []interface{}{
+				map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": "toolu-rev-1",
+					"content":     "fixed\n",
+					"is_error":    false,
+				},
+			},
+		},
+	}
+	raw, err = json.Marshal(resultLine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,12 +363,15 @@ func TestSubagentStopBackfillsReview(t *testing.T) {
 			useSubagentEnv(t)
 			r := startRun(t)
 			startRunningReview(t, r, "rev-1")
+			// The MINTED envelope's artifact digest is the binding identity —
+			// the record and the traced verdict must both carry it exactly.
+			wantDigest := r.FindReview("rev-1").ArtifactDigest
 
-			resJSON, err := json.Marshal(passingResult("rev-1"))
+			resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := writeTranscript(t, wrap(string(resJSON)))
+			path := writeTranscript(t, capsuleOf(t, r, "rev-1"), wrap(string(resJSON)))
 
 			code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path))
 			if code != 0 {
@@ -307,8 +383,8 @@ func TestSubagentStopBackfillsReview(t *testing.T) {
 			if rv.Status != shared.ReviewReviewed {
 				t.Fatalf("review status = %s, want REVIEWED (backfilled from the transcript)", rv.Status)
 			}
-			if rv.Verdict != shared.VerdictPass || rv.ArtifactDigest != "dd-1" {
-				t.Fatalf("review record = %+v, want verdict PASS bound to artifact dd-1", rv)
+			if rv.Verdict != shared.VerdictPass || rv.ArtifactDigest != wantDigest {
+				t.Fatalf("review record verdict/digest = %s/%s, want PASS bound to the minted artifact digest %s", rv.Verdict, rv.ArtifactDigest, wantDigest)
 			}
 			if disk.Status != shared.StatusWaitUser {
 				t.Fatalf("run status = %s, want WAIT_USER (PASS still leaves the run WAIT_USER)", disk.Status)
@@ -343,8 +419,8 @@ func TestSubagentStopBackfillsReview(t *testing.T) {
 			// T12 fix-back 2 (split ruling A): the record's digests mirror
 			// too — artifact identity exactly, envelope identity non-empty
 			// (opaque content digest, presence is the contract).
-			if verdicts[0].Payload["artifact_digest"] != "dd-1" {
-				t.Fatalf("review.verdict artifact_digest = %#v, want dd-1", verdicts[0].Payload["artifact_digest"])
+			if verdicts[0].Payload["artifact_digest"] != wantDigest {
+				t.Fatalf("review.verdict artifact_digest = %#v, want the minted digest %s", verdicts[0].Payload["artifact_digest"], wantDigest)
 			}
 			if env, ok := verdicts[0].Payload["envelope_digest"].(string); !ok || env == "" {
 				t.Fatalf("review.verdict envelope_digest = %#v, want a non-empty digest", verdicts[0].Payload["envelope_digest"])
@@ -352,26 +428,150 @@ func TestSubagentStopBackfillsReview(t *testing.T) {
 		})
 	}
 
-	// Crash window (spec §3): the result is recoverable from the transcript
-	// while the review record is still PREPARED (dispatch persistence lost).
-	t.Run("prepared review recovers too", func(t *testing.T) {
+	// Crash window (spec §3), SUPERSEDED by the final-fix wave's QA-1
+	// ownership bind (adjudication §3): a PREPARED review has NO admitted
+	// dispatch receipt — no parent Agent tool_use ever bound the attempt — so
+	// a child transcript arriving for it has no owner, and ownership is
+	// never inferred. The backfill quarantines (FAILED + review-result
+	// checkpoint, run decidable); recovery runs through the C3 retry
+	// machinery, never a free un-owned conclusion.
+	t.Run("prepared review quarantines an unowned child", func(t *testing.T) {
 		useSubagentEnv(t)
 		r := startRun(t)
-		if _, err := r.RequestReview(reviewEnvelope("rev-1")); err != nil {
+		acceptFixPhase(t, r)
+		if _, err := r.RequestReview(reviewEnvelope("rev-1"), nil); err != nil {
 			t.Fatalf("RequestReview: %v", err)
 		}
-		resJSON, err := json.Marshal(passingResult("rev-1"))
+		resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+		code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, "run the review envelope rev-1", string(resJSON))))
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 		}
-		if rv := reviewByID(t, reloadRun(t, "run-1"), "rev-1"); rv.Status != shared.ReviewReviewed {
-			t.Fatalf("review status = %s, want REVIEWED (PREPARED is recoverable per §3 崩溃恢复)", rv.Status)
+		disk := reloadRun(t, "run-1")
+		if rv := reviewByID(t, disk, "rev-1"); rv.Status != shared.ReviewFailed {
+			t.Fatalf("review status = %s, want FAILED (an unowned PREPARED child is quarantined, never concluded — QA-1)", rv.Status)
+		}
+		if disk.Status != shared.StatusWaitUser {
+			t.Fatalf("run status = %s, want WAIT_USER at the quarantined checkpoint", disk.Status)
 		}
 	})
+}
+
+// TestSubagentStopChildOwnershipBind (final-fix wave QA-1, adjudication §3):
+// the child transcript's INITIAL record must be the platform-origin launch
+// record — type "user", content a plain string byte-identical to the EXACT
+// capsule of the admitted attempt — checked BEFORE both verdict acceptance
+// and evidence reconciliation. A foreign first record, a near-miss, a
+// non-string content or a missing admitted receipt quarantines the review
+// (FAILED + review-result checkpoint); the owned transcript concludes
+// normally.
+func TestSubagentStopChildOwnershipBind(t *testing.T) {
+	// Hostile: a perfectly VALID result, but ownership is unproven — the
+	// PASS never lands.
+	for name, mutate := range map[string]func(r *shared.RunState, capsule string) string{
+		"foreign prose": func(r *shared.RunState, capsule string) string {
+			return "run the review envelope rev-1"
+		},
+		"near-miss": func(r *shared.RunState, capsule string) string {
+			return capsule[:len(capsule)-2]
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			useSubagentEnv(t)
+			r := startRun(t)
+			startRunningReview(t, r, "rev-1")
+			resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeTranscript(t, mutate(r, capsuleOf(t, r, "rev-1")), string(resJSON))
+			code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path))
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+			}
+			disk := reloadRun(t, "run-1")
+			if rv := reviewByID(t, disk, "rev-1"); rv.Status != shared.ReviewFailed {
+				t.Fatalf("review = %s, want FAILED (unowned child quarantined)", rv.Status)
+			}
+			if disk.Status != shared.StatusWaitUser {
+				t.Fatalf("status = %s, want WAIT_USER (quarantine routes a decidable checkpoint)", disk.Status)
+			}
+		})
+	}
+
+	// Hostile: the initial record's content is NOT a plain string (a content
+	// block array) — malformed platform record, quarantined the same way.
+	t.Run("non-string initial content", func(t *testing.T) {
+		useSubagentEnv(t)
+		r := startRun(t)
+		startRunningReview(t, r, "rev-1")
+		resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))
+		lines := strings.Split(mustRead(t, path), "\n")
+		lines[0] = `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"not a plain string"}]}}`
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path)); code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+		}
+		if rv := reviewByID(t, reloadRun(t, "run-1"), "rev-1"); rv.Status != shared.ReviewFailed {
+			t.Fatalf("review = %s, want FAILED (malformed initial record quarantined)", rv.Status)
+		}
+	})
+
+	// Positive control: the exact capsule as the initial record — the same
+	// result concludes REVIEWED PASS.
+	useSubagentEnv(t)
+	r := startRun(t)
+	startRunningReview(t, r, "rev-1")
+	resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))
+	if code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path)); code != 0 {
+		t.Fatalf("owned backfill exit = %d, want 0 (stderr %q)", code, stderr)
+	}
+	if rv := reviewByID(t, reloadRun(t, "run-1"), "rev-1"); rv.Status != shared.ReviewReviewed || rv.Verdict != shared.VerdictPass {
+		t.Fatalf("owned review = %s/%s, want REVIEWED PASS", rv.Status, rv.Verdict)
+	}
+}
+
+// capsuleOf returns the EXACT launch-capsule bytes of the run's in-flight
+// review's active attempt (what the gate matched at dispatch — the ownership
+// key of the child's initial record).
+func capsuleOf(t *testing.T, r *shared.RunState, revID string) string {
+	t.Helper()
+	rv := r.FindReview(revID)
+	if rv == nil {
+		t.Fatalf("capsuleOf: review %s not found", revID)
+	}
+	capsule, ok := shared.BuildReviewCapsule(r, revID, rv.ActiveAttemptID)
+	if !ok {
+		t.Fatalf("BuildReviewCapsule(%s): not dispatchable", revID)
+	}
+	b, err := capsule.Bytes()
+	if err != nil {
+		t.Fatalf("capsule.Bytes(): %v", err)
+	}
+	return string(b)
+}
+
+// mustRead reads a file whole (fixture surgery helper).
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 // TestSubagentStopDedupsByCallID: a LATE duplicate result (the review already
@@ -383,11 +583,11 @@ func TestSubagentStopDedupsByCallID(t *testing.T) {
 	r := startRun(t)
 	startRunningReview(t, r, "rev-1")
 
-	resJSON, err := json.Marshal(passingResult("rev-1"))
+	resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := writeTranscript(t, string(resJSON))
+	path := writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))
 	if code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path)); code != 0 {
 		t.Fatalf("first backfill: exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -441,7 +641,7 @@ func TestSubagentStopRegistersWorkerTranscript(t *testing.T) {
 	r := startRun(t)
 	startRunningReview(t, r, "rev-1")
 
-	resJSON, err := json.Marshal(passingResult("rev-1"))
+	resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +661,7 @@ func TestSubagentStopRegistersWorkerTranscript(t *testing.T) {
 
 	// Adversarial: a worker handback carrying a ReviewResult JSON while a
 	// review is RUNNING — registration only, review untouched.
-	path2 := writeTranscript(t, string(resJSON))
+	path2 := writeTranscript(t, "worker shard report", string(resJSON))
 	code, stderr = callSubagentStop(t, subStopPayload(t, "worker", path2))
 	if code != 0 {
 		t.Fatalf("adversarial worker: exit = %d, want 0 (stderr: %q)", code, stderr)
@@ -548,12 +748,23 @@ func TestSubagentStopUnparseableTranscriptRegistersOnly(t *testing.T) {
 func TestSubagentStopNoInFlightReviewRegistersOnly(t *testing.T) {
 	useSubagentEnv(t)
 	startRun(t) // ACTIVE, no review ever requested
-	resJSON, err := json.Marshal(passingResult("rev-ghost"))
+	// A well-formed-looking result for a review id the run NEVER registered —
+	// built inline on purpose (passingResult derives from a minted record,
+	// which rev-ghost by construction has none of).
+	res := shared.ReviewResult{
+		ReviewID:            "rev-ghost",
+		ArtifactDigest:      "dd-ghost",
+		RunStatus:           shared.ReviewRunCompleted,
+		Verdict:             shared.VerdictPass,
+		EvidenceToolCallIDs: []string{"toolu-rev-1"},
+		CriterionVerdicts:   []shared.CriterionVerdict{{CriterionID: "crit-correctness", Status: "pass", Evidence: []shared.EvidenceAnchor{{ToolUseID: "toolu-rev-1"}}}},
+	}
+	resJSON, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, "review the ghost envelope", string(resJSON))))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -646,7 +857,7 @@ func TestEscapeHatchBothBinaries(t *testing.T) {
 		useSubagentEnv(t)
 		r := startRun(t)
 		startRunningReview(t, r, "rev-1")
-		resJSON, err := json.Marshal(passingResult("rev-1"))
+		resJSON, err := json.Marshal(passingResult(t, r, "rev-1"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -695,13 +906,13 @@ func TestSubagentStopForgedEvidenceRoutesProtocolError(t *testing.T) {
 
 	// The transcript holds real tool_use ids toolu-rev-1 and toolu_hb_1; the
 	// result claims one real and one FORGED id.
-	res := passingResult("rev-1")
+	res := passingResult(t, r, "rev-1")
 	res.EvidenceToolCallIDs = []string{"toolu-rev-1", "toolu-forged-1"}
 	resJSON, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := writeTranscript(t, string(resJSON))
+	path := writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))
 
 	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path))
 	if code != 0 {
@@ -755,16 +966,17 @@ func TestSubagentStopForgedEvidenceRoutesProtocolError(t *testing.T) {
 func TestSubagentStopForgedEvidenceCrashWindow(t *testing.T) {
 	useSubagentEnv(t)
 	r := startRun(t)
-	if _, err := r.RequestReview(reviewEnvelope("rev-1")); err != nil {
+	acceptFixPhase(t, r)
+	if _, err := r.RequestReview(reviewEnvelope("rev-1"), nil); err != nil {
 		t.Fatal(err)
 	}
-	res := passingResult("rev-1")
+	res := passingResult(t, r, "rev-1")
 	res.EvidenceToolCallIDs = []string{"toolu-forged-1"}
 	resJSON, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -799,7 +1011,7 @@ func TestSubagentStopLateDuplicateSkipsReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -823,12 +1035,21 @@ func TestSubagentStopBlockedResultWithoutEvidencePasses(t *testing.T) {
 	r := startRun(t)
 	startRunningReview(t, r, "rev-1")
 
-	res := shared.ReviewResult{ReviewID: "rev-1", RunStatus: shared.ReviewRunBlocked, ReasonCode: "sandbox-inactive"}
+	// BLOCKED carries no quality conclusion and no evidence ids, but STILL
+	// names the artifact set it was operating on (C1b: the digest is compared,
+	// never stored blind — it proves the blocked reviewer held the pinned
+	// envelope).
+	res := shared.ReviewResult{
+		ReviewID:       "rev-1",
+		ArtifactDigest: r.FindReview("rev-1").ArtifactDigest,
+		RunStatus:      shared.ReviewRunBlocked,
+		ReasonCode:     "sandbox-inactive",
+	}
 	resJSON, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, string(resJSON))))
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", writeTranscript(t, capsuleOf(t, r, "rev-1"), string(resJSON))))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -841,17 +1062,20 @@ func TestSubagentStopBlockedResultWithoutEvidencePasses(t *testing.T) {
 		t.Fatalf("status = %s, want WAIT_USER at the review-result checkpoint", disk.Status)
 	}
 
-	// T12 fix-back 3 (F7), negative side of the digest mirror: a reason-code
-	// BLOCKED verdict carries NO artifact_digest key (nothing was claimed),
-	// no verdict and no evidence ids — while envelope_digest (registration
-	// identity, set at RequestReview) is still mirrored.
+	// T12 fix-back 3 (F7), C1b-adapted side of the digest mirror: a
+	// reason-code BLOCKED verdict carries NO verdict and NO evidence ids
+	// (a reason code never poses as a quality conclusion) — while BOTH
+	// digests mirror: envelope_digest (registration identity, set at
+	// RequestReview) and artifact_digest (the minted artifact-set identity
+	// the BLOCKED result claimed and had compared — a block still names the
+	// pinned envelope it was operating on).
 	verdicts := eventsOfType(readTrace(t, "run-1"), shared.EventReviewVerdict)
 	if len(verdicts) != 1 {
 		t.Fatalf("review.verdict events = %d, want 1", len(verdicts))
 	}
 	pl := verdicts[0].Payload
-	if _, ok := pl["artifact_digest"]; ok {
-		t.Errorf("BLOCKED verdict carries artifact_digest = %#v — a reason-code block claims no artifact", pl["artifact_digest"])
+	if pl["artifact_digest"] != r.FindReview("rev-1").ArtifactDigest {
+		t.Errorf("BLOCKED verdict artifact_digest = %#v, want the minted digest the result verified", pl["artifact_digest"])
 	}
 	if _, ok := pl["verdict"]; ok {
 		t.Errorf("BLOCKED verdict carries verdict = %#v — a reason code must never pose as a quality conclusion", pl["verdict"])

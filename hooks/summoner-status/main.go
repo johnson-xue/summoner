@@ -38,13 +38,29 @@ import (
 )
 
 func main() {
+	if len(os.Args) != 1 {
+		if len(os.Args) != 3 || os.Args[1] != "--verify-trace" {
+			fmt.Fprintln(os.Stderr, "usage: summoner-status --verify-trace <exact-file.jsonl>")
+			os.Exit(2)
+		}
+		digest, err := shared.VerifyTraceFile(os.Args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"trace_sha256": digest}); err != nil {
+			os.Exit(2)
+		}
+		return
+	}
 	os.Exit(runStatus(os.Stdin, os.Stdout, os.Stderr))
 }
 
-// statusInput is the parsed payload: one JSON object, of which only session_id
-// is read (the viewer consumes the same envelope the hooks do).
+// statusInput is the parsed payload: one JSON object, of which only
+// session_id and the optional `view` are read.
 type statusInput struct {
 	SessionID string
+	View      string
 }
 
 // parseInput decodes one payload object. Anything that is not a single JSON
@@ -53,6 +69,7 @@ type statusInput struct {
 func parseInput(r io.Reader) (*statusInput, error) {
 	var raw struct {
 		SessionID string `json:"session_id"`
+		View      string `json:"view"`
 	}
 	dec := json.NewDecoder(r)
 	if err := dec.Decode(&raw); err != nil {
@@ -61,7 +78,7 @@ func parseInput(r io.Reader) (*statusInput, error) {
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return nil, fmt.Errorf("unexpected trailing data after the JSON object")
 	}
-	return &statusInput{SessionID: raw.SessionID}, nil
+	return &statusInput{SessionID: raw.SessionID, View: raw.View}, nil
 }
 
 // runStatus is the whole viewer. Returns the process exit code.
@@ -91,8 +108,61 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 			len(runs), strings.Join(ids, ", "))
 		return 0
 	}
-	fmt.Fprint(outW, renderStatus(runs[0], sandboxTier()))
+	run := runs[0]
+	// Strictly typed read-only views (final-fix wave C4/C1c). The ENTIRE
+	// output of view:checkpoint is the canonical checkpoint message — the
+	// same bytes the Stop hook's whole-message binding compares; ordinary
+	// route/history diagnostics never join that view. view:review serves the
+	// EXACT reviewer launch capsule bytes plus the read-only review state —
+	// status never mints or rotates authority.
+	switch in.View {
+	case "checkpoint":
+		cp := run.CurrentCheckpoint()
+		if cp == nil {
+			fmt.Fprintln(errW, "summoner-status: view:checkpoint — no open checkpoint (read-only viewer).")
+			return 0
+		}
+		fmt.Fprint(outW, shared.RenderCheckpointMessage(run, *cp))
+		return 0
+	case "review":
+		fmt.Fprint(outW, reviewView(run))
+		return 0
+	case "":
+		// default: the ordinary status render
+	default:
+		fmt.Fprintf(errW, "summoner-status: unknown view %q (supported: checkpoint, review) — refusing to guess.\n", in.View)
+		return 2
+	}
+	fmt.Fprint(outW, renderStatus(run, sandboxTier()))
 	return 0
+}
+
+// reviewView serves the read-only review surface: for each review record its
+// id/state/attempt and — for a dispatchable PREPARED attempt — the EXACT
+// launch capsule bytes (the whole Agent prompt, verbatim). Copying these
+// bytes into the Agent prompt is the only legal dispatch.
+func reviewView(run *shared.RunState) string {
+	var b strings.Builder
+	if len(run.Reviews) == 0 {
+		return "no review records (read-only view)\n"
+	}
+	for i := range run.Reviews {
+		rv := run.Reviews[i]
+		fmt.Fprintf(&b, "review %s — %s", rv.ReviewID, rv.Status)
+		if rv.ActiveAttemptID != "" {
+			fmt.Fprintf(&b, " — active attempt %s", rv.ActiveAttemptID)
+		}
+		b.WriteString("\n")
+		if rv.Status == shared.ReviewPrepared && rv.ActiveAttemptID != "" {
+			if capsule, ok := shared.BuildReviewCapsule(run, rv.ReviewID, rv.ActiveAttemptID); ok {
+				if bytes, err := capsule.Bytes(); err == nil {
+					b.WriteString("launch capsule (pass VERBATIM as the reviewer Agent prompt — whole-message equality):\n")
+					b.Write(bytes)
+				}
+			}
+		}
+	}
+	return b.String()
 }
 
 // liveRunsFor resolves the live (non-CLOSED) runs to view. A session id scopes
@@ -222,7 +292,10 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	b.WriteString(postGameLines(run))
 	fmt.Fprintf(&b, "sandbox: %s\n", sandbox)
 	if cp := run.CurrentCheckpoint(); cp != nil {
-		b.WriteString(checkpointBlock(run, *cp))
+		// The embedded checkpoint block IS the canonical message — the same
+		// renderer view:checkpoint serves and the Stop hook binds (C4: one
+		// shared renderer, no second form to drift).
+		b.WriteString(shared.RenderCheckpointMessage(run, *cp))
 	}
 	return b.String()
 }
@@ -495,85 +568,5 @@ func postGameLines(run *shared.RunState) string {
 	} else {
 		fmt.Fprintf(&b, "  journal: %s (not yet written)\n", shared.JournalPath(run.RunID))
 	}
-	return b.String()
-}
-
-// checkpointBlock renders the pending checkpoint (id, nonce, kind, phase,
-// note, criteria, artifact versions, FULL decision menu, paging note) — the
-// block the model embeds verbatim; the Stop hook binds the display off its
-// id + nonce. The menu is shared.DecisionMenuLabels (the canonical labels the
-// paged projection persists); the paging note prints the persisted pages the
-// decision question's offered set is pinned to (T16) — the full menu stays
-// visible for reading, pages bound only what one question may offer.
-func checkpointBlock(run *shared.RunState, cp shared.CheckpointState) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", cp.ID, cp.Nonce, cp.Kind)
-	phase := cp.PhaseID
-	if phase == "" {
-		phase = "—"
-	}
-	fmt.Fprintf(&b, "phase: %s\n", phase)
-	note := cp.Note
-	if note == "" {
-		note = "—"
-	}
-	fmt.Fprintf(&b, "note: %s\n", note)
-	criteria := append([]string(nil), cp.CriteriaIDs...)
-	sort.Strings(criteria)
-	if len(criteria) == 0 {
-		b.WriteString("criteria: —\n")
-	} else {
-		b.WriteString("criteria: " + strings.Join(criteria, ", ") + "\n")
-	}
-	paths := make([]string, 0, len(cp.ArtifactVersions))
-	for p := range cp.ArtifactVersions {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	if len(paths) == 0 {
-		b.WriteString("artifacts: —\n")
-	} else {
-		b.WriteString("artifacts:\n")
-		for _, p := range paths {
-			fmt.Fprintf(&b, "  - %s @ %s\n", p, shortDigest(cp.ArtifactVersions[p]))
-		}
-	}
-	b.WriteString("menu:\n")
-	for _, opt := range shared.DecisionMenuLabels(cp.Kind) {
-		b.WriteString("  " + opt + "\n")
-	}
-	if len(cp.MenuPages) > 1 {
-		b.WriteString("paged ask (one page per decision question, ≤4 options):\n")
-		for i, pg := range cp.MenuPages {
-			fmt.Fprintf(&b, "  page %d/%d: %s", i+1, len(cp.MenuPages), strings.Join(pg.Labels, " · "))
-			if pg.NavNext != "" {
-				b.WriteString(" — " + pg.NavNext)
-			}
-			if pg.NavPrev != "" {
-				b.WriteString(" — " + pg.NavPrev)
-			}
-			b.WriteString("\n")
-		}
-	}
-	// T18: the persisted budget/extension offers — DIGEST-BOUND checkpoint
-	// content (a changed offer after display invalidates the binding). The
-	// ride-along question's options must equal the printed pointer labels
-	// exactly; labels never carry numbers (SetBudgetLimits/ExtendBudget apply
-	// the persisted values).
-	if cp.BudgetAsk != nil {
-		source := cp.BudgetAsk.Proposal.Source
-		if source == "" {
-			source = "framework"
-		}
-		b.WriteString("budget ask (run-start budget — rides the decision call, nonce-free):\n")
-		fmt.Fprintf(&b, "  proposal (%s): %s\n", source, budgetLimitsLine(cp.BudgetAsk.Proposal.Limits))
-		fmt.Fprintf(&b, "  options: %s · %s\n", cp.BudgetAsk.ConfirmLabel, cp.BudgetAsk.UnlimitedLabel)
-	}
-	if cp.ExtendAsk != nil {
-		b.WriteString("extend ask (budget exhausted — add the displayed amount once more):\n")
-		fmt.Fprintf(&b, "  delta: %s\n", budgetLimitsLine(cp.ExtendAsk.Delta))
-		fmt.Fprintf(&b, "  options: %s · %s\n", cp.ExtendAsk.ExtendLabel, cp.ExtendAsk.HoldLabel)
-	}
-	_ = run // checkpoint self-carries everything the block renders
 	return b.String()
 }

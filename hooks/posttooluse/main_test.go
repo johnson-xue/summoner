@@ -92,7 +92,7 @@ func openDisplayedCheckpoint(t *testing.T, r *shared.RunState, phaseID string) s
 	if err := r.OpenPhase(phaseID); err != nil {
 		t.Fatalf("OpenPhase(%s): %v", phaseID, err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:   phaseID,
 		Summary:   phaseID + " done",
 		Artifacts: []shared.ArtifactRef{{Path: phaseID + ".md", Digest: "d-" + phaseID, Kind: "doc"}},

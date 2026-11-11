@@ -73,15 +73,18 @@ type submitReject struct {
 // except phase-submit reducer rejections, which also trace
 // phase_submitted.rejected per ruling 6, and T19's denyEvents).
 type effects struct {
-	openPhase     string                   // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
-	submit        *shared.PhaseSubmission  // SubmitPhase payload (ruling 6)
-	l1Checks      []shared.CheckDef        // T19: framework-adapter refs of the submit, run in-gate
-	delegation    string                   // subagent_type — StartDelegation + delegation.started
-	delegateRevID string                   // review_id bound to the delegation, when reviewer
-	reviewSubmit  *shared.Envelope         // RequestReview + review.prepared (summoner:review-submit)
-	changeOpen    *changeOpenEffect        // OpenRequirementChangeAt + change.opened (summoner:change open)
+	openPhase     string                  // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
+	submit        *shared.PhaseSubmission // SubmitPhase payload (ruling 6)
+	staged        *shared.StagedSnapshot  // C1: hook-verified semantic staging pinned onto the checkpoint
+	l1Checks      []shared.CheckDef       // T19: framework-adapter refs of the submit, run in-gate
+	delegation    string                  // subagent_type — StartDelegation + delegation.started
+	delegateRevID string                  // review_id bound to the delegation, when reviewer
+	delegateAttID string                  // attempt id bound to the reviewer delegation (C3)
+	reviewSubmit  *shared.Envelope        // RequestReview + review.prepared (summoner:review-submit)
+	reviewReg     []shared.CheckDef       // the manifest registry the mint re-freezes check defs from
+	changeOpen    *changeOpenEffect       // OpenRequirementChangeAt + change.opened (summoner:change open)
 	changeApply   *shared.RequirementDelta // ApplyRequirementDelta + change.delta_applied (summoner:change apply)
-	probeSubmit   *probeSubmitEffect       // ResolveOutcomeProbed + tool.resolved (summoner:probe-submit)
+	probeSubmit   *probeSubmitEffect      // ResolveOutcomeProbed + tool.resolved (summoner:probe-submit)
 	bashClass     *bashClassEffect         // T19: read-class Bash markers on tool.started
 }
 
@@ -201,9 +204,10 @@ func decide(in *gateInput, run *shared.RunState) decision {
 		return decideAgent(in, run)
 	case "AskUserQuestion":
 		return decideAskUser(in, run)
-	default:
-		// Unknown/unmodeled tools (Read, Grep, …) are observed, not gated.
+	case "Read", "Grep", "Glob", "ToolSearch":
 		return allow(nil)
+	default:
+		return deny(fmt.Sprintf("Summoner gate: unmodeled tool %q has no supported read-only or mutation/probe declaration — denied before effects (MCP is not presumed read-only).", in.ToolName))
 	}
 }
 
@@ -270,13 +274,16 @@ func decideL2Check(run *shared.RunState, def shared.CheckDef) decision {
 //
 //   - summoner:phase-submit — the exhausted phase closes into its checkpoint,
 //     where the extension question rides (exhaust → submit → render → answer).
-//     Budget arithmetic note (fix-round F2): the exempt submit itself never
-//     ticks CountToolCall — it runs AFTER SubmitPhase closed the phase, and
-//     CountToolCall is a no-op with no open phase (per-phase budget), so at
-//     the exhaustion checkpoint the counter is exactly L and one extension
-//     (L → 2L) unblocks at every L. The counter only runs past the limit via
-//     the change loop (mid-phase exempt calls tick), where each user-approved
-//     extension adds a full L again and repeated extensions always unblock;
+//     Budget arithmetic note (fix-round F2, amended by the final-fix wave's
+//     I1 visit buckets): the exempt submit runs AFTER SubmitPhase closed the
+//     phase and BEFORE the continue decision authorizes the next visit —
+//     outside any visit bucket — so it never ticks CountToolCall and at the
+//     exhaustion checkpoint the counter is exactly L; one extension (L → 2L)
+//     unblocks at every L. The pre-provider window AFTER the decision
+//     charges the authorized upcoming bucket (I1), and the counter only runs
+//     past the limit via the change loop (mid-phase exempt calls tick),
+//     where each user-approved extension adds a full L again and repeated
+//     extensions always unblock;
 //   - AskUserQuestion while WAIT_USER (the nonce-gated decision channel;
 //     review I5 keeps ordinary ACTIVE questions budget-gated) and while
 //     POST_GAME_PENDING (the questionnaire is owed regardless of budget);
@@ -381,7 +388,19 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		if reason != "" {
 			return denySubmit(sub.PhaseID, reason)
 		}
-		eff := &effects{submit: &sub, l1Checks: l1}
+		// Final-fix wave C1: build the hook-verified semantic staging —
+		// hook-hashed CURRENT artifact digests (producer digests are advisory
+		// and replaced), planned scope for not-yet-existing paths, COMPLETE
+		// criterion meaning (proposal merged with shipped defaults plus
+		// manifest additions on review-phase workflows), frozen check defs
+		// with recomputed digests, effective scope. A shape-invalid proposal
+		// or a divergent redefinition of a shipped/manifest criterion is a
+		// denial BEFORE any effect.
+		staged, reason := stagePhaseSemantics(run, &sub, l1)
+		if reason != "" {
+			return denySubmit(sub.PhaseID, reason)
+		}
+		eff := &effects{submit: &sub, staged: staged, l1Checks: l1}
 		// Ruling 3 fallback: with no open phase, auto-open the payload's
 		// phase iff it is the next expected one (protects skill-less phases,
 		// e.g. a read-only P0 with no Skill call). Only attempted where
@@ -522,11 +541,11 @@ func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
 	}
 	args, ok := in.ToolInput["args"].(string)
 	if !ok {
-		return deny("Summoner gate: summoner:review-submit requires args — a JSON string carrying the review envelope (skills/review-submit/SKILL.md).")
+		return deny("Summoner gate: summoner:review-submit requires args — a JSON string carrying the identity-only registration {schema_version, run_id, review_id} (skills/review-submit/SKILL.md).")
 	}
 	env, err := shared.DecodeEnvelope([]byte(args))
 	if err != nil {
-		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit args is not a valid review envelope: %v", err))
+		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit args is not a valid review registration: %v", err))
 	}
 	// Belt for the reducer's in-flight rule: a NEW review id while another
 	// review is PREPARED/RUNNING is refused with the rule's own words (the
@@ -550,10 +569,17 @@ func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
 	} else if m != nil {
 		registry = m.CheckRegistry
 	}
-	if err := shared.ValidateEnvelope(env, run.AcceptanceView(), run.CriteriaDrops, registry); err != nil {
+	// C1: the registration is identity-only; the reducer MINTS the complete
+	// envelope from the pinned acceptance snapshot. The mint runs here too —
+	// a drift (artifacts changed since acceptance, unfreezable check
+	// definitions, empty view) denies BEFORE any effect; the reducer re-mints
+	// authoritatively inside its commit path.
+	if minted, err := shared.MintEnvelope(run, env, registry); err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit cannot mint the envelope from the pinned acceptance snapshot: %v", err))
+	} else if err := shared.ValidateEnvelope(minted, run.AcceptanceView(), run.CriteriaDrops, registry); err != nil {
 		return deny(fmt.Sprintf("Summoner gate: summoner:review-submit envelope rejected: %v", err))
 	}
-	return allow(&effects{reviewSubmit: &env})
+	return allow(&effects{reviewSubmit: &env, reviewReg: registry})
 }
 
 // terminalDefaultReviewReady reports the terminal default-review position
@@ -652,6 +678,133 @@ func checkReviewScopeCriteria(ids []string) string {
 		}
 	}
 	return ""
+}
+
+// --- final-fix wave C1: hook-verified semantic staging ------------------------------
+
+// stagePhaseSemantics builds the StagedSnapshot of one phase submission.
+// Hooks validate and normalize everything; the model's proposal is input,
+// never authority:
+//
+//   - artifacts: every EXISTING path is re-hashed from CURRENT bytes (a
+//     producer-supplied digest is advisory and discarded); a path that does
+//     not exist yet moves to PlannedScope — the checkpoint pins real bytes
+//     only, and planned scope stays visibly future;
+//   - criterion meaning: every proposed criterion needs an id, a legal method
+//     and non-empty meaning (goal or expected); mechanical criteria must cite
+//     a check id; a proposal that REDEFINES a shipped default or
+//     manifest-declared criterion with different meaning is denied — an
+//     existing criterion's meaning changes only through the approved
+//     change-confirm mechanism;
+//   - defaults merge: on a workflow WITH a review phase (fix/new/review/ship;
+//     controller QA-2 — ops/release mint no review debt) the COMPLETE shipped
+//     default criteria plus the manifest's verification_spec additions join
+//     the staged set, so even a no-manifest or id-only submission reviews
+//     against complete semantics;
+//   - check defs: the submission's admitted L1 defs freeze with RECOMPUTED
+//     digests and check_id@digest scope entries.
+//
+// Returns ("", reason) on the first violation.
+func stagePhaseSemantics(run *shared.RunState, sub *shared.PhaseSubmission, l1Defs []shared.CheckDef) (*shared.StagedSnapshot, string) {
+	staged := &shared.StagedSnapshot{}
+	for _, a := range sub.Artifacts {
+		if a.Path == "" {
+			return nil, "Summoner gate: summoner:phase-submit artifact path is empty — an artifact ref names a file."
+		}
+		digest, err := shared.HashArtifactFile(a.Path)
+		if err != nil {
+			// Not readable now: planned scope, never a frozen artifact version.
+			planned := false
+			for _, p := range staged.PlannedScope {
+				if p == a.Path {
+					planned = true
+					break
+				}
+			}
+			if !planned {
+				staged.PlannedScope = append(staged.PlannedScope, a.Path)
+			}
+			continue
+		}
+		ref := shared.ArtifactRef{Path: a.Path, Digest: digest, Kind: a.Kind}
+		staged.ArtifactSet = append(staged.ArtifactSet, ref)
+	}
+	// The submission's artifact list becomes the HOOK-hashed existing set (the
+	// checkpoint's artifact versions pin real bytes; planned paths ride the
+	// snapshot's PlannedScope instead).
+	sub.Artifacts = append([]shared.ArtifactRef(nil), staged.ArtifactSet...)
+
+	proposed := make(map[string]shared.Criterion, len(sub.Criteria))
+	for _, c := range sub.Criteria {
+		if c.ID == "" {
+			return nil, "Summoner gate: summoner:phase-submit proposed criterion carries no id."
+		}
+		if _, dup := proposed[c.ID]; dup {
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit proposed criterion %q twice — criterion ids are unique.", c.ID)
+		}
+		switch c.Method {
+		case shared.MethodMechanical, shared.MethodJudgment:
+		default:
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit proposed criterion %q method %q must be mechanical or judgment.", c.ID, c.Method)
+		}
+		if c.Method == shared.MethodMechanical && c.CheckID == "" {
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit mechanical criterion %q must cite a registered check_id.", c.ID)
+		}
+		if c.Goal == "" && c.Expected == "" && c.Rubric == "" {
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit proposed criterion %q carries no meaning (goal/expected/rubric all empty) — propose the criterion as meaning, not just a name.", c.ID)
+		}
+		proposed[c.ID] = c
+		staged.Criteria = append(staged.Criteria, c)
+	}
+
+	if shared.WorkflowHasReviewPhase(run.Workflow) {
+		merge := func(c shared.Criterion, source string) string {
+			if p, clash := proposed[c.ID]; clash {
+				if criterionMeaningDiffers(p, c) {
+					return fmt.Sprintf(
+						"Summoner gate: summoner:phase-submit criterion %q redefines the %s declared meaning — existing-criterion meaning changes require the approved change-confirm mechanism (summoner:change).",
+						c.ID, source)
+				}
+				return "" // identical re-statement: already staged
+			}
+			staged.Criteria = append(staged.Criteria, c)
+			return ""
+		}
+		for _, d := range shared.DefaultReviewCriteria() {
+			if reason := merge(d, "framework default"); reason != "" {
+				return nil, reason
+			}
+		}
+		m, err := shared.LoadRuntimeManifest()
+		if err != nil {
+			return nil, fmt.Sprintf("Summoner gate: summoner:phase-submit cannot stage review semantics — the project manifest is unparseable (fail-closed): %v", err)
+		}
+		if m != nil {
+			for _, mc := range m.ReviewCriteria {
+				if reason := merge(mc, "manifest verification_spec"); reason != "" {
+					return nil, reason
+				}
+			}
+		}
+	}
+
+	for _, def := range l1Defs {
+		frozen := def
+		frozen.Digest = shared.CheckDefDigest(def)
+		staged.CheckDefs = append(staged.CheckDefs, frozen)
+		staged.CheckScope.CheckIDs = append(staged.CheckScope.CheckIDs, frozen.CheckID+"@"+frozen.Digest)
+	}
+	staged.CheckScope.Readable = []string{shared.ProjectDir()}
+	staged.CheckScope.OutputSchema = "review-result/v1"
+	staged.Requirements = append([]shared.ProposedRequirement(nil), sub.Requirements...)
+	return staged, ""
+}
+
+// criterionMeaningDiffers reports whether two criteria with the same id carry
+// different MEANING (any content field). Id equality alone is not identity.
+func criterionMeaningDiffers(a, b shared.Criterion) bool {
+	return a.Goal != b.Goal || a.Expected != b.Expected || a.Scope != b.Scope ||
+		a.Method != b.Method || a.Required != b.Required || a.CheckID != b.CheckID || a.Rubric != b.Rubric
 }
 
 // --- T19: check refs (the ladder at submit) ------------------------------------
@@ -966,19 +1119,41 @@ func decideAgent(in *gateInput, run *shared.RunState) decision {
 			return deny(fmt.Sprintf(
 				"Summoner gate: reviewer delegation requires REVIEW_PENDING (a PREPARED review to run), status is %s.", run.Status))
 		}
+		// C1c + adjudication §2: the prompt is the EXACT launch capsule — one
+		// compact JSON object the shared Go layer serialized over the stored
+		// envelope, attempt and digests. The WHOLE normalized prompt must
+		// equal those bytes; there is no token or payload containment, so a
+		// hostile prose prompt that merely mentions the review id can never
+		// bind, and any prefix/suffix around the capsule rejects.
 		prompt := stringField(in.ToolInput, "prompt")
-		revID := ""
+		matched := ""
+		var capsuleID string
 		for i := range run.Reviews {
 			rv := run.Reviews[i]
-			if rv.Status == shared.ReviewPrepared && strings.Contains(prompt, rv.ReviewID) {
-				revID = rv.ReviewID
+			if rv.Status != shared.ReviewPrepared {
+				continue
+			}
+			capsule, ok := shared.BuildReviewCapsule(run, rv.ReviewID, rv.ActiveAttemptID)
+			if !ok {
+				continue
+			}
+			want, err := capsule.Bytes()
+			if err != nil {
+				continue
+			}
+			if shared.NormalizePrompt(prompt) == shared.NormalizePrompt(string(want)) {
+				matched = rv.ReviewID
+				capsuleID = rv.ActiveAttemptID
 				break
 			}
 		}
-		if revID == "" {
-			return deny("Summoner gate: reviewer delegation requires a PREPARED review whose review_id appears in the prompt — no match (the reviewer must run a registered envelope, not ad-hoc work).")
+		if matched == "" {
+			// Serve the honest recovery instruction: the exact bytes come from
+			// the status view, never from model memory.
+			return deny("Summoner gate: reviewer delegation requires the EXACT launch capsule as the whole prompt — run summoner-status (view:review) to obtain the exact capsule bytes for the PREPARED review's active attempt, then pass them verbatim as the Agent prompt; prose prompts, added prefixes/suffixes or partial payloads never bind (whole-message equality).")
 		}
-		eff.delegateRevID = revID
+		eff.delegateRevID = matched
+		eff.delegateAttID = capsuleID
 	} else if run.Status != shared.StatusActive {
 		return deny(fmt.Sprintf(
 			"Summoner gate: worker delegation requires ACTIVE, status is %s — delegation is phase work, not a checkpoint bypass.", run.Status))
@@ -1105,7 +1280,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 				return rejectSubmit(eff.openPhase, err)
 			}
 		}
-		cp, err := run.SubmitPhase(*eff.submit)
+		cp, err := run.SubmitPhase(*eff.submit, eff.staged)
 		if err != nil {
 			return rejectSubmit(eff.submit.PhaseID, err)
 		}
@@ -1162,7 +1337,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 				}
 			}
 		}
-		run.CountToolCall()
+		run.CountToolCall(in.ToolUseID)
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 			return err
@@ -1201,7 +1376,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		if err := appendAll(events); err != nil {
 			return err // state already moved (CHANGE_OPEN) — deny fail-closed
 		}
-		run.CountToolCall()
+		run.CountToolCall(in.ToolUseID)
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 			return err
@@ -1237,7 +1412,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		if err := appendAll(events); err != nil {
 			return err // state already moved (WAIT_USER at the confirm checkpoint) — deny fail-closed
 		}
-		run.CountToolCall()
+		run.CountToolCall(in.ToolUseID)
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 			return err
@@ -1252,9 +1427,45 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 	// reason. On success tool.started + review.prepared append (exactly one
 	// review.prepared per successful call), then the budget counter.
 	if eff != nil && eff.reviewSubmit != nil {
-		if _, err := run.RequestReview(*eff.reviewSubmit); err != nil {
+		if _, err := run.RequestReview(*eff.reviewSubmit, eff.reviewReg); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: summoner:review-submit rejected — %v\n", err)
 			return err
+		}
+		// I6: review.prepared carries the COMPLETE minted semantics — every
+		// active criterion with its definition, the artifact set with pinned
+		// digests, the verification scope and the attempt identity — so the
+		// scorers audit real production input, not a bare review id.
+		prepared := map[string]interface{}{"review_id": eff.reviewSubmit.ReviewID}
+		if rv := run.FindReview(eff.reviewSubmit.ReviewID); rv != nil {
+			prepared["envelope_digest"] = rv.EnvelopeDigest
+			prepared["artifact_digest"] = rv.ArtifactDigest
+			crits := make([]interface{}, 0, len(rv.Envelope.ExitCriteria))
+			for _, c := range rv.Envelope.ExitCriteria {
+				crits = append(crits, map[string]interface{}{
+					"id": c.ID, "goal": c.Goal, "method": string(c.Method), "required": c.Required,
+				})
+			}
+			prepared["criteria"] = crits
+			arts := make([]interface{}, 0, len(rv.Envelope.ArtifactSet))
+			for _, a := range rv.Envelope.ArtifactSet {
+				arts = append(arts, map[string]interface{}{"path": a.Path, "digest": a.Digest, "kind": a.Kind})
+			}
+			prepared["artifacts"] = arts
+			if len(rv.Envelope.CheckDefs) > 0 {
+				defs := make([]interface{}, 0, len(rv.Envelope.CheckDefs))
+				for _, d := range rv.Envelope.CheckDefs {
+					defs = append(defs, map[string]interface{}{"check_id": d.CheckID, "digest": shared.CheckDefDigest(d), "trust": d.Trust})
+				}
+				prepared["check_defs"] = defs
+			}
+			prepared["scope"] = map[string]interface{}{
+				"readable":      rv.Envelope.VerificationScope.Readable,
+				"check_ids":     rv.Envelope.VerificationScope.CheckIDs,
+				"output_schema": rv.Envelope.VerificationScope.OutputSchema,
+			}
+			if rv.ActiveAttemptID != "" {
+				prepared["attempt_id"] = rv.ActiveAttemptID
+			}
 		}
 		events := []shared.TraceEvent{
 			{
@@ -1263,13 +1474,13 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 			},
 			{
 				Type:    shared.EventReviewPrepared,
-				Payload: map[string]interface{}{"review_id": eff.reviewSubmit.ReviewID},
+				Payload: prepared,
 			},
 		}
 		if err := appendAll(events); err != nil {
 			return err // state already moved (REVIEW_PENDING) — deny fail-closed
 		}
-		run.CountToolCall()
+		run.CountToolCall(in.ToolUseID)
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 			return err
@@ -1311,7 +1522,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		if err := appendAll(events); err != nil {
 			return err // resolutions already persisted — deny fail-closed
 		}
-		run.CountToolCall()
+		run.CountToolCall(in.ToolUseID)
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 			return err
@@ -1354,8 +1565,10 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 	}
 	if eff != nil && eff.delegation != "" {
 		// One reducer call, one Save: the review transition and both
-		// counter consumptions persist atomically (review round 2, R1).
-		if err := run.StartDelegation(eff.delegateRevID, eff.delegation == "reviewer"); err != nil {
+		// counter consumptions persist atomically (review round 2, R1). The
+		// admitted parent Agent tool_use id lands on the attempt receipt —
+		// C3's ownership key for the child's initial record.
+		if err := run.StartDelegation(eff.delegateRevID, eff.delegation == "reviewer", in.ToolUseID); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: StartDelegation failed — denying: %v\n", err)
 			return err
 		}
@@ -1373,7 +1586,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 			return err
 		}
 	}
-	run.CountToolCall()
+	run.CountToolCall(in.ToolUseID)
 	if err := run.Save(); err != nil {
 		fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 		return err

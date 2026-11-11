@@ -100,7 +100,7 @@ func waitUserCheckpoint(t *testing.T, r *shared.RunState, phaseID string) shared
 	if err := r.OpenPhase(phaseID); err != nil {
 		t.Fatalf("OpenPhase(%s): %v", phaseID, err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done"})
 	if err != nil {
 		t.Fatalf("SubmitPhase(%s): %v", phaseID, err)
 	}
@@ -126,10 +126,11 @@ func stopPayload(t *testing.T, lastMsg string) string {
 	})
 }
 
-// renderBlock builds a last_assistant_message carrying the checkpoint's render
-// block (checkpoint id + nonce) — what §1.3 展示核验 looks for.
-func renderBlock(cp shared.CheckpointState) string {
-	return "Phase complete.\n\n## Checkpoint " + cp.ID + "\nnonce: `" + cp.Nonce + "`\nProceed?"
+// renderBlock builds the display-act message: the checkpoint-only CANONICAL
+// view (shared.RenderCheckpointMessage — the exact production renderer the
+// Stop hook verifies by whole-message equality; final-fix §2).
+func renderBlock(run *shared.RunState, cp shared.CheckpointState) string {
+	return shared.RenderCheckpointMessage(run, cp)
 }
 
 // decodeBlock decodes the hook's stdout as a block decision; "" stdout is not
@@ -234,7 +235,7 @@ func TestStopBlocksUndisplayedCheckpoint(t *testing.T) {
 	if !blocked {
 		t.Fatalf("stdout %q must be a block decision", stdout)
 	}
-	want := "渲染 checkpoint " + cp.ID + " (nonce " + cp.Nonce + ") 后再结束"
+	want := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的完整规范消息后再结束（summoner-status view:checkpoint 提供逐字节原文；整条消息必须等于该渲染）", cp.ID, cp.Nonce)
 	if reason != want {
 		t.Fatalf("block reason = %q, want exactly %q", reason, want)
 	}
@@ -268,7 +269,7 @@ func TestStopMarksDisplayed(t *testing.T) {
 	r := startRun(t)
 	cp := waitUserCheckpoint(t, r, "diagnosis")
 
-	code, stdout, stderr := callStop(t, stopPayload(t, renderBlock(cp)))
+	code, stdout, stderr := callStop(t, stopPayload(t, renderBlock(r, cp)))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -299,7 +300,7 @@ func TestStopMarksDisplayed(t *testing.T) {
 
 	// Idempotent re-display: already displayed → allow, no second event, no
 	// state rewrite (DisplayedAt must not move — the binding is stable).
-	code, stdout, stderr = callStop(t, stopPayload(t, renderBlock(cp)))
+	code, stdout, stderr = callStop(t, stopPayload(t, renderBlock(r, cp)))
 	if code != 0 {
 		t.Fatalf("re-fire exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -367,31 +368,15 @@ func TestStopFullRenderBindsDisplayDespiteMenuLabels(t *testing.T) {
 	r := startRun(t)
 	cp := waitUserCheckpoint(t, r, "diagnosis")
 
-	// The display-verified render: header, fields, FULL menu, paging note —
-	// the checkpoint id and nonce ride along (hasRenderBlock contract).
-	var b strings.Builder
-	b.WriteString("⚡ SUMMONER STATUS — run run-1 · workflow fix · WAIT_USER\n")
-	fmt.Fprintf(&b, "⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", cp.ID, cp.Nonce, cp.Kind)
-	b.WriteString("phase: diagnosis\nnote: diagnosis done\ncriteria: —\nartifacts: —\nmenu:\n")
-	for _, opt := range shared.DecisionMenuLabels(cp.Kind) {
-		b.WriteString("  " + opt + "\n")
-	}
-	b.WriteString("paged ask (one page per decision question, ≤4 options):\n")
-	for i, pg := range cp.MenuPages {
-		line := fmt.Sprintf("  page %d/%d: %s", i+1, len(cp.MenuPages), strings.Join(pg.Labels, " · "))
-		if pg.NavNext != "" {
-			line += " — " + pg.NavNext
-		}
-		if pg.NavPrev != "" {
-			line += " — " + pg.NavPrev
-		}
-		b.WriteString(line + "\n")
-	}
-	if !strings.Contains(b.String(), "stop:") {
+	// The display-verified render is the checkpoint-only CANONICAL view —
+	// the whole message IS the production renderer's bytes, menu labels and
+	// all (the stop:-label ack-defect trigger rides along inside it).
+	full := shared.RenderCheckpointMessage(r, cp)
+	if !strings.Contains(full, "stop:") {
 		t.Fatal("fixture must contain the stop: menu label (the ack-defect trigger)")
 	}
 
-	code, stdout, stderr := callStop(t, stopPayload(t, b.String()))
+	code, stdout, stderr := callStop(t, stopPayload(t, full))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}

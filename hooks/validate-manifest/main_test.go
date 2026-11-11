@@ -226,8 +226,10 @@ func TestV2RegistryEnvelopeCompatibility(t *testing.T) {
 		t.Fatalf("fixture digest does not match shipped CheckDefDigest: %+v", def)
 	}
 	frozen := shared.FrozenView{Requirements: []shared.FrozenRequirement{{ID: "requirement", CriteriaIDs: []string{"unit-tests"}}}}
-	env := shared.Envelope{
-		ExitCriteria:      []shared.Criterion{{ID: "unit-tests", Method: shared.MethodMechanical, CheckID: def.CheckID}},
+	// Final-fix C1: the validated shape is the MINTED envelope — criteria
+	// carry real meaning (goal), and scope pins check_id@digest.
+	env := shared.SemanticEnvelope{
+		ExitCriteria:      []shared.Criterion{{ID: "unit-tests", Goal: "unit tests pass", Method: shared.MethodMechanical, CheckID: def.CheckID}},
 		VerificationScope: shared.VerificationScope{CheckIDs: []string{def.CheckID + "@" + def.Digest}},
 	}
 	if err := shared.ValidateEnvelope(env, frozen, nil, defs); err != nil {

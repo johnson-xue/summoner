@@ -22,17 +22,27 @@ import (
 
 // submitDisplayedPhase opens a phase, submits it with criteria and binds the
 // display — the run sits WAIT_USER at the phase's checkpoint, ready for a
-// decision or a drop ride-along.
+// decision or a drop ride-along. Artifacts are REAL staged bytes with the
+// hook-computed digest (final-fix C1): the pinned snapshot references actual
+// files, so the gate's registration mint can re-read and verify them.
 func submitDisplayedPhase(t *testing.T, r *shared.RunState, phaseID string, criteria []string) shared.CheckpointState {
 	t.Helper()
 	if err := r.OpenPhase(phaseID); err != nil {
 		t.Fatalf("OpenPhase(%s): %v", phaseID, err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{
+	path := phaseID + ".md"
+	if err := os.WriteFile(filepath.Join(os.Getenv("CLAUDE_PROJECT_DIR"), path), []byte("content-"+phaseID+"\n"), 0o644); err != nil {
+		t.Fatalf("artifact write(%s): %v", path, err)
+	}
+	digest, err := shared.HashArtifactFile(path)
+	if err != nil {
+		t.Fatalf("HashArtifactFile(%s): %v", path, err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:     phaseID,
 		Summary:     phaseID + " done",
 		CriteriaIDs: criteria,
-		Artifacts:   []shared.ArtifactRef{{Path: phaseID + ".md", Digest: "d-" + phaseID, Kind: "doc"}},
+		Artifacts:   []shared.ArtifactRef{{Path: path, Digest: digest, Kind: "doc"}},
 	})
 	if err != nil {
 		t.Fatalf("SubmitPhase(%s): %v", phaseID, err)
@@ -41,6 +51,30 @@ func submitDisplayedPhase(t *testing.T, r *shared.RunState, phaseID string, crit
 		t.Fatalf("MarkDisplayed(%s): %v", cp.ID, err)
 	}
 	return cp
+}
+
+// reviewerCapsule returns the EXACT launch-capsule bytes for the run's
+// PREPARED review (BuildReviewCapsule — the same authority the gate matches
+// by whole-message equality; prose prompts never bind).
+func reviewerCapsule(t *testing.T, run *shared.RunState) string {
+	t.Helper()
+	for i := range run.Reviews {
+		rv := &run.Reviews[i]
+		if rv.Status != shared.ReviewPrepared {
+			continue
+		}
+		capsule, ok := shared.BuildReviewCapsule(run, rv.ReviewID, rv.ActiveAttemptID)
+		if !ok {
+			t.Fatalf("BuildReviewCapsule(%s): not dispatchable", rv.ReviewID)
+		}
+		b, err := capsule.Bytes()
+		if err != nil {
+			t.Fatalf("capsule.Bytes(): %v", err)
+		}
+		return string(b)
+	}
+	t.Fatal("no PREPARED review to launch")
+	return ""
 }
 
 // parkUnderReviewObligation drives one accepted phase (its criteria frozen
@@ -73,19 +107,18 @@ func acceptPhaseWithCriteria(t *testing.T, r *shared.RunState, phaseID string, c
 	}
 }
 
-// envelopeOver builds a minimal legal envelope whose exit criteria are
-// exactly the given ids (judgment method — no registry in these fixtures).
-func envelopeOver(runID, reviewID string, ids ...string) shared.Envelope {
-	env := shared.Envelope{
+// envelopeOver builds the minimal legal registration: identity-only
+// {schema_version, run_id, review_id} (final-fix C1 mint contract). Every
+// semantic field — artifacts, requirements, exit criteria, scope — is minted
+// by the reducer from the pinned acceptance snapshot; the transport carries
+// none, so producer trim/invention is structurally impossible and a smuggled
+// semantic field is a strict-allow-list parse error.
+func envelopeOver(runID, reviewID string) shared.Envelope {
+	return shared.Envelope{
 		SchemaVersion: "2",
 		RunID:         runID,
 		ReviewID:      reviewID,
-		ArtifactSet:   []shared.ArtifactRef{{Path: "diagnosis.md", Digest: "d-diagnosis", Kind: "doc"}},
 	}
-	for _, id := range ids {
-		env.ExitCriteria = append(env.ExitCriteria, shared.Criterion{ID: id, Method: shared.MethodJudgment})
-	}
-	return env
 }
 
 // reviewSubmitPayload builds the Skill(summoner:review-submit) gate payload
@@ -121,7 +154,7 @@ func TestReviewSubmitChannelLegality(t *testing.T) {
 	t.Run("ACTIVE refused", func(t *testing.T) {
 		useGateEnv(t)
 		startFixRun(t, shared.BudgetLimits{})
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-a")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		wantExit2(t, code, stderr, "REVIEW_PENDING")
 	})
 
@@ -129,7 +162,7 @@ func TestReviewSubmitChannelLegality(t *testing.T) {
 		useGateEnv(t)
 		r := startFixRun(t, shared.BudgetLimits{})
 		submitDisplayedPhase(t, r, "context", nil)
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-a")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		wantExit2(t, code, stderr, "WAIT_USER")
 	})
 
@@ -156,10 +189,10 @@ func TestReviewSubmitChannelLegality(t *testing.T) {
 		parkUnderReviewObligation(t, r, []string{"crit-a"}, nil)
 		// Consume the obligation through the reducer: rev-1 is now PREPARED
 		// and in flight — a NEW review id via the channel is refused.
-		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1", "crit-a")); err != nil {
+		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1"), nil); err != nil {
 			t.Fatal(err)
 		}
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-2", "crit-a")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-2")))
 		wantExit2(t, code, stderr, "one review at a time")
 		if n := len(reloadRun(t, "run-1").Reviews); n != 1 {
 			t.Fatalf("reviews = %d, want only the in-flight one", n)
@@ -171,7 +204,7 @@ func TestReviewSubmitChannelLegality(t *testing.T) {
 		r := startFixRun(t, shared.BudgetLimits{})
 		vCP := parkUnderReviewObligation(t, r, []string{"crit-a", "crit-b"}, []string{"crit-b"})
 
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-a", "crit-b")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 		}
@@ -193,9 +226,10 @@ func TestReviewSubmitChannelLegality(t *testing.T) {
 			t.Fatalf("review.prepared events = %+v, want exactly one for rev-1", prepared)
 		}
 
-		// The reviewer delegation is now admissible (PREPARED id in prompt) —
-		// the [v] → review-submit → Agent(reviewer) chain closes.
-		code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "run review rev-1 against the frozen envelope")))
+		// The reviewer delegation is now admissible — ONLY with the exact
+		// launch capsule (whole-message equality); the [v] → review-submit →
+		// Agent(reviewer) chain closes.
+		code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", reviewerCapsule(t, reloadRun(t, "run-1")))))
 		if code != 0 {
 			t.Fatalf("reviewer delegation exit = %d, want 0 (stderr: %q)", code, stderr)
 		}
@@ -205,20 +239,24 @@ func TestReviewSubmitChannelLegality(t *testing.T) {
 	})
 }
 
-// TestReviewSubmitValidatesAgainstFrozenViewMinusDrops: the envelope's exit
-// criteria must equal frozen − drops (both directions); a producer trim and
-// an invented criterion are exit-2 denials that register nothing.
-func TestReviewSubmitValidatesAgainstFrozenViewMinusDrops(t *testing.T) {
+// TestReviewSubmitMintsExactlyFrozenMinusDrops (final-fix C1): the
+// registration carries NO criteria at all — producer trim or invention is
+// structurally impossible (identity-only transport, strict allow-list), and
+// the REDUCER-MINTED envelope's exit criteria are exactly frozen − drops.
+func TestReviewSubmitMintsExactlyFrozenMinusDrops(t *testing.T) {
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
 	// frozen {crit-a, crit-b}; the user dropped crit-b at the [v] checkpoint.
 	parkUnderReviewObligation(t, r, []string{"crit-a", "crit-b"}, []string{"crit-b"}, "crit-b")
 
-	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-b")))
-	wantExit2(t, code, stderr, "crit-a")
+	// Smuggled semantic fields are parse errors, not trim/invent levers.
+	code, stderr := callGate(t, toolPayload(t, "Skill", skillInput("summoner:review-submit",
+		`{"schema_version":"2","run_id":"run-1","review_id":"rev-1","artifact_set":[{"path":"x","digest":"d"}]}`)))
+	wantExit2(t, code, stderr, "envelope")
 
-	code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-a", "crit-x")))
-	wantExit2(t, code, stderr, "crit-x")
+	code, stderr = callGate(t, toolPayload(t, "Skill", skillInput("summoner:review-submit",
+		`{"schema_version":"2","run_id":"run-1","review_id":"rev-1","exit_criteria":[{"id":"crit-x"}]}`)))
+	wantExit2(t, code, stderr, "envelope")
 
 	if reloadRun(t, "run-1").ReviewObligation == nil {
 		t.Fatal("a denied review-submit must leave the obligation unconsumed")
@@ -227,13 +265,32 @@ func TestReviewSubmitValidatesAgainstFrozenViewMinusDrops(t *testing.T) {
 		t.Fatalf("review.prepared events = %d, want 0 — nothing registered", n)
 	}
 
-	// Exactly frozen − drops registers.
-	code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-a")))
+	// The identity registration mints the resolved view minus drops: crit-a
+	// (frozen, not dropped) plus the workflow's COMPLETE shipped default
+	// criteria (ruling 74 — full default criteria graft); crit-b is absent.
+	code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	if len(reloadRun(t, "run-1").Reviews) != 1 {
-		t.Fatal("the frozen−drops envelope must register")
+	disk := reloadRun(t, "run-1")
+	if len(disk.Reviews) != 1 {
+		t.Fatal("the identity registration must register")
+	}
+	got := map[string]bool{}
+	for _, c := range disk.Reviews[0].Envelope.ExitCriteria {
+		got[c.ID] = true
+	}
+	want := []string{"crit-a", "crit-architecture", "crit-correctness", "crit-idiom", "crit-impact", "crit-prove-it", "crit-security"}
+	if len(got) != len(want) {
+		t.Fatalf("minted exit criteria = %d ids (%v), want exactly %d", len(got), got, len(want))
+	}
+	for _, id := range want {
+		if !got[id] {
+			t.Fatalf("minted exit criteria missing %q (frozen view incl. defaults, minus drops): %v", id, got)
+		}
+	}
+	if got["crit-b"] {
+		t.Fatal("minted exit criteria must exclude the dropped crit-b")
 	}
 }
 
@@ -260,7 +317,7 @@ func TestReviewSubmitEnvelopeBeforeFreezeRejected(t *testing.T) {
 	}
 	// review-submit denies on the WAIT_USER discipline — the run never left
 	// WAIT_USER, so the checkpoint still comes first.
-	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-early")))
+	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 	wantExit2(t, code, stderr, "WAIT_USER")
 	if reloadRun(t, "run-1").ReviewObligation != nil {
 		t.Fatal("nothing may record an obligation before the freeze")
@@ -275,7 +332,7 @@ func TestReviewSubmitEnvelopeBeforeFreezeRejected(t *testing.T) {
 	if err := r.RecordDecision(cp2.ID, shared.DecisionReviewOnDemand, ""); err != nil {
 		t.Fatalf("[v] after a freeze must be legal: %v", err)
 	}
-	code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-early")))
+	code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 	if code != 0 {
 		t.Fatalf("review-submit after the legal [v] exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -285,7 +342,7 @@ func TestReviewSubmitEnvelopeBeforeFreezeRejected(t *testing.T) {
 // protocol cannot be driven run-less).
 func TestReviewSubmitRequiresRun(t *testing.T) {
 	useGateEnv(t)
-	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-a")))
+	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 	wantExit2(t, code, stderr, "requires an active run")
 }
 
@@ -418,7 +475,7 @@ func TestStandaloneFreezePrecedesEnvelope(t *testing.T) {
 	}
 
 	// The envelope over the frozen criteria registers through the channel.
-	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+	code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 	if code != 0 {
 		t.Fatalf("review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -440,11 +497,11 @@ func TestAgentNamespacedAdmission(t *testing.T) {
 		useGateEnv(t)
 		r := startFixRun(t, shared.BudgetLimits{})
 		parkUnderReviewObligation(t, r, []string{"crit-a"}, nil)
-		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1", "crit-a")); err != nil {
+		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1"), nil); err != nil {
 			t.Fatal(err)
 		}
 
-		code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("summoner:reviewer", "run review rev-1 against the frozen envelope")))
+		code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("summoner:reviewer", reviewerCapsule(t, r))))
 		if code != 0 {
 			t.Fatalf("summoner:reviewer delegation exit = %d, want 0 (stderr: %q)", code, stderr)
 		}
@@ -474,7 +531,7 @@ func TestAgentNamespacedAdmission(t *testing.T) {
 		useGateEnv(t)
 		r := startFixRun(t, shared.BudgetLimits{})
 		parkUnderReviewObligation(t, r, []string{"crit-a"}, nil)
-		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1", "crit-a")); err != nil {
+		if _, err := r.RequestReview(envelopeOver("run-1", "rev-1"), nil); err != nil {
 			t.Fatal(err)
 		}
 		for _, typ := range []string{"summoner:fork", "other:reviewer", "summoner:code-reviewer", "reviewer:summoner", ":reviewer", "summoner:"} {
@@ -542,7 +599,7 @@ func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
 			t.Fatalf("after the default accepts: %s / %+v — the default path records no obligation", r.Status, r.ReviewObligation)
 		}
 
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		if code != 0 {
 			t.Fatalf("terminal default review-submit exit = %d, want 0 — no [v] opt-in required (stderr: %q)", code, stderr)
 		}
@@ -552,8 +609,8 @@ func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
 			t.Fatalf("after the terminal registration: %s / obligation %+v / reviews %+v", disk.Status, disk.ReviewObligation, disk.Reviews)
 		}
 
-		// The reviewer dispatch follows as usual.
-		code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("summoner:reviewer", "run review rev-1 against the frozen envelope")))
+		// The reviewer dispatch follows as usual — with the exact capsule.
+		code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("summoner:reviewer", reviewerCapsule(t, reloadRun(t, "run-1")))))
 		if code != 0 {
 			t.Fatalf("reviewer delegation exit = %d, want 0 (stderr: %q)", code, stderr)
 		}
@@ -570,7 +627,7 @@ func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
 		if err := r.RecordDecision(cp.ID, shared.DecisionSkip, ""); err != nil {
 			t.Fatalf("SKIP at the review-phase checkpoint: %v", err)
 		}
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		wantExit2(t, code, stderr, "explicitly skipped")
 		if reloadRun(t, "run-1").Status != shared.StatusActive || len(reloadRun(t, "run-1").Reviews) != 0 {
 			t.Fatal("the skipped default must register nothing")
@@ -582,7 +639,7 @@ func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
 		r := startRunWF(t, "review", shared.BudgetLimits{})
 		acceptPhaseWithCriteria(t, r, "context", []string{"crit-correctness"})
 		// The review phase has not run yet: ACTIVE before the review phase.
-		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-correctness")))
+		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		wantExit2(t, code, stderr, "terminal default position")
 
 		// A dev route mid-workflow (diagnosis accepted, terminal review phase
@@ -590,7 +647,7 @@ func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
 		useGateEnv(t)
 		r2 := startFixRun(t, shared.BudgetLimits{})
 		acceptPhaseWithCriteria(t, r2, "diagnosis", []string{"crit-root-cause"})
-		code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1", "crit-root-cause")))
+		code, stderr = callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		wantExit2(t, code, stderr, "terminal default position")
 	})
 }

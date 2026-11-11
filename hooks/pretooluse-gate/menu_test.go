@@ -46,7 +46,7 @@ func waitUserPhase(t *testing.T, r *shared.RunState, phaseID string) *shared.Che
 	if err := r.OpenPhase(phaseID); err != nil {
 		t.Fatalf("OpenPhase(%s): %v", phaseID, err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done"})
 	if err != nil {
 		t.Fatalf("SubmitPhase(%s): %v", phaseID, err)
 	}

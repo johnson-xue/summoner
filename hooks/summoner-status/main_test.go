@@ -114,7 +114,7 @@ func waitUserDiagnosis(t *testing.T) (*shared.RunState, shared.CheckpointState) 
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	cp1, err := r.SubmitPhase(shared.PhaseSubmission{
+	cp1, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:     "context",
 		Summary:     "memory retrieval done",
 		Artifacts:   []shared.ArtifactRef{{Path: "docs/ctx.md", Digest: "c0ffee0000000000000000000000", Kind: "notes"}},
@@ -127,7 +127,7 @@ func waitUserDiagnosis(t *testing.T) (*shared.RunState, shared.CheckpointState) 
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	cp2, err := r.SubmitPhase(shared.PhaseSubmission{
+	cp2, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:     "diagnosis",
 		Summary:     "root cause located",
 		Artifacts:   []shared.ArtifactRef{{Path: "docs/diag.md", Digest: "a1b2c3d4e5f6a7b8", Kind: "report"}},
@@ -268,7 +268,7 @@ func TestRenderUnlimitedBudget(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"}); err != nil {
+	if _, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"}); err != nil {
 		t.Fatal(err)
 	}
 	_, out, _ := callStatus(t, `{"session_id":"sess-1"}`)
@@ -287,7 +287,7 @@ func TestRenderBudgetAsks(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,10 +295,11 @@ func TestRenderBudgetAsks(t *testing.T) {
 		t.Fatal("the first checkpoint must carry the persisted budget ask")
 	}
 	out := renderStatus(r, "L1（未配置沙箱）")
+	// Final-fix §2: the checkpoint-only view renders the persisted ask as one
+	// canonical line (shared/render.go) — the OPTION LABELS are what the
+	// ride-along questions must equal exactly.
 	for _, want := range []string{
-		"budget ask (run-start budget — rides the decision call, nonce-free):",
-		"proposal (framework): phase_tool_calls 不限 · failed_checks 不限 · run_rework 不限 · delegations 不限",
-		"options: budget: 按已显示预算 · budget: 不设上限",
+		"budget ask (framework proposal — rides the decision call): confirm=\"budget: 按已显示预算\" unlimited=\"budget: 不设上限\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("budget ask render missing %q:\n%s", want, out)
@@ -319,8 +320,8 @@ func TestRenderBudgetAsks(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	r.CountToolCall()
-	cp2, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	r.CountToolCall("")
+	cp2, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,9 +330,8 @@ func TestRenderBudgetAsks(t *testing.T) {
 	}
 	out = renderStatus(r, "L1（未配置沙箱）")
 	for _, want := range []string{
-		"extend ask (budget exhausted — add the displayed amount once more):",
-		"delta: phase_tool_calls 1 · failed_checks 不限 · run_rework 不限 · delegations 不限",
-		"options: extend: 追加已显示额度 · extend: 不追加",
+		"extend ask (budget exhausted): extend=\"extend: 追加已显示额度\" hold=\"extend: 不追加\"",
+		"delta ",
 		"已确认",
 	} {
 		if !strings.Contains(out, want) {
@@ -348,11 +348,22 @@ func TestRenderPostGamePending(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	decide(t, r, cp, shared.DecisionDone)
+	// M4 (ruling 72): DONE parks the review-phase workflow at the REVIEW_DEBT
+	// checkpoint — discharge with the explicit UNREVIEWED finish to reach the
+	// POST_GAME_PENDING this render test exists to view.
+	if debt := r.CurrentCheckpoint(); debt != nil && debt.Kind == shared.CheckpointReviewDebt {
+		if err := r.MarkDisplayed(debt.ID, shared.CheckpointContentDigest(*debt, r.RequirementsVersion)); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.RecordDecision(debt.ID, shared.DecisionSkip, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := r.StartPostGame("normal"); err != nil {
 		t.Fatal(err)
 	}
@@ -432,22 +443,47 @@ func TestRenderMenusByKind(t *testing.T) {
 	t.Run("review-result", func(t *testing.T) {
 		useStatusEnv(t)
 		r := newRun(t)
-		env := shared.Envelope{
-			SchemaVersion: "2",
-			RunID:         "run-1",
-			ReviewID:      "rev-1",
-			ArtifactSet:   []shared.ArtifactRef{{Path: "docs/diag.md", Digest: "a1b2c3d4e5f6a7b8"}},
-		}
-		if _, err := r.RequestReview(env); err != nil {
+		// Final-fix C1 staging: REAL artifact bytes on disk — the mint pins
+		// current bytes and RecordReviewResult re-verifies freshness.
+		if err := r.OpenPhase("context"); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.RecordReviewResult(shared.ReviewResult{
+		if err := os.WriteFile(filepath.Join(os.Getenv("CLAUDE_PROJECT_DIR"), "docs-diag.md"), []byte("diag\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		digest, err := shared.HashArtifactFile("docs-diag.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
+			PhaseID:     "context",
+			Summary:     "context done",
+			CriteriaIDs: []string{"crit-diag"},
+			Artifacts:   []shared.ArtifactRef{{Path: "docs-diag.md", Digest: digest, Kind: "doc"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decide(t, r, cp, shared.DecisionContinue)
+		if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-1"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		// The MINTED digest is the authority; cover every minted criterion.
+		res := shared.ReviewResult{
 			ReviewID:            "rev-1",
-			ArtifactDigest:      "a1b2c3d4e5f6a7b8",
 			RunStatus:           shared.ReviewRunCompleted,
 			Verdict:             shared.VerdictPass,
 			EvidenceToolCallIDs: []string{"toolu_1"},
-		}); err != nil {
+			ArtifactDigest:      r.Reviews[0].ArtifactDigest,
+		}
+		for _, c := range r.Reviews[0].Envelope.ExitCriteria {
+			res.CriterionVerdicts = append(res.CriterionVerdicts, shared.CriterionVerdict{
+				CriterionID: c.ID,
+				Status:      "pass",
+				Evidence:    []shared.EvidenceAnchor{{ToolUseID: "toolu_1"}},
+			})
+		}
+		if err := r.RecordReviewResult(res); err != nil {
 			t.Fatal(err)
 		}
 		out := renderStatus(r, "L1（未配置沙箱）")
@@ -486,11 +522,17 @@ func TestRenderAwaitingFields(t *testing.T) {
 	t.Run("review pending", func(t *testing.T) {
 		useStatusEnv(t)
 		r := newRun(t)
-		env := shared.Envelope{
-			SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-9",
-			ArtifactSet: []shared.ArtifactRef{{Path: "a.go", Digest: "d1"}},
+		// Freeze something first — the mint derives every semantic field
+		// from the pinned acceptance snapshot (identity-only transport).
+		if err := r.OpenPhase("context"); err != nil {
+			t.Fatal(err)
 		}
-		if _, err := r.RequestReview(env); err != nil {
+		cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decide(t, r, cp, shared.DecisionContinue)
+		if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-9"}, nil); err != nil {
 			t.Fatal(err)
 		}
 		out := renderStatus(r, "L2")
@@ -581,7 +623,7 @@ func TestRenderPagesNote(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatal(err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "done"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "done"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,9 +635,10 @@ func TestRenderPagesNote(t *testing.T) {
 			t.Errorf("render missing full-menu label %q:\n%s", kw, out)
 		}
 	}
-	// Paging note: pages, their labels, and navigation.
-	if !strings.Contains(out, "paged ask") {
-		t.Fatalf("render missing the paging note:\n%s", out)
+	// Paging block: the shared canonical renderer prints the persisted pages
+	// under the menu (final-fix §2) — pages, their labels, and navigation.
+	if !strings.Contains(out, "menu:") || !strings.Contains(out, "page 1/2:") {
+		t.Fatalf("render missing the menu paging block:\n%s", out)
 	}
 	for _, want := range []string{
 		"page 1/2:", "page 2/2:",

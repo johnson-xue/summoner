@@ -54,9 +54,9 @@ const upsSource = "userpromptsubmit"
 const eventUserPromptSubmit = "UserPromptSubmit"
 
 // typedFormRe matches the TYPED delivery form: a prompt beginning with a
-// Summoner slash verb. \b after the name keeps "/summoner:fixes" from
-// matching "fix".
-var typedFormRe = regexp.MustCompile(`^/summoner:(fix|new|debug|review|ship|ops|release)\b`)
+// Summoner slash verb as a COMPLETE token: whitespace or end, not the
+// regex word boundary (which also accepts the hyphen in fix-extra).
+var typedFormRe = regexp.MustCompile(`^/summoner:(fix|new|debug|review|ship|ops|release)([[:space:]]|$)`)
 
 // workflowNames is the framework verb set both delivery forms recognize.
 var workflowNames = []string{"fix", "new", "debug", "review", "ship", "ops", "release"}

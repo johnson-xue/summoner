@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,15 +86,25 @@ func startFixRun(t *testing.T, limits shared.BudgetLimits) *shared.RunState {
 }
 
 // acceptPhase drives one full phase cycle: open → submit → display → CONTINUE.
+// Artifacts are REAL files with hook-computed digests (the C1 staging
+// contract: producer claims are advisory, current bytes are the truth any
+// later mint re-hashes).
 func acceptPhase(t *testing.T, r *shared.RunState, phaseID string) {
 	t.Helper()
 	if err := r.OpenPhase(phaseID); err != nil {
 		t.Fatalf("OpenPhase(%s): %v", phaseID, err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{
+	if err := os.WriteFile(filepath.Join(shared.ProjectDir(), phaseID+".md"), []byte(phaseID+" notes\n"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	digest, err := shared.HashArtifactFile(phaseID + ".md")
+	if err != nil {
+		t.Fatalf("HashArtifactFile(%s): %v", phaseID+".md", err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
 		PhaseID:   phaseID,
 		Summary:   phaseID + " done",
-		Artifacts: []shared.ArtifactRef{{Path: phaseID + ".md", Digest: "d-" + phaseID, Kind: "doc"}},
+		Artifacts: []shared.ArtifactRef{{Path: phaseID + ".md", Digest: digest, Kind: "doc"}},
 	})
 	if err != nil {
 		t.Fatalf("SubmitPhase(%s): %v", phaseID, err)
@@ -103,6 +114,26 @@ func acceptPhase(t *testing.T, r *shared.RunState, phaseID string) {
 	}
 	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
 		t.Fatalf("RecordDecision(%s): %v", cp.ID, err)
+	}
+}
+
+// settleReviewDebt discharges the mandatory-terminal-⑤ debt a DONE mints on
+// review-phase workflows (M4 / ruling 72): the run parks at a REVIEW_DEBT
+// checkpoint in WAIT_USER; this fixture helper displays it and takes the
+// explicit UNREVIEWED finish, landing POST_GAME_PENDING — the state every
+// older post-game fixture expects. Workflows without a review phase never
+// mint the debt and pass through untouched.
+func settleReviewDebt(t *testing.T, r *shared.RunState) {
+	t.Helper()
+	cp := r.CurrentCheckpoint()
+	if cp == nil || cp.Kind != shared.CheckpointReviewDebt {
+		return
+	}
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed(debt %s): %v", cp.ID, err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionSkip, ""); err != nil {
+		t.Fatalf("RecordDecision(debt %s SKIP): %v", cp.ID, err)
 	}
 }
 
@@ -118,10 +149,19 @@ func mustJSONStr(t *testing.T, v interface{}) string {
 
 func toolPayload(t *testing.T, toolName string, toolInput map[string]interface{}) string {
 	t.Helper()
+	return toolPayloadID(t, toolName, "tu-"+toolName, toolInput)
+}
+
+// toolPayloadID builds one gate payload with an EXPLICIT tool_use id — use
+// wherever a test repeats the same tool: real transcripts never repeat a
+// tool_use id, and the visit bucket's dedup (final-fix I1) collapses a
+// replayed id to a single charge.
+func toolPayloadID(t *testing.T, toolName, id string, toolInput map[string]interface{}) string {
+	t.Helper()
 	return mustJSONStr(t, map[string]interface{}{
 		"session_id":  gateSession,
 		"tool_name":   toolName,
-		"tool_use_id": "tu-" + toolName,
+		"tool_use_id": id,
 		"tool_input":  toolInput,
 	})
 }
@@ -262,7 +302,7 @@ func TestWriteGateBlockedWhileWaitUser(t *testing.T) {
 	if err := r.OpenPhase("reproduce"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	if _, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "reproduce"}); err != nil {
+	if _, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "reproduce"}); err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	} // WAIT_USER
 
@@ -281,13 +321,9 @@ func TestWriteGateBlockedWhileReviewPendingOrOutcomeUnknown(t *testing.T) {
 	r := startFixRun(t, shared.BudgetLimits{})
 	acceptPhase(t, r, "context")
 	acceptPhase(t, r, "diagnosis")
-	env := shared.Envelope{
-		SchemaVersion: "2",
-		RunID:         "run-1",
-		ReviewID:      "rev-1",
-		ArtifactSet:   []shared.ArtifactRef{{Path: "reproduce.md", Digest: "ddd"}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	// C1: registration is identity-only; the reducer MINTS the envelope from
+	// the frozen acceptance (context/diagnosis artifacts above).
+	if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-1"}, nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	} // REVIEW_PENDING
 	code, stderr := callGate(t, toolPayload(t, "Edit", editInput()))
@@ -336,7 +372,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r2.OpenPhase("reproduce"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cp, err := r2.SubmitPhase(shared.PhaseSubmission{PhaseID: "reproduce"})
+	cp, err := r2.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "reproduce"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -346,6 +382,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r2.RecordDecision(cp.ID, shared.DecisionDone, ""); err != nil {
 		t.Fatalf("RecordDecision(DONE): %v", err)
 	}
+	settleReviewDebt(t, r2)
 	if code, _ = callGate(t, toolPayload(t, "Edit", editInput())); code != 0 {
 		t.Fatalf("Edit in POST_GAME_PENDING: exit %d, want 0", code)
 	}
@@ -359,7 +396,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r3.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cpC, err := r3.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cpC, err := r3.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -372,7 +409,7 @@ func TestWriteGateAllowedAfterDiagnosisAccepted(t *testing.T) {
 	if err := r3.OpenPhase("diagnosis"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cpD, err := r3.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	cpD, err := r3.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -605,27 +642,35 @@ func TestAgentGateWrongType(t *testing.T) {
 func TestAgentReviewerRequiresPreparedReviewID(t *testing.T) {
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
-	env := shared.Envelope{
-		SchemaVersion: "2",
-		RunID:         "run-1",
-		ReviewID:      "rev-42",
-		ArtifactSet:   []shared.ArtifactRef{{Path: "fix.md", Digest: "ddd"}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	acceptPhase(t, r, "context")
+	// C1: identity-only registration; the reducer mints the envelope from the
+	// frozen acceptance. The reviewer prompt must then be the EXACT launch
+	// capsule (adjudication §2 — whole-message equality, no containment).
+	if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-42"}, nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
 	} // REVIEW_PENDING, review PREPARED
+	capsule, ok := shared.BuildReviewCapsule(r, "rev-42", r.Reviews[0].ActiveAttemptID)
+	if !ok {
+		t.Fatalf("BuildReviewCapsule(rev-42): not ok")
+	}
+	capsulePrompt, err := capsule.Bytes()
+	if err != nil {
+		t.Fatalf("capsule.Bytes(): %v", err)
+	}
 
 	// Review round 2 (R1): worker delegations require ACTIVE — while a
 	// review is pending, a worker delegation is denied.
 	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("worker", "shard")))
 	wantExit2(t, code, stderr, "ACTIVE")
 
-	code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "please review the artifacts")))
-	wantExit2(t, code, stderr, "review_id")
+	// A prose prompt that merely NAMES the review id never binds — only the
+	// exact capsule bytes do (whole-message equality).
+	code, stderr = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-42 per contract")))
+	wantExit2(t, code, stderr, "capsule")
 
-	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-42 per contract")))
+	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", string(capsulePrompt))))
 	if code != 0 {
-		t.Fatalf("reviewer with bound review_id: exit %d, want 0", code)
+		t.Fatalf("reviewer with the exact capsule: exit %d, want 0", code)
 	}
 	after := reloadRun(t, "run-1")
 	if after.Reviews[0].Status != shared.ReviewRunning {
@@ -680,7 +725,7 @@ func TestAskUserMissingNonce(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -734,11 +779,11 @@ func TestBudgetExhaustionBlocks(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if code, _ := callGate(t, toolPayload(t, "Read", readInput())); code != 0 {
+		if code, _ := callGate(t, toolPayloadID(t, "Read", fmt.Sprintf("tu-read-%d", i+1), readInput())); code != 0 {
 			t.Fatalf("read %d within budget: exit != 0", i+1)
 		}
 	}
-	code, stderr := callGate(t, toolPayload(t, "Read", readInput()))
+	code, stderr := callGate(t, toolPayloadID(t, "Read", "tu-read-3", readInput()))
 	wantExit2(t, code, stderr, "budget")
 
 	// I5: the AskUserQuestion budget exemption applies only to the
@@ -1059,7 +1104,7 @@ func TestNextPhaseAfterRecall(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cpD, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	cpD, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -1071,7 +1116,7 @@ func TestNextPhaseAfterRecall(t *testing.T) {
 	}
 
 	// Re-accept context (reopened by the recall).
-	cpC, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cpC, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatalf("SubmitPhase(context): %v", err)
 	}
@@ -1100,7 +1145,7 @@ func TestSkippedPhaseSequencing(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -1129,7 +1174,7 @@ func TestPostGameWriteWithoutDiagnosis(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
-	cp, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context"})
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context"})
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
@@ -1158,14 +1203,17 @@ func TestAgentTraceFailureDeniesWithoutMutation(t *testing.T) {
 	}
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
-	env := shared.Envelope{
-		SchemaVersion: "2",
-		RunID:         "run-1",
-		ReviewID:      "rev-1",
-		ArtifactSet:   []shared.ArtifactRef{{Path: "fix.md", Digest: "ddd"}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	acceptPhase(t, r, "context")
+	if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-1"}, nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
+	}
+	capsule, ok := shared.BuildReviewCapsule(r, "rev-1", r.Reviews[0].ActiveAttemptID)
+	if !ok {
+		t.Fatalf("BuildReviewCapsule(rev-1): not ok")
+	}
+	capsulePrompt, err := capsule.Bytes()
+	if err != nil {
+		t.Fatalf("capsule.Bytes(): %v", err)
 	}
 
 	// Break the trace dir: the intent append must fail BEFORE any state
@@ -1179,7 +1227,7 @@ func TestAgentTraceFailureDeniesWithoutMutation(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(keyDir, 0o755) })
 
-	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", string(capsulePrompt))))
 	wantExit2(t, code, stderr, "")
 	after := reloadRun(t, "run-1")
 	if after.Reviews[0].Status != shared.ReviewPrepared {
@@ -1193,7 +1241,7 @@ func TestAgentTraceFailureDeniesWithoutMutation(t *testing.T) {
 	if err := os.Chmod(keyDir, 0o755); err != nil {
 		t.Fatalf("chmod repair: %v", err)
 	}
-	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", string(capsulePrompt))))
 	if code != 0 {
 		t.Fatalf("retry after repair: exit %d, want 0", code)
 	}
@@ -1217,14 +1265,17 @@ func TestDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
 	}
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
-	env := shared.Envelope{
-		SchemaVersion: "2",
-		RunID:         "run-1",
-		ReviewID:      "rev-1",
-		ArtifactSet:   []shared.ArtifactRef{{Path: "fix.md", Digest: "ddd"}},
-	}
-	if _, err := r.RequestReview(env); err != nil {
+	acceptPhase(t, r, "context")
+	if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: "run-1", ReviewID: "rev-1"}, nil); err != nil {
 		t.Fatalf("RequestReview: %v", err)
+	}
+	capsule, ok := shared.BuildReviewCapsule(r, "rev-1", r.Reviews[0].ActiveAttemptID)
+	if !ok {
+		t.Fatalf("BuildReviewCapsule(rev-1): not ok")
+	}
+	capsulePrompt, err := capsule.Bytes()
+	if err != nil {
+		t.Fatalf("capsule.Bytes(): %v", err)
 	}
 
 	dir := filepath.Join(os.Getenv("SUMMONER_STATE_DIR"), shared.ProjectKey(), gateSession)
@@ -1233,7 +1284,7 @@ func TestDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
 
-	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	code, stderr := callGate(t, toolPayload(t, "Agent", agentInput("reviewer", string(capsulePrompt))))
 	wantExit2(t, code, stderr, "")
 	_ = os.Chmod(dir, 0o755) // repair for the reload check (Cleanup chmod is idempotent)
 
@@ -1246,7 +1297,7 @@ func TestDelegationSaveFailureLeavesDiskUnchanged(t *testing.T) {
 	}
 
 	// Retry after repair: end-to-end success.
-	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", "review envelope review_id=rev-1")))
+	code, _ = callGate(t, toolPayload(t, "Agent", agentInput("reviewer", string(capsulePrompt))))
 	if code != 0 {
 		t.Fatalf("retry after repair: exit %d, want 0", code)
 	}
@@ -1317,10 +1368,12 @@ func TestGateMalformedKnownToolPayloads(t *testing.T) {
 		t.Fatalf("empty tool_name: exit %d, want 2", code)
 	}
 
-	// Unknown tool NAMES keep the observe-and-allow policy.
+	// Unknown tool NAMES are denied: unmodeled tools (MCP writes included) have
+	// no supported read-only or mutation/probe declaration — C2's default-allow
+	// was an iron-law bypass.
 	code, _ := callGate(t, toolPayload(t, "FancyMcpTool", map[string]interface{}{"whatever": 1}))
-	if code != 0 {
-		t.Fatalf("unknown tool name with arbitrary shape: exit %d, want 0", code)
+	if code != 2 {
+		t.Fatalf("unknown tool name with arbitrary shape: exit %d, want 2", code)
 	}
 }
 
@@ -1528,7 +1581,7 @@ func TestChangeOpenFromWaitUserCarveOut(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"}); err != nil {
+	if _, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"}); err != nil {
 		t.Fatal(err)
 	}
 	if reloadRun(t, "run-1").Status != shared.StatusWaitUser {
@@ -1736,7 +1789,7 @@ func TestWaitUserSkillDenyKeepsSubmitPath(t *testing.T) {
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.SubmitPhase(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"}); err != nil {
+	if _, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"}); err != nil {
 		t.Fatal(err)
 	}
 	if reloadRun(t, "run-1").Status != shared.StatusWaitUser {

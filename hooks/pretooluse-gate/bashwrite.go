@@ -45,10 +45,18 @@ var (
 	writeClassVerbs = map[string]bool{
 		"rm": true, "mv": true, "cp": true, "tee": true,
 		"chmod": true, "chown": true, "touch": true, "mkdir": true,
+		"dd": true, "truncate": true, "ln": true, "install": true,
+		"sudo": true, "xargs": true, "eval": true, "exec": true,
+		"sh": true, "bash": true, "zsh": true, "__ambiguous_wrapper__": true,
 	}
 	gitWriteSubcommands = map[string]bool{
 		"commit": true, "push": true, "reset": true, "checkout": true,
-		"rebase": true, "merge": true, "stash": true,
+		"rebase": true, "merge": true, "stash": true, "switch": true,
+		"add": true, "rm": true, "mv": true, "clean": true, "apply": true,
+		"cherry-pick": true, "revert": true, "fetch": true, "pull": true,
+		"update-ref": true, "update-index": true, "read-tree": true,
+		"worktree": true, "init": true, "clone": true, "gc": true,
+		"prune": true, "repack": true, "notes": true, "submodule": true,
 	}
 	// gitFlagsWithValue — global git flags whose argument must be skipped
 	// before the subcommand: git -C /repo commit …
@@ -72,7 +80,7 @@ func isWriteClassCommand(command string) bool {
 	norm := strings.ReplaceAll(command, "$(", "; ")
 	norm = strings.ReplaceAll(norm, "`", "; ")
 	for _, seg := range strings.FieldsFunc(norm, func(r rune) bool {
-		return r == ';' || r == '|' || r == '&' || r == '\n' || r == '\r'
+		return r == ';' || r == '|' || r == '&' || r == '\n' || r == '\r' || r == '(' || r == ')'
 	}) {
 		if classifySegment(tokenize(seg)) {
 			return true
@@ -137,21 +145,68 @@ func classifySegment(words []string) bool {
 		for j := 0; j < len(args); j++ {
 			a := args[j]
 			if gitFlagsWithValue[a] {
-				j++ // skip the flag's value (quotes already joined it)
+				if j+1 >= len(args) {
+					return true
+				}
+				j++
 				continue
 			}
 			if strings.HasPrefix(a, "-") {
-				continue
+				// Unknown global flags may take a value or dispatch a helper.
+				if a == "--no-pager" || a == "--paginate" || a == "--bare" || strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") || strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-C") {
+					continue
+				}
+				return true
 			}
 			if gitWriteSubcommands[a] {
 				return true
 			}
-			break // first real subcommand; not a write class
+			switch a {
+			case "branch", "tag":
+				return gitRefMutation(args[j+1:])
+			case "config":
+				for _, flag := range args[j+1:] {
+					if flag == "--get" || flag == "--get-all" || flag == "--get-regexp" || flag == "--list" || flag == "-l" {
+						return false
+					}
+				}
+				return true
+			case "symbolic-ref":
+				return len(args[j+1:]) != 1 || strings.HasPrefix(args[j+1], "-")
+			}
+			break
 		}
 	default:
 		return writeClassVerbs[verb]
 	}
 	return false
+}
+
+// gitRefMutation distinguishes the genuine branch/tag listing forms from
+// creation, deletion, force and unknown options. Unknown shapes stay write-class.
+func gitRefMutation(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	listing := false
+	for _, a := range args {
+		switch a {
+		case "--list", "-l", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "-a", "--all", "-r", "--remotes", "-v", "-vv":
+			listing = true
+		default:
+			if strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=") {
+				listing = true
+				continue
+			}
+			if strings.HasPrefix(a, "-") {
+				return true
+			}
+			if !listing {
+				return true
+			}
+		}
+	}
+	return !listing
 }
 
 // isStatusInvocation reports whether a Bash command is EXACTLY the canonical
@@ -178,7 +233,7 @@ func isStatusInvocation(command string) bool {
 	norm = strings.ReplaceAll(norm, "`", "; ")
 	segs := 0
 	for _, seg := range strings.FieldsFunc(norm, func(r rune) bool {
-		return r == ';' || r == '|' || r == '&' || r == '\n' || r == '\r'
+		return r == ';' || r == '|' || r == '&' || r == '\n' || r == '\r' || r == '(' || r == ')'
 	}) {
 		segs++
 		words := tokenize(seg)
@@ -247,14 +302,51 @@ func resolveVerb(words []string) (int, string) {
 		switch base {
 		case "env":
 			i++
-			// env's own flags and VAR=val operands precede the command.
-			for i < len(words) && (strings.HasPrefix(words[i], "-") || envAssign.MatchString(words[i])) {
+			for i < len(words) {
+				a := words[i]
+				if a == "--" {
+					i++
+					break
+				}
+				if envAssign.MatchString(a) || a == "-i" || a == "--ignore-environment" || a == "-0" {
+					i++
+					continue
+				}
+				if a == "-u" || a == "--unset" || a == "-C" || a == "--chdir" {
+					if i+1 >= len(words) {
+						return i, "__ambiguous_wrapper__"
+					}
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(a, "--unset=") || strings.HasPrefix(a, "--chdir=") || (strings.HasPrefix(a, "-u") && len(a) > 2) {
+					i++
+					continue
+				}
+				if strings.HasPrefix(a, "-") {
+					return i, "__ambiguous_wrapper__"
+				}
+				break
+			}
+		case "command":
+			i++
+			for i < len(words) && (words[i] == "-p" || words[i] == "--") {
 				i++
 			}
-		case "command", "nohup":
-			// Their flags take no values — drop only the wrapper itself,
-			// so `command -v rm` stays read-only.
+			if i < len(words) && (words[i] == "-v" || words[i] == "-V") {
+				return -1, ""
+			}
+			if i < len(words) && strings.HasPrefix(words[i], "-") {
+				return i, "__ambiguous_wrapper__"
+			}
+		case "nohup":
 			i++
+			if i < len(words) && words[i] == "--" {
+				i++
+			}
+			if i < len(words) && strings.HasPrefix(words[i], "-") {
+				return i, "__ambiguous_wrapper__"
+			}
 		default:
 			return i, base
 		}

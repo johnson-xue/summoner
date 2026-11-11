@@ -214,6 +214,23 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 	if !ok {
 		return // absent/unparseable: registration only
 	}
+	// QA-1 ownership bind (final-fix wave, adjudication §3): the child must
+	// OWN its launch before its transcript can conclude or fail this review —
+	// the transcript's INITIAL record must be the EXACT admitted capsule of
+	// the active attempt (one admitted parent tool_use, append-only receipt).
+	// Checked BEFORE evidence reconciliation and verdict acceptance; an
+	// unproven correlation quarantines through the same FAILED + review-result
+	// routing (the run stays decidable), and ownership is never inferred from
+	// echoed tokens, ordering or agent-type guesses. A result naming a
+	// DIFFERENT review is a late duplicate of an old generation — its refusal
+	// stays RecordReviewResult's, so the gate keys on the in-flight id like
+	// the reconciliation below.
+	if res.ReviewID == rv.ReviewID {
+		if problem := shared.VerifyChildOwnership(run, rv, in.TranscriptPath); problem != nil {
+			routeReviewProtocolError(run, in, rv.ReviewID, problem, errW)
+			return
+		}
+	}
 	// T17 evidence reconciliation (spec §3 证据对账) runs BEFORE the verdict is
 	// accepted — and only for a result naming the IN-FLIGHT review (a late
 	// duplicate's ids are the old generation's business; its refusal stays
@@ -269,9 +286,10 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 	// just wrote onto the review record are mirrored so the trace carries the
 	// verdict's envelope/artifact identity — digests-in-trace is established
 	// §7 precedent (tool.result carries response_sha256, never content).
-	// envelope_digest is set at registration (always present on a concluded
-	// record); artifact_digest records the claimed artifact set (empty for a
-	// reason-code BLOCKED) — each mirrors only when non-empty.
+	// envelope_digest is set at registration; artifact_digest is the minted
+	// artifact-set identity every recorded result — COMPLETED or BLOCKED —
+	// carries and had compared (C1b; a reason-code block still names the
+	// pinned envelope it was operating on); each mirrors only when non-empty.
 	if rec := reviewRecord(run, res.ReviewID); rec != nil {
 		if rec.EnvelopeDigest != "" {
 			payload["envelope_digest"] = rec.EnvelopeDigest

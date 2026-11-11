@@ -897,23 +897,11 @@ func askQuestionText(nonce string) string {
 }
 
 // renderMessageFor builds the assistant message of the render turn: the
-// checkpoint header (id + nonce — what display verification binds) plus the
-// FULL menu and paging note the status render carries.
-func renderMessageFor(cp *shared.CheckpointState) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", cp.ID, cp.Nonce, cp.Kind)
-	b.WriteString("phase: " + cp.PhaseID + "\nmenu:\n")
-	for _, opt := range shared.DecisionMenuLabels(cp.Kind) {
-		b.WriteString("  " + opt + "\n")
-	}
-	if len(cp.MenuPages) > 1 {
-		b.WriteString("paged ask (one page per decision question, ≤4 options):\n")
-		for i, pg := range cp.MenuPages {
-			fmt.Fprintf(&b, "  page %d/%d: %s — %s — %s\n", i+1, len(cp.MenuPages),
-				strings.Join(pg.Labels, " · "), pg.NavNext, pg.NavPrev)
-		}
-	}
-	return b.String()
+// checkpoint-only canonical view produced by the SAME production renderer
+// the Stop hook verifies by whole-message equality (final-fix §2) — the
+// test never hand-writes display bytes.
+func renderMessageFor(run *shared.RunState, cp *shared.CheckpointState) string {
+	return shared.RenderCheckpointMessage(run, *cp)
 }
 
 // TestEndToEndTwoTurnDecisionReviewRoute — T16's runtime contract over the
@@ -976,7 +964,7 @@ func TestEndToEndTwoTurnDecisionReviewRoute(t *testing.T) {
 
 	// Render turn: the pasted render IS the display act — the Stop hook binds
 	// it (menu labels inside the render must not satisfy the stop-ack).
-	code, _, stderr = runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil)
+	code, _, stderr = runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(run, cp)), nil)
 	if code != 0 {
 		t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -1050,24 +1038,88 @@ func TestEndToEndTwoTurnDecisionReviewRoute(t *testing.T) {
 
 // --- T17: the review-submit channel over the REAL binaries --------------------------
 
-// contractEnvelopeJSON builds one review envelope as the args JSON string.
-func contractEnvelopeJSON(t *testing.T, runID, reviewID string, ids ...string) string {
+// contractEnvelopeJSON builds the identity-only review registration as the
+// args JSON string (final-fix C1: the reducer mints every semantic field from
+// the pinned acceptance snapshot; the transport is identity-only).
+func contractEnvelopeJSON(t *testing.T, runID, reviewID string) string {
 	t.Helper()
-	env := shared.Envelope{
+	b, err := json.Marshal(shared.Envelope{
 		SchemaVersion: "2",
 		RunID:         runID,
 		ReviewID:      reviewID,
-		ArtifactSet:   []shared.ArtifactRef{{Path: "docs/reviews/r.md", Digest: "d-1", Kind: "report"}},
-		Requirements:  shared.FrozenView{Version: 1},
-	}
-	for _, id := range ids {
-		env.ExitCriteria = append(env.ExitCriteria, shared.Criterion{ID: id, Method: shared.MethodJudgment, Required: true})
-	}
-	b, err := json.Marshal(env)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// contractReviewerCapsule returns the exact launch-capsule bytes of the run's
+// PREPARED review, reloading state first (the review was registered through
+// the real gate binary; BuildReviewCapsule is the same authority the gate
+// matches by whole-message equality — prose prompts never bind).
+func contractReviewerCapsule(t *testing.T, runID string) string {
+	t.Helper()
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range run.Reviews {
+		rv := &run.Reviews[i]
+		if rv.Status != shared.ReviewPrepared {
+			continue
+		}
+		capsule, ok := shared.BuildReviewCapsule(run, rv.ReviewID, rv.ActiveAttemptID)
+		if !ok {
+			t.Fatalf("BuildReviewCapsule(%s): not dispatchable", rv.ReviewID)
+		}
+		b, err := capsule.Bytes()
+		if err != nil {
+			t.Fatalf("capsule.Bytes(): %v", err)
+		}
+		return string(b)
+	}
+	t.Fatal("no PREPARED review for the capsule")
+	return ""
+}
+
+// contractPassResult builds the reviewer's COMPLIANT PASS ReviewResult for the
+// run's in-flight review: the claimed artifact digest is the MINTED
+// ArtifactSetDigest the registration recorded (never a hand-invented string),
+// and the criterion verdicts cover EVERY minted exit criterion (frozen − drops
+// + the shipped defaults), each pass anchored to the reviewer's real
+// transcript tool_use id (toolu-rev-1 — the id contractReviewerTranscript
+// writes).
+func contractPassResult(t *testing.T, runID string) shared.ReviewResult {
+	t.Helper()
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rv *shared.ReviewRecord
+	for i := range run.Reviews {
+		if run.Reviews[i].Status == shared.ReviewRunning || run.Reviews[i].Status == shared.ReviewPrepared {
+			rv = &run.Reviews[i]
+		}
+	}
+	if rv == nil {
+		t.Fatal("no in-flight review for the result")
+	}
+	res := shared.ReviewResult{
+		ReviewID:            rv.ReviewID,
+		ArtifactDigest:      rv.ArtifactDigest,
+		RunStatus:           shared.ReviewRunCompleted,
+		Verdict:             shared.VerdictPass,
+		EvidenceToolCallIDs: []string{"toolu-rev-1"},
+	}
+	for _, c := range rv.Envelope.ExitCriteria {
+		res.CriterionVerdicts = append(res.CriterionVerdicts, shared.CriterionVerdict{
+			CriterionID: c.ID,
+			Status:      "pass",
+			Evidence:    []shared.EvidenceAnchor{{ToolUseID: "toolu-rev-1"}},
+		})
+	}
+	return res
 }
 
 // budgetRides builds the nonce-free budget/extend ride-along questions of a
@@ -1130,7 +1182,12 @@ func renderAndDecide(t *testing.T, runID, toolUseID string, cp *shared.Checkpoin
 // choices (budgetRides' per-kind choice strings).
 func renderAndDecideSettle(t *testing.T, runID, toolUseID string, cp *shared.CheckpointState, pageIdx int, sel func([]string) string, budgetChoice, extendChoice string) {
 	t.Helper()
-	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil); code != 0 {
+	// The render turn needs the run for the canonical renderer (run header).
+	renderRun, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(renderRun, cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	run, err := shared.LoadRun(runID)
@@ -1208,12 +1265,41 @@ func firstLabelWithKeyword(labels []string, keyword string) string {
 	return labels[0]
 }
 
-// contractReviewerTranscript writes a reviewer transcript: one REAL evidence
-// tool_use (id toolu-rev-1) plus a SubagentHandback carrying resultJSON.
-func contractReviewerTranscript(t *testing.T, resultJSON string) string {
+// contractReviewerTranscript writes a reviewer transcript: the platform
+// INITIAL task record carrying the EXACT admitted capsule (QA-1 ownership
+// bind — the SubagentStop join verifies this record before any verdict), one
+// REAL observed evidence call (tool_use toolu-rev-1 + its paired successful
+// tool_result — the final-fix wave's reconciliation only accepts observation
+// tools with a successful observed result; an unpaired tool_use proves
+// nothing) plus a SubagentHandback carrying resultJSON.
+func contractReviewerTranscript(t *testing.T, runID, resultJSON string) string {
 	t.Helper()
+	run, err := shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := "run review " + runID // overwritten below when an in-flight review owns the capsule
+	for i := range run.Reviews {
+		rv := &run.Reviews[i]
+		if rv.Status != shared.ReviewRunning && rv.Status != shared.ReviewPrepared {
+			continue
+		}
+		capsule, ok := shared.BuildReviewCapsule(run, rv.ReviewID, rv.ActiveAttemptID)
+		if !ok {
+			t.Fatalf("BuildReviewCapsule(%s): not dispatchable", rv.ReviewID)
+		}
+		b, err := capsule.Bytes()
+		if err != nil {
+			t.Fatalf("capsule.Bytes(): %v", err)
+		}
+		initial = string(b)
+		break
+	}
 	lines := []string{
-		`{"type":"user","message":{"role":"user","content":"run review rev-1"}}`,
+		mustJSON(t, map[string]interface{}{
+			"type":    "user",
+			"message": map[string]interface{}{"role": "user", "content": initial},
+		}),
 		mustJSON(t, map[string]interface{}{
 			"type": "assistant",
 			"message": map[string]interface{}{
@@ -1222,6 +1308,16 @@ func contractReviewerTranscript(t *testing.T, resultJSON string) string {
 					map[string]interface{}{"type": "text", "text": "re-deriving criteria"},
 					map[string]interface{}{"type": "tool_use", "id": "toolu-rev-1", "name": "Read",
 						"input": map[string]interface{}{"file_path": "docs/reviews/r.md"}},
+				},
+			},
+		}),
+		mustJSON(t, map[string]interface{}{
+			"type": "user",
+			"message": map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{"type": "tool_result", "tool_use_id": "toolu-rev-1",
+						"is_error": false, "content": "the reviewed file's bytes"},
 				},
 			},
 		}),
@@ -1276,7 +1372,7 @@ func contractRunAtReviewPending(t *testing.T, frozen, pending []string) string {
 	// The [v] lives on page 2 of the PHASE menu; the offered set must equal a
 	// persisted page, so ask with page 2's labels and answer `review:`.
 	cp := run.CurrentCheckpoint()
-	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil); code != 0 {
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(run, cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	page2 := cp.MenuPages[len(cp.MenuPages)-1]
@@ -1325,7 +1421,7 @@ func TestEndToEndReviewSubmitRoundTrip(t *testing.T) {
 	// review-submit: the envelope cites exactly the frozen view.
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
 		"skill": "summoner:review-submit",
-		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-ctx"),
+		"args":  contractEnvelopeJSON(t, runID, "rev-1"),
 	}), nil); code != 0 {
 		t.Fatalf("review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -1340,7 +1436,7 @@ func TestEndToEndReviewSubmitRoundTrip(t *testing.T) {
 	// The reviewer delegation is admitted only with the PREPARED id.
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Agent", "tu-ag-1", map[string]interface{}{
 		"subagent_type": "reviewer",
-		"prompt":        "Run review rev-1 against the registered envelope; return the structured ReviewResult.",
+		"prompt":        contractReviewerCapsule(t, runID),
 		"description":   "independent review",
 	}), nil); code != 0 {
 		t.Fatalf("reviewer Agent exit = %d, want 0 (stderr: %q)", code, stderr)
@@ -1355,19 +1451,12 @@ func TestEndToEndReviewSubmitRoundTrip(t *testing.T) {
 
 	// SubagentStop: the transcript's real tool_use id joins the claimed
 	// evidence; the PASS verdict backfills through the reducer.
-	result := shared.ReviewResult{
-		ReviewID:            "rev-1",
-		ArtifactDigest:      "d-1",
-		RunStatus:           shared.ReviewRunCompleted,
-		Verdict:             shared.VerdictPass,
-		CriterionVerdicts:   []shared.CriterionVerdict{{CriterionID: "crit-ctx", Status: "pass"}},
-		EvidenceToolCallIDs: []string{"toolu-rev-1"},
-	}
+	result := contractPassResult(t, runID)
 	resJSON, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	transcript := contractReviewerTranscript(t, string(resJSON))
+	transcript := contractReviewerTranscript(t, runID, string(resJSON))
 	if code, _, stderr := runBinary(t, "subagentstop", mustJSON(t, map[string]interface{}{
 		"hook_event_name":       "SubagentStop",
 		"session_id":            contractSession,
@@ -1409,11 +1498,11 @@ func TestEndToEndReviewSubmitRoundTrip(t *testing.T) {
 		// end-to-end — transcript tool_use → ReconcileEvidence join →
 		// reducer record → review.verdict payload.
 		t.Errorf("review.verdict evidence_tool_call_ids = %#v, want [toolu-rev-1] mirrored end-to-end", verdicts[0].Payload["evidence_tool_call_ids"])
-	} else if verdicts[0].Payload["artifact_digest"] != "d-1" {
+	} else if verdicts[0].Payload["artifact_digest"] != rv.ArtifactDigest {
 		// T12 fix-back 2 (split ruling A): the record's digests mirror
-		// end-to-end too — artifact identity exactly, envelope identity
-		// present (opaque content digest).
-		t.Errorf("review.verdict artifact_digest = %#v, want d-1", verdicts[0].Payload["artifact_digest"])
+		// end-to-end too — artifact identity exactly (the MINTED
+		// ArtifactSetDigest), envelope identity present (opaque digest).
+		t.Errorf("review.verdict artifact_digest = %#v, want the minted %s", verdicts[0].Payload["artifact_digest"], rv.ArtifactDigest)
 	} else if env, ok := verdicts[0].Payload["envelope_digest"].(string); !ok || env == "" {
 		t.Errorf("review.verdict envelope_digest = %#v, want a non-empty digest", verdicts[0].Payload["envelope_digest"])
 	}
@@ -1432,7 +1521,7 @@ func TestEndToEndForgedEvidenceStaysDecidable(t *testing.T) {
 
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
 		"skill": "summoner:review-submit",
-		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-ctx"),
+		"args":  contractEnvelopeJSON(t, runID, "rev-1"),
 	}), nil); code != 0 {
 		t.Fatalf("review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -1453,7 +1542,7 @@ func TestEndToEndForgedEvidenceStaysDecidable(t *testing.T) {
 		"stop_hook_active":      false,
 		"agent_id":              "ag-rev-1",
 		"agent_type":            "reviewer",
-		"agent_transcript_path": contractReviewerTranscript(t, string(resJSON)),
+		"agent_transcript_path": contractReviewerTranscript(t, runID, string(resJSON)),
 	}), nil); code != 0 {
 		t.Fatalf("subagentstop exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -1538,7 +1627,7 @@ func TestEndToEndEnvelopeBeforeFreezeRejected(t *testing.T) {
 	// left the checkpoint open, so it still comes first.
 	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
 		"skill": "summoner:review-submit",
-		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-correctness"),
+		"args":  contractEnvelopeJSON(t, runID, "rev-1"),
 	}), nil)
 	if code != 2 || !strings.Contains(stderr, "WAIT_USER") {
 		t.Fatalf("review-submit after the refused [v]: (code, stderr) = (%d, %q), want exit 2 + WAIT_USER denial", code, stderr)
@@ -1619,13 +1708,13 @@ func TestEndToEndTerminalDefaultReviewNoOptIn(t *testing.T) {
 	// The channel is open from ACTIVE: envelope registers, reviewer dispatches.
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
 		"skill": "summoner:review-submit",
-		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-correctness"),
+		"args":  contractEnvelopeJSON(t, runID, "rev-1"),
 	}), nil); code != 0 {
 		t.Fatalf("terminal default review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Agent", "tu-ag-1", map[string]interface{}{
 		"subagent_type": "summoner:reviewer",
-		"prompt":        "Run review rev-1 against the registered envelope; return the structured ReviewResult.",
+		"prompt":        contractReviewerCapsule(t, runID),
 		"description":   "independent review",
 	}), nil); code != 0 {
 		t.Fatalf("reviewer Agent exit = %d, want 0 (stderr: %q)", code, stderr)
@@ -1653,7 +1742,7 @@ func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
 
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-rs-1", map[string]interface{}{
 		"skill": "summoner:review-submit",
-		"args":  contractEnvelopeJSON(t, runID, "rev-1", "crit-ctx"),
+		"args":  contractEnvelopeJSON(t, runID, "rev-1"),
 	}), nil); code != 0 {
 		t.Fatalf("review-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -1661,7 +1750,7 @@ func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
 	// The production dispatch: subagent_type "summoner:reviewer".
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Agent", "tu-ag-1", map[string]interface{}{
 		"subagent_type": "summoner:reviewer",
-		"prompt":        "Run review rev-1 against the registered envelope; return the structured ReviewResult.",
+		"prompt":        contractReviewerCapsule(t, runID),
 		"description":   "independent review",
 	}), nil); code != 0 {
 		t.Fatalf("summoner:reviewer Agent exit = %d, want 0 (stderr: %q)", code, stderr)
@@ -1680,14 +1769,7 @@ func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
 
 	// The namespaced SubagentStop is processed (not silently dropped): the
 	// verdict backfills through the reducer.
-	result := shared.ReviewResult{
-		ReviewID:            "rev-1",
-		ArtifactDigest:      "d-1",
-		RunStatus:           shared.ReviewRunCompleted,
-		Verdict:             shared.VerdictPass,
-		CriterionVerdicts:   []shared.CriterionVerdict{{CriterionID: "crit-ctx", Status: "pass"}},
-		EvidenceToolCallIDs: []string{"toolu-rev-1"},
-	}
+	result := contractPassResult(t, runID)
 	resJSON, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
@@ -1698,7 +1780,7 @@ func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
 		"stop_hook_active":      false,
 		"agent_id":              "ag-rev-1",
 		"agent_type":            "summoner:reviewer",
-		"agent_transcript_path": contractReviewerTranscript(t, string(resJSON)),
+		"agent_transcript_path": contractReviewerTranscript(t, runID, string(resJSON)),
 	}), nil); code != 0 {
 		t.Fatalf("namespaced subagentstop exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -1719,8 +1801,8 @@ func TestEndToEndNamespacedReviewerRoundTrip(t *testing.T) {
 		t.Errorf("review.verdict events = %+v, want exactly one for rev-1", verdicts)
 	} else if ids, ok := verdicts[0].Payload["evidence_tool_call_ids"].([]interface{}); !ok || len(ids) != 1 || ids[0] != "toolu-rev-1" {
 		t.Errorf("namespaced review.verdict evidence_tool_call_ids = %#v, want [toolu-rev-1] mirrored end-to-end", verdicts[0].Payload["evidence_tool_call_ids"])
-	} else if verdicts[0].Payload["artifact_digest"] != "d-1" {
-		t.Errorf("namespaced review.verdict artifact_digest = %#v, want d-1", verdicts[0].Payload["artifact_digest"])
+	} else if verdicts[0].Payload["artifact_digest"] != rv.ArtifactDigest {
+		t.Errorf("namespaced review.verdict artifact_digest = %#v, want the minted %s", verdicts[0].Payload["artifact_digest"], rv.ArtifactDigest)
 	} else if env, ok := verdicts[0].Payload["envelope_digest"].(string); !ok || env == "" {
 		t.Errorf("namespaced review.verdict envelope_digest = %#v, want a non-empty digest", verdicts[0].Payload["envelope_digest"])
 	}
@@ -1763,7 +1845,7 @@ func TestEndToEndDropRideAlongOverBinaries(t *testing.T) {
 
 	// The drop ride-along: one nonce decision question + one nonce-free
 	// drop:/keep: question, ONE call.
-	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil); code != 0 {
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(run, cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	run, err = shared.LoadRun(runID)
@@ -1933,7 +2015,7 @@ func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
 
 	// Post-hoc twin: display the checkpoint, then CONTINUE without a budget
 	// answer — rejected with NOTHING recorded (no decision, no settlement).
-	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(cp)), nil); code != 0 {
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(run, cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	run, _ = shared.LoadRun(runID)
@@ -2034,11 +2116,15 @@ func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
 		t.Fatalf("the exhaustion checkpoint must carry the extension offer (delta = current limit): %+v", cp)
 	}
 
-	// Extend + decision in ONE call: limits raise (2+2). Counter arithmetic
-	// (fix-round F2): the two diagnosis work calls (2) plus ONE exempt
-	// mid-phase status render (3) — the phase-submit itself NEVER ticks
-	// (CountToolCall is a no-op once SubmitPhase closed the phase) — so the
-	// counter reads 3/4 and work is permitted again under the raised budget.
+	// F2 pin: at the exhaustion checkpoint the counter reads 3 (2 work calls
+	// + 1 exempt mid-phase status render) — the phase-submit contributed
+	// NOTHING (it runs after SubmitPhase closed the phase, outside any visit
+	// bucket until the decision authorizes the next one).
+	if run.Counters.PhaseToolCalls != 3 {
+		t.Fatalf("counter at the exhaustion checkpoint = %d, want 3 (the exempt submit never ticks)", run.Counters.PhaseToolCalls)
+	}
+
+	// Extend + decision in ONE call: limits raise (2+2).
 	renderAndDecideSettle(t, runID, "tu-ask-2", cp, 0, func(labels []string) string {
 		return firstLabelWithKeyword(labels, "continue")
 	}, "", "extend")
@@ -2049,10 +2135,12 @@ func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
 	if run.Limits.PhaseToolCalls != 4 || len(run.BudgetExtensions) != 1 || run.Status != shared.StatusActive {
 		t.Fatalf("after extend+continue: limits %+v extensions %d status %s, want 4/1/ACTIVE", run.Limits, len(run.BudgetExtensions), run.Status)
 	}
-	// F2 pin: the counter is 3 (2 work calls + 1 exempt mid-phase status
-	// render) — the exempt phase-submit contributed NOTHING.
-	if run.Counters.PhaseToolCalls != 3 {
-		t.Fatalf("counter after extend = %d, want 3 (the exempt submit never ticks)", run.Counters.PhaseToolCalls)
+	// I1 pin (adjudication §5): the continue decision authorized the NEXT
+	// visit and reset its bucket — pre-provider work now charges 0/4 into
+	// the authorized upcoming bucket, and the next OpenPhase ADOPTS the
+	// accrual instead of resetting it away.
+	if run.Counters.PhaseToolCalls != 0 || !run.UpcomingVisit {
+		t.Fatalf("counter after extend+continue = %d upcoming %v, want 0/true (I1: the decision authorizes a fresh visit bucket awaiting adoption)", run.Counters.PhaseToolCalls, run.UpcomingVisit)
 	}
 	if code, _, stderr := runBinary(t, "pretooluse-gate",
 		gatePayload(t, "Skill", "tu-skill-2", map[string]interface{}{"skill": "example-skill"}), nil); code != 0 {
@@ -2103,6 +2191,18 @@ func TestEndToEndPostGameClosure(t *testing.T) {
 	renderAndDecideSettle(t, runID, "tu-ask-2", run.CurrentCheckpoint(), 0, func(labels []string) string {
 		return firstLabelWithKeyword(labels, "done")
 	}, "", "")
+	// M4 (ruling 72): DONE on this review-phase workflow parks at the
+	// REVIEW_DEBT checkpoint — discharge via the REAL hooks with the explicit
+	// UNREVIEWED finish, which itself starts the normal post-game.
+	run, err = shared.LoadRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if debt := run.CurrentCheckpoint(); debt != nil && debt.Kind == shared.CheckpointReviewDebt {
+		renderAndDecide(t, runID, "tu-debt-1", debt, 0, func(labels []string) string {
+			return firstLabelWithKeyword(labels, "skip")
+		})
+	}
 	run, err = shared.LoadRun(runID)
 	if err != nil {
 		t.Fatal(err)
