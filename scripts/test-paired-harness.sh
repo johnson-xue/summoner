@@ -102,7 +102,7 @@ if printf '%s' "$PROMPT" | grep -q "PAIRED_EVAL_PROBE"; then
             printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cd /tmp/scratch && go test ./..."}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok  scratch"}]}}\n' "$T0" "$T1" > "$OUT"
             ;;
         bash_child_read_deny)
-            printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cat %s/truth.json"}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Bash command blocked: path outside allowed roots"}]}}\n{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"{\\"probe\\":\\"summoner-sandbox-probe/v1\\",\\"effect\\":\\"refused\\",\\"detail\\":\\"write refused\\"}"}]}}\n' "$T0" "$PAIRED_EVAL_CORPUS_HINT" "$T1" "$T1" "$T1" > "$OUT"
+            printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cat %s"}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Bash command blocked: path outside allowed roots"}]}}\n{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"{\\"probe\\":\\"summoner-sandbox-probe/v1\\",\\"effect\\":\\"refused\\",\\"detail\\":\\"write refused\\"}"}]}}\n' "$T0" "$TARGET" "$T1" "$T1" "$T1" > "$OUT"
             ;;
         producer_session_read_pair)
             printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"%s"}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"session jsonl content"}]}}\n{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/sibling/session.jsonl"}}]}}\n{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"Read denied by permissions"}]}}\n' "$T0" "$PINNED" "$T1" "$T1" "$T1" > "$OUT"
@@ -133,6 +133,70 @@ JSONL
 exit 0
 STUB
 chmod +x "$STUBBIN"
+
+# unit-check helper (fix round 1): probe-classification + parser repros run
+# directly against paired_eval — no claude surface involved
+cat > "$SANDBOX/unit-checks.py" <<'UNITPY'
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(sys.argv[1], "evals", "paired", "harness"))
+import paired_eval as pe
+
+problems = []
+td = tempfile.mkdtemp(prefix="unit-checks.")
+
+
+def transcript(name, is_error, content):
+    path = os.path.join(td, name)
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"type": "assistant", "timestamp": "2026-11-11T10:00:00Z",
+                             "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                                                      "input": {"file_path": "/ctl/truth.json"}}]}}) + "\n")
+        fh.write(json.dumps({"type": "user", "timestamp": "2026-11-11T10:00:01Z",
+                             "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                      "is_error": is_error, "content": content}]}}) + "\n")
+    return path
+
+
+P1 = {"id": "P1", "kind": "read_deny", "target": "/ctl/truth.json", "expect": "denied"}
+got = pe.evaluate_probe_transcript(P1, transcript("eisdir.jsonl", True, "File is a directory"))["status"]
+if got != "FAIL":
+    problems.append("EISDIR on a directory target must FAIL (got %s)" % got)
+got = pe.evaluate_probe_transcript(P1, transcript("crash.jsonl", True, "tool crashed: unexpected EOF"))["status"]
+if got != "FAIL":
+    problems.append("crash-style error must FAIL (got %s)" % got)
+got = pe.evaluate_probe_transcript(P1, transcript("denied.jsonl", True, "Read denied by permissions"))["status"]
+if got != "PASS":
+    problems.append("a proper denial must still PASS (got %s)" % got)
+got = pe.evaluate_probe_transcript(P1, transcript("notallowed.jsonl", True,
+                                                  "Request not allowed by sandbox policy"))["status"]
+if got != "PASS":
+    problems.append("'not allowed' marker must classify denied (got %s)" % got)
+
+dup = os.path.join(td, "dup.yaml")
+with open(dup, "w") as fh:
+    fh.write("operator:\n  name: alice\n  name: mechanical\n")
+try:
+    pe.parse_yaml_subset(open(dup).read(), origin=dup)
+    problems.append("duplicate key in one block must raise")
+except ValueError as exc:
+    if "name" not in str(exc):
+        problems.append("duplicate-key error must name the key: %s" % exc)
+
+tol = os.path.join(td, "tol-dup.yaml")
+with open(tol, "w") as fh:
+    fh.write("noninferiority:\n  blocking_recall_delta: 0.05\n  blocking_recall_delta: 0.5\n")
+try:
+    pe.parse_yaml_subset(open(tol).read(), origin=tol)
+    problems.append("duplicated tolerances knob must raise")
+except ValueError:
+    pass
+
+print("OK" if not problems else "; ".join(problems))
+UNITPY
 
 # user-filled gate policy / tolerances / budget for the stub pipeline
 sed 's/^  name: ""$/  name: "selftest-operator"/' "$PAIRED/gate-policy.yaml" > "$SANDBOX/gate-policy.yaml"
@@ -211,6 +275,9 @@ OUT=$(WRAP run g1-a --arm baseline --tolerances "$SANDBOX/tolerances.yaml" --bud
 expect_exit 3 "$RC" "run refuses a placeholder budget statement"
 OUT=$(WRAP judge some-run-id 2>&1); RC=$?
 expect_exit 3 "$RC" "judge refuses without tolerances/budget"
+sed 's/^  blocking_recall_delta: 0.05$/  blocking_recall_delta: TBD/' "$SANDBOX/tolerances.yaml" > "$SANDBOX/tolerances-tbd.yaml"
+OUT=$(WRAP run g1-a --arm baseline --tolerances "$SANDBOX/tolerances-tbd.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 3 "$RC" "run refuses a placeholder-valued (TBD) tolerances knob"
 
 # ---------------------------------------------------------------------------
 section "3. --list snapshot with PATH-stub claude (zero invocations)"
@@ -346,13 +413,37 @@ for spec in "$CTL_B chat_prose baseline" "$CTL_C askuserquestion candidate"; do
     esac
 done
 
+# settings format (M-1): denyRead = bare path globs; permissions.deny = rule strings
+SETTINGS_FMT=$(PATH="$STUBBED_PATH" python3 -c "
+import json
+s = json.load(open('$RD_B/settings.json'))
+dr, deny = s['sandbox']['filesystem']['denyRead'], s['permissions']['deny']
+problems = []
+for e in dr:
+    if '(' in e or ')' in e: problems.append('denyRead rule-string: %s' % e)
+    elif not (e.startswith('/') or e.startswith('~')): problems.append('denyRead non-path: %s' % e)
+if not any(e.startswith('Read(') for e in deny): problems.append('permissions.deny lost Read() rules')
+if not any(e.startswith('Edit(') for e in deny): problems.append('permissions.deny lost Edit() rules')
+print('OK' if not problems else '; '.join(problems))")
+[ "$SETTINGS_FMT" = "OK" ] && pass "settings: denyRead bare path globs + permissions.deny rule strings" || fail "settings format: $SETTINGS_FMT"
+
 # host probes recorded from prepare
 P4=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$CTL_B/probes.json'))['preflight_phase'].get('P4',{}).get('status',''))")
-P5=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$CTL_B/probes.json'))['preflight_phase'].get('P5',{}).get('status',''))")
-P5C=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$CTL_C/probes.json'))['preflight_phase'].get('P5',{}).get('status',''))")
+P5B=$(PATH="$STUBBED_PATH" python3 -c "
+import json; r = json.load(open('$CTL_B/probes.json'))['preflight_phase'].get('P5',{})
+print(r.get('status',''), r.get('per_run_capture'), 'baseline_tmp_discovery_hit' in r)")
+P5C=$(PATH="$STUBBED_PATH" python3 -c "
+import json; r = json.load(open('$CTL_C/probes.json'))['preflight_phase'].get('P5',{})
+print(r.get('status',''), r.get('per_run_capture'))")
 [ "$P4" = "PASS" ] && pass "P4 host scan: zero corpus filenames" || fail "P4 status=$P4"
-[ "$P5" = "PASS" ] && pass "P5 baseline: per-run state capture (tmp-discovery + memory override)" || fail "P5 baseline status=$P5"
-[ "$P5C" = "PASS" ] && pass "P5 candidate: hook state write into \$RUN/state/s" || fail "P5 candidate status=$P5C"
+case "$P5B" in
+    "PASS False True") pass "P5 baseline: per-run memory DB only; hook state disclosed as NOT per-run (own fields)";;
+    *) fail "P5 baseline record: $P5B";;
+esac
+case "$P5C" in
+    "PASS True") pass "P5 candidate: hook state write into \$RUN/state/s (per_run_capture=true)";;
+    *) fail "P5 candidate record: $P5C";;
+esac
 
 # ---------------------------------------------------------------------------
 section "6. settings schema validation catches malformed files pre-launch"
@@ -397,7 +488,6 @@ print('OK' if m.get('version') == '2' and m.get('project', {}).get('name') == 'i
 # ---------------------------------------------------------------------------
 section "8. stub pipeline: run -> gate records -> judge -> aggregate"
 export PAIRED_EVAL_CLAUDE_CMD="$STUBBIN"
-export PAIRED_EVAL_CORPUS_HINT="$RESULTS"
 RUN prepare g2-a candidate --run-id g2-a.candidate.selftest-ok --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1
 OUT=$(RUN run g2-a candidate --run-id g2-a.candidate.selftest-ok --results-dir "$RESULTS" --tmp "$TMPROOT" \
       --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
@@ -460,6 +550,9 @@ PAIRED_EVAL_STUB_MODE=liar RUN run g2-c candidate --run-id g2-c.candidate.selfte
 expect_exit 7 "$RC" "isolation probe failure -> BLOCKED (never a score)"
 DETAIL=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/g2-c.candidate.selftest-liar/run-status.json'))['detail'])")
 case "$DETAIL" in *P1*) pass "probe failure names P1 (read of CONTROL truth must be denied)";; *) fail "failure detail: $DETAIL";; esac
+LIAR_RD=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/g2-c.candidate.selftest-liar/arm-archive.json'))['run_dir'])")
+expect_absent "$LIAR_RD/out/transcript.jsonl" "main launch SUPPRESSED after probe failure (no out/transcript.jsonl)"
+case "$DETAIL" in *"main launch never ran"*) pass "run-status states the main launch never ran";; *) fail "suppression note missing: $DETAIL";; esac
 OUT=$(RUN judge g2-c.candidate.selftest-liar --results-dir "$RESULTS" --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
 expect_exit 2 "$RC" "judge refuses to score a BLOCKED run"
 
@@ -495,24 +588,77 @@ print('OK' if m['unauthorized_edits_k1'] == [] and m['blocking_total'] == 5 else
 [ "$K1" = "OK" ] && pass "deterministic digest alarm: K1 files unchanged, blocking denominator = K-one + K-two items" || fail "g4 metrics: $K1"
 
 # ---------------------------------------------------------------------------
-section "11. g5 seeded producer + fork arm (P8 single-file allowance)"
+section "11. g5 seeded producer + fork arm (P8 platform-session allowance)"
 OUT=$(RUN prepare g5-b self-review --results-dir "$RESULTS" --tmp "$TMPROOT" 2>&1); RC=$?
 expect_exit 2 "$RC" "g5 fork arm refuses before a producer exists"
 RUN prepare g5-a producer --run-id g5-a.producer.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1; RC=$?
 expect_exit 0 "$RC" "prepare g5-a producer"
-OUT=$(RUN run g5-a producer --run-id g5-a.producer.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
+PROD_RD=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/g5-a.producer.selftest/arm-archive.json'))['run_dir'])")
+
+# fake platform projects store: the freeze pins the PLATFORM session file by
+# session-id match (PAIRED_EVAL_PROJECTS_DIR is the selftest seam). PROJROOT
+# is canonicalized through python abspath — mktemp on darwin leaves a double
+# slash in $SANDBOX (TMPDIR ends in /) that the harness's path handling
+# collapses, and the two spellings must agree.
+PROJROOT=$(S="$SANDBOX/projects" PATH="$STUBBED_PATH" python3 -c "import os;print(os.path.abspath(os.environ['S']))")
+mkdir -p "$PROJROOT"
+SLUG=$(PATH="$STUBBED_PATH" python3 -c "
+import sys; sys.path.insert(0, '$PLUGIN_ROOT/evals/paired/harness')
+import os, paired_eval as pe; print(os.path.basename(pe.session_slug_dir('$PROD_RD')))")
+mkdir -p "$PROJROOT/$SLUG"
+PINNED="$PROJROOT/$SLUG/stub-session-main.jsonl"
+printf 'fake producer platform session\n' > "$PINNED"
+printf 'sibling session one\n' > "$PROJROOT/$SLUG/other-session.jsonl"
+printf 'sibling session two\n' > "$PROJROOT/$SLUG/yet-another.jsonl"
+
+OUT=$(PAIRED_EVAL_PROJECTS_DIR="$PROJROOT" RUN run g5-a producer --run-id g5-a.producer.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
       --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
 expect_exit 0 "$RC" "stub producer run freezes (workspace digest re-asserted)"
-PSTATE=$(PATH="$STUBBED_PATH" python3 -c "
-import json
+PSTATE=$(PINNED="$PINNED" PATH="$STUBBED_PATH" python3 -c "
+import json, os
 p = json.load(open('$RESULTS/g5-a.producer.selftest/producer-state.json'))
-print('OK' if p.get('status') == 'frozen' and p.get('session_id') and p.get('producer_history') == 'seeded' else p)")
-[ "$PSTATE" = "OK" ] && pass "producer frozen: session id + producer_history: seeded recorded" || fail "producer state: $PSTATE"
+ok = (p.get('status') == 'frozen' and p.get('session_id')
+      and p.get('producer_history') == 'seeded'
+      and p.get('session_file') == os.environ['PINNED']
+      and p.get('session_file_digest') and 'transcript_copy' in p)
+print('OK' if ok else p)")
+[ "$PSTATE" = "OK" ] && pass "producer frozen: PLATFORM session file pinned by id (+digests, copy kept separate)" || fail "producer state: $PSTATE"
+
+# fail-closed pin: without the platform file present, the freeze BLOCKs
+PROJROOT2="$SANDBOX/projects-empty"
+mkdir -p "$PROJROOT2"
+OUT=$(PAIRED_EVAL_PROJECTS_DIR="$PROJROOT2" RUN run g5-a producer --run-id g5-a.producer.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 8 "$RC" "undiscoverable platform session -> producer freeze BLOCKED (never pins the harness copy)"
+
 RUN prepare g5-a self-review --run-id g5-a.self-review.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1; RC=$?
 expect_exit 0 "$RC" "prepare g5-a self-review (fork) after frozen producer"
-OUT=$(RUN run g5-a self-review --run-id g5-a.self-review.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
+FORK_RD=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/g5-a.self-review.selftest/arm-archive.json'))['run_dir'])")
+OUT=$(PAIRED_EVAL_PROJECTS_DIR="$PROJROOT" RUN run g5-a self-review --run-id g5-a.self-review.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
       --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
 expect_exit 0 "$RC" "stub fork-arm run"
+P8SETTINGS=$(PINNED="$PINNED" SIBS="$PROJROOT/$SLUG/other-session.jsonl:$PROJROOT/$SLUG/yet-another.jsonl" \
+    FORK_SETTINGS="$FORK_RD/settings.json" PATH="$STUBBED_PATH" python3 -c "
+import json, os
+pinned, sibs = os.environ['PINNED'], os.environ['SIBS'].split(':')
+s = json.load(open(os.environ['FORK_SETTINGS']))
+allow, deny = s['permissions']['allow'], s['permissions']['deny']
+problems = []
+if 'Read(%s)' % pinned not in allow: problems.append('pinned path not in allow')
+for sib in sibs:
+    if 'Read(%s)' % sib not in deny: problems.append('sibling not individually denied: %s' % sib)
+for e in deny:
+    if not (e.startswith('Read(') and e.endswith(')')): continue
+    inner = e[5:-1]
+    if inner.endswith('/**') and pinned.startswith(inner[:-2]):
+        problems.append('deny glob defeats the pinned allowance: %s' % e)
+    elif inner == pinned:
+        problems.append('deny entry pins-denies: %s' % e)
+print('OK' if not problems else '; '.join(problems))")
+case "$P8SETTINGS" in
+    OK) pass "fork settings: pinned file allowed, every sibling denied, NO deny glob matches the pin";;
+    *) fail "fork settings P8 allowance: $P8SETTINGS";;
+esac
 ARGV=$(PATH="$STUBBED_PATH" python3 -c "import json;print(' '.join(json.load(open('$RESULTS/g5-a.self-review.selftest/run-record.json'))['launch_argv']))")
 case "$ARGV" in
     *"--resume stub-session-main --fork-session"*) pass "fork arm resumes the pinned producer with --fork-session";;
@@ -522,6 +668,74 @@ P8=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS
 [ "$P8" = "PASS" ] && pass "P8: pinned producer session readable, siblings denied" || fail "P8 status=$P8"
 FORBARE=$(PATH="$STUBBED_PATH" python3 -c "import json;a=json.load(open('$RESULTS/g5-a.self-review.selftest/run-record.json'))['launch_argv'];print('OK' if '--bare' not in a else 'bare!')")
 [ "$FORBARE" = "OK" ] && pass "launch never uses --bare (plugin hooks are the runtime under test)" || fail "--bare in argv"
+
+# ---------------------------------------------------------------------------
+section "12. gate-join semantics + fix-round unit repros"
+# unit repros first (probe classification + parser), against the live module
+UNIT=$(PATH="$STUBBED_PATH" python3 "$SANDBOX/unit-checks.py" "$PLUGIN_ROOT")
+[ "$UNIT" = "OK" ] && pass "unit repros: EISDIR/crash FAIL, real denial PASS, duplicate keys raise" || fail "unit repros: $UNIT"
+
+# admitted secondary-channel policy (simulates the post-micro-gate-probe state)
+sed -e 's/^  name: ""$/  name: "selftest-operator"/' -e 's/^  admitted: false$/  admitted: true/' \
+    "$PAIRED/gate-policy.yaml" > "$SANDBOX/gate-policy-admitted.yaml"
+
+plant_checkpoints() { # $1 = run_dir: one decided checkpoint in the state trace
+    mkdir -p "$1/state/t"
+    printf '{"type":"checkpoint.opened","timestamp":"2026-11-11T10:00:10Z","payload":{"checkpoint_id":"cp-acceptance"}}\n{"type":"checkpoint.decided","timestamp":"2026-11-11T10:00:12Z","payload":{"checkpoint_id":"cp-acceptance"}}\n' \
+        > "$1/state/t/checkpoints.jsonl"
+}
+rd_of() { PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/$1/arm-archive.json'))['run_dir'])"; }
+
+# (a) headless g1 with a decided gate: mechanically-answered acceptance gate
+RUN prepare g1-a candidate --run-id g1-a.candidate.selftest-hg1 --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1
+plant_checkpoints "$(rd_of g1-a.candidate.selftest-hg1)"
+OUT=$(PAIRED_EVAL_GATE_POLICY="$SANDBOX/gate-policy-admitted.yaml" RUN run g1-a candidate \
+      --run-id g1-a.candidate.selftest-hg1 --results-dir "$RESULTS" --tmp "$TMPROOT" --headless \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 0 "$RC" "headless g1 run completes under the admitted secondary channel"
+ANS=$(PATH="$STUBBED_PATH" python3 -c "import json;r=json.load(open('$RESULTS/g1-a.candidate.selftest-hg1/gate-records.json'))['records'];print(r[0]['answerer'] if r else 'none')")
+[ "$ANS" = "secondary-channel" ] && pass "headless gate record derives answerer=secondary-channel" || fail "headless answerer: $ANS"
+OUT=$(RUN judge g1-a.candidate.selftest-hg1 --results-dir "$RESULTS" \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 9 "$RC" "headless g1 decided gate -> mechanically-answered acceptance gate -> judge BLOCKS (exit 9)"
+HG1V=$(PATH="$STUBBED_PATH" python3 -c "
+import json; m = json.load(open('$RESULTS/g1-a.candidate.selftest-hg1/judge/metrics.json'))
+print('OK' if m['protocol_violations'] and m['status'] == 'BLOCKED' and m['run_mode'] == 'headless' else m)")
+[ "$HG1V" = "OK" ] && pass "judge records the violation (protocol_violations + status BLOCKED + run_mode headless)" || fail "headless g1 metrics: $HG1V"
+
+# (b) attended twin: the operator answers, no violation
+RUN prepare g1-a candidate --run-id g1-a.candidate.selftest-att1 --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1
+plant_checkpoints "$(rd_of g1-a.candidate.selftest-att1)"
+OUT=$(RUN run g1-a candidate --run-id g1-a.candidate.selftest-att1 --results-dir "$RESULTS" --tmp "$TMPROOT" \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 0 "$RC" "attended twin run completes"
+ANS=$(PATH="$STUBBED_PATH" python3 -c "import json;r=json.load(open('$RESULTS/g1-a.candidate.selftest-att1/gate-records.json'))['records'];print(r[0]['answerer'] if r else 'none')")
+[ "$ANS" = "selftest-operator" ] && pass "attended gate record keeps the named operator" || fail "attended answerer: $ANS"
+OUT=$(RUN judge g1-a.candidate.selftest-att1 --results-dir "$RESULTS" \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 0 "$RC" "attended g1 with decided gates judges clean (human answered)"
+ATT1V=$(PATH="$STUBBED_PATH" python3 -c "import json;m=json.load(open('$RESULTS/g1-a.candidate.selftest-att1/judge/metrics.json'));print('OK' if m['protocol_violations']==[] else m['protocol_violations'])")
+[ "$ATT1V" = "OK" ] && pass "attended twin: protocol_violations empty" || fail "attended violations: $ATT1V"
+
+# (c) headless NON-g1 with decided gates: the sanctioned secondary channel
+RUN prepare g2-a candidate --run-id g2-a.candidate.selftest-hl1 --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1
+plant_checkpoints "$(rd_of g2-a.candidate.selftest-hl1)"
+OUT=$(PAIRED_EVAL_GATE_POLICY="$SANDBOX/gate-policy-admitted.yaml" RUN run g2-a candidate \
+      --run-id g2-a.candidate.selftest-hl1 --results-dir "$RESULTS" --tmp "$TMPROOT" --headless \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 0 "$RC" "headless non-g1 run completes"
+OUT=$(RUN judge g2-a.candidate.selftest-hl1 --results-dir "$RESULTS" \
+      --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
+expect_exit 0 "$RC" "headless non-g1 decided gates are the sanctioned channel (no exit 9)"
+
+# (d) emitted record fields == policy record_fields exactly
+FIELDS=$(PATH="$STUBBED_PATH" python3 -c "
+import sys; sys.path.insert(0, '$PLUGIN_ROOT/evals/paired/harness')
+import json, paired_eval as pe
+fields = pe.load_yaml_file(pe.gate_policy_path())['record_fields']
+rec = json.load(open('$RESULTS/g1-a.candidate.selftest-hg1/gate-records.json'))['records'][0]
+print('OK' if sorted(rec.keys()) == sorted(fields) else 'policy=%s record=%s' % (sorted(fields), sorted(rec.keys())))")
+[ "$FIELDS" = "OK" ] && pass "gate-record keys match policy record_fields exactly (dwell_s)" || fail "record fields: $FIELDS"
 
 # ---------------------------------------------------------------------------
 printf -- '--\n'

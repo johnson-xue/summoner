@@ -423,7 +423,11 @@ fi
 # the fold-and-measure gate's instrument, and an instrument that fails its
 # own calibration cannot gate a release.
 if PAIRED_SELFCHECK_OUT="$(bash "$SCRIPT_DIR/test-paired-harness.sh" 2>&1)"; then
-  ok "paired-eval harness selftest green ($(grep -c '^✓' <<< "$PAIRED_SELFCHECK_OUT") assertions)"
+  # the count comes from the suite's own summary line — counting '^✓' lines
+  # would include that summary line itself and print N+1 (review M-7)
+  PAIRED_COUNT="$(sed -n 's/^✓ paired-harness selftest green (\([0-9]*\) assertions)$/\1/p' <<< "$PAIRED_SELFCHECK_OUT" | head -1)"
+  [ -n "$PAIRED_COUNT" ] || PAIRED_COUNT=$(( $(grep -c '^✓' <<< "$PAIRED_SELFCHECK_OUT") - 1 ))
+  ok "paired-eval harness selftest green ($PAIRED_COUNT assertions)"
 else
   fail "paired-eval harness selftest RED — run scripts/test-paired-harness.sh for detail"
 fi

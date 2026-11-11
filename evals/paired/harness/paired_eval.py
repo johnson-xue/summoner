@@ -401,6 +401,9 @@ def parse_yaml_subset(text, origin="yaml"):
                             raise ValueError("%s:%d cannot parse list item line: %r"
                                              % (origin, pos[0] + 1, raw2))
                         k2, r2 = m2.group(1), m2.group(2).strip()
+                        if k2 in item:
+                            raise ValueError("%s:%d duplicate key %r in list item"
+                                             % (origin, pos[0] + 1, k2))
                         item[k2] = parse_scalar(r2) if r2 else None
                         pos[0] += 1
                     result[last_key].append(item)
@@ -414,6 +417,12 @@ def parse_yaml_subset(text, origin="yaml"):
             if not m:
                 raise ValueError("%s:%d cannot parse line: %r" % (origin, pos[0] + 1, raw))
             key, rest = m.group(1), m.group(2).strip()
+            if key in result:
+                # duplicate keys in one block are silent-last-wins in YAML —
+                # for tolerances/gate-policy that hides a duplicated knob, so
+                # the subset parser refuses them (review M-3)
+                raise ValueError("%s:%d duplicate key %r in this block"
+                                 % (origin, pos[0] + 1, key))
             pos[0] += 1
             last_key = key
             if rest in (">", ">-", "|", "|-"):
@@ -849,7 +858,21 @@ def validate_settings_schema(settings, origin="settings"):
         for entry in fs.get("denyRead") or []:
             if not isinstance(entry, str) or not entry.strip():
                 problems.append("%s: sandbox.filesystem.denyRead entry %r invalid" % (origin, entry))
+            elif entry.startswith(("Read(", "Edit(", "Bash(")):
+                # denyRead takes BARE path globs (repo convention,
+                # settings-recommended.json); rule strings belong in
+                # permissions.deny — the enforced boundary (review M-1)
+                problems.append("%s: sandbox.filesystem.denyRead entry %r must be a bare "
+                                "path glob, not a permission rule string" % (origin, entry))
     return problems
+
+
+def _rule_path(entry):
+    """Inner path of a Read(...)/Edit(...) rule string, else None."""
+    for prefix in ("Read(", "Edit("):
+        if entry.startswith(prefix) and entry.endswith(")"):
+            return entry[len(prefix):-1]
+    return None
 
 
 def build_settings(case, arm, run_dir, control_dir, producer_session_file=None):
@@ -858,7 +881,13 @@ def build_settings(case, arm, run_dir, control_dir, producer_session_file=None):
     misses), ~/.claude/projects (minus the one pinned producer session file
     on g5 fork runs), sibling runs, and the run's own state dirs. The Bash
     allowlist is exact-purpose; oracle-read primitives (git -C, go run) are
-    DENIED. Baseline arms additionally deny v0.3.0's shared tmp state dir."""
+    DENIED. Baseline arms additionally deny v0.3.0's shared tmp state dir.
+
+    `permissions.deny` carries rule strings and is the ENFORCED mandatory
+    boundary. `sandbox.filesystem.denyRead` carries BARE path globs (the
+    repo's own settings-recommended.json convention — review M-1); platform
+    denyRead semantics are plumbing-unverified, so permissions.deny stays
+    load-bearing and denyRead is only the redundant extra tier."""
     tmp_root = os.path.dirname(run_dir)
     read_denied = [
         "Read(%s/**)" % RESULTS_DEFAULT,
@@ -879,7 +908,7 @@ def build_settings(case, arm, run_dir, control_dir, producer_session_file=None):
     read_denied.append("Read(%s/state/**)" % run_dir)
     read_denied.append("Edit(%s/state/**)" % run_dir)
     read_denied.append("Read(%s/out/**)" % run_dir)
-    projects = os.path.expanduser("~/.claude/projects")
+    projects = projects_dir()
     allow_extra = []
     if arm.get("fork_from_producer") and producer_session_file:
         # deny beats allow, so the single-file allowance is expressed by
@@ -902,10 +931,32 @@ def build_settings(case, arm, run_dir, control_dir, producer_session_file=None):
     deny = list(read_denied) + list(BASH_DENY)
     if arm.get("deny_agent"):
         deny.append("Agent")
+    if producer_session_file:
+        # fail-closed construction check (review I-2): NO deny entry may match
+        # the pinned P8 allowance — deny-beats-allow would defeat it silently
+        for entry in deny:
+            inner = _rule_path(entry)
+            if inner is None:
+                continue
+            if inner.endswith("/**"):
+                if producer_session_file.startswith(inner[:-2]):
+                    raise RuntimeError(
+                        "settings construction bug: deny entry %s would defeat the pinned "
+                        "P8 producer-session allowance %s" % (entry, producer_session_file))
+            elif inner == producer_session_file:
+                raise RuntimeError(
+                    "settings construction bug: deny entry %s pins-denies the P8 allowance "
+                    "target %s" % (entry, producer_session_file))
+    # denyRead: the same roots as bare path globs (deduplicated, order kept)
+    denyread_paths = []
+    for entry in read_denied:
+        inner = _rule_path(entry)
+        if inner and inner not in denyread_paths:
+            denyread_paths.append(inner)
     settings = {
         "askUserQuestionTimeout": "never",
         "permissions": {"allow": BASH_ALLOW + allow_extra, "deny": deny},
-        "sandbox": {"filesystem": {"denyRead": read_denied}},
+        "sandbox": {"filesystem": {"denyRead": denyread_paths}},
     }
     problems = validate_settings_schema(settings, origin="generated-settings")
     if problems:
@@ -916,6 +967,30 @@ def build_settings(case, arm, run_dir, control_dir, producer_session_file=None):
 # ---------------------------------------------------------------------------
 # Probes P1–P9
 # ---------------------------------------------------------------------------
+
+
+def p6_target_file(run_dir):
+    """Concrete FILE under the denied state root. Directories are forbidden
+    probe targets: Read on a directory errors EISDIR even with zero deny
+    rules in force, and an error is not a denial (review I-5). Prefers the
+    pre-initialized per-run memory DB (created at prepare), falls back to
+    any existing state file; a harness marker is created only if the whole
+    state root is empty."""
+    state = os.path.join(run_dir, "state")
+    preferred = os.path.join(state, "m", "inventoryd.db")
+    if os.path.isfile(preferred):
+        return preferred
+    for sub in ("s", "t", "m"):
+        d = os.path.join(state, sub)
+        if os.path.isdir(d):
+            files = sorted(f for f in os.listdir(d)
+                           if os.path.isfile(os.path.join(d, f)))
+            if files:
+                return os.path.join(d, files[0])
+    marker = os.path.join(state, "harness-p6-target.txt")
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write("p6 probe target marker (harness-owned)\n")
+    return marker
 
 
 def probe_definitions(case, arm, run_dir, control_dir, tier):
@@ -940,7 +1015,9 @@ def probe_definitions(case, arm, run_dir, control_dir, tier):
          "target": os.path.join(run_dir, "state", "s"),
          "expect": "hook state captured per-run", "applies": True},
         {"id": "P6", "phase": "run", "kind": "read_deny",
-         "target": os.path.join(run_dir, "state"), "expect": "denied",
+         "target": p6_target_file(run_dir),
+         "expect": "denied (concrete FILE under the denied state root — a "
+                   "directory target would error EISDIR, which is not a denial)",
          "applies": True},
         {"id": "P7", "phase": "run", "kind": "boot_probe",
          "target": "claude --help under wrapper", "expect": "succeeded",
@@ -950,7 +1027,7 @@ def probe_definitions(case, arm, run_dir, control_dir, tier):
          "expect": "pinned allowed; siblings denied",
          "applies": bool(arm.get("fork_from_producer"))},
         {"id": "P9", "phase": "run", "kind": "bash_child_read_deny",
-         "target": "corpus path read from a Bash child", "expect": "denied",
+         "target": os.path.join(control_dir, "truth.json"), "expect": "denied",
          "via": "summoner-sandbox-probe (the plugin's in-band probe adapter)",
          "applies": tier == "P9"},
     ]
@@ -1008,12 +1085,14 @@ def run_host_probes(case, arm, run_dir, control_dir, tier, plugin_dir, template_
                     results[probe["id"]] = {
                         "status": "PASS",
                         "detail": "hook state write observed in $RUN/state/s (SUMMONER_STATE_DIR honored)",
-                        "capture_mode": "env-override"}
+                        "capture_mode": "env-override", "per_run_capture": True}
                     continue
             # v0.3.0 has no userpromptsubmit and no SUMMONER_STATE_DIR/TRACE_DIR
             # overrides (only SUMMONER_MEMORY_DIR, shared.go:48). Its hook state
-            # lives in the shared tmp dir keyed by ProjectKey; the harness
-            # captures it by discovery and the settings deny covers reads.
+            # lives in the shared tmp dir keyed by ProjectKey. The PASS below
+            # asserts ONLY the per-run memory DB; hook state is NOT captured
+            # per-run on this arm — that fact is its own field, never folded
+            # into the PASS label (review M-4).
             mem_db = os.path.join(run_dir, "state", "m", "inventoryd.db")
             shared = os.path.join(tempfile.gettempdir(), "summoner-state")
             key = hashlib.sha256(repo.encode()).hexdigest()[:8]
@@ -1021,14 +1100,18 @@ def run_host_probes(case, arm, run_dir, control_dir, tier, plugin_dir, template_
             if os.path.isfile(mem_db):
                 results[probe["id"]] = {
                     "status": "PASS",
-                    "detail": "baseline state capture: memory DB per-run (%s honored); hook state "
-                              "via tmp-discovery keyed %s-* (v0.3.0 has no STATE_DIR override — "
-                              "deny rules cover the shared dir; discovery hit: %s)"
-                              % (ENV_MEMORY, key, bool(discovered)),
-                    "capture_mode": "tmp-discovery"}
+                    "detail": "baseline state semantics: per-run memory DB present (%s honored). "
+                              "Hook state is NOT per-run on this arm: v0.3.0 natively writes the "
+                              "SHARED tmp dir keyed %s-* (no STATE_DIR override exists); reads of "
+                              "the shared dir are denied by settings, so the shared state is "
+                              "unobservable to the actor but not isolated per-run.",
+                    "capture_mode": "tmp-discovery",
+                    "per_run_capture": False,
+                    "baseline_tmp_discovery_hit": bool(discovered)}
             else:
                 results[probe["id"]] = {"status": "FAIL",
-                                        "detail": "no per-run hook state observable (memory DB missing and no tmp-discovery hit)"}
+                                        "detail": "no per-run memory DB observable for the baseline arm "
+                                                  "(SUMMONER_MEMORY_DIR not honored by the staged runtime?)"}
     return results
 
 
@@ -1165,12 +1248,18 @@ def build_probe_launch(arm, run_dir, probe, extra_context=""):
 # ---------------------------------------------------------------------------
 
 
-def gate_records_from_trace(state_trace_dir, arm_id, channel, policy_digest, operator):
+def gate_records_from_trace(state_trace_dir, arm_id, channel, policy_digest, operator,
+                            mode="attended"):
     """Join checkpoint.opened → checkpoint.decided into per-gate records.
     Scripted answers land in the trace as genuine `checkpoint.decided`
     events — the harness record (channel / answerer / policy digest) is the
-    only disambiguator."""
+    only disambiguator. answerer is DERIVED from run evidence, never a
+    mode-independent constant (review I-1): in a --headless run every
+    decided gate was answered by the secondary mechanical responder, so all
+    records carry answerer="secondary-channel"; attended runs carry the
+    named operator."""
     records, opened = [], {}
+    answerer = "secondary-channel" if mode == "headless" else (operator or "unattended")
     if not os.path.isdir(state_trace_dir):
         return records, "N/A-source"
     for name in sorted(os.listdir(state_trace_dir)):
@@ -1190,7 +1279,7 @@ def gate_records_from_trace(state_trace_dir, arm_id, channel, policy_digest, ope
                     t0, t1 = _ts(opened.get(cid)), _ts(event.get("timestamp"))
                     dwell = (t1 - t0).total_seconds() if (t0 and t1) else None
                     records.append({"gate_id": cid, "arm": arm_id, "channel": channel,
-                                    "answerer": operator, "policy_digest": policy_digest,
+                                    "answerer": answerer, "policy_digest": policy_digest,
                                     "dwell_s": dwell})
     # source is "trace" only when gate evidence was actually observed; a bare
     # or missing trace (baseline trace-sparse) stays N/A-source — never
@@ -1210,11 +1299,17 @@ TOLERANCES_KEYS = {
 }
 
 
+# A placeholder-shaped value (`<you>`, `...`, `TBD`, `FIXME`) in ANY
+# user-filled knob is a refusal, not a value (review M-2: TBD junk passed).
+PLACEHOLDER_RE = re.compile(r"^(<[^>]*>|\.{3}|TBD|FIXME|tbd)$")
+
+
 def validate_tolerances(path):
     """A tolerances file is user-filled iff it exists, is not the shipped
-    example, and every declared knob carries a non-empty value. The example
-    ships EMPTY placeholders with no numeric values anywhere; anything less
-    than a fully filled table is a refusal."""
+    example, parses, and every declared knob carries a non-empty,
+    non-placeholder value. The example ships EMPTY placeholders with no
+    numeric values anywhere; anything less than a fully filled table is a
+    refusal."""
     if not path:
         return ["run/judge require --tolerances (user-filled; the example ships empty)"]
     if not os.path.isfile(path):
@@ -1225,7 +1320,10 @@ def validate_tolerances(path):
                 return ["tolerances file is byte-identical to tolerances.yaml.example — the user must fill every value before any run"]
         except OSError:
             pass
-    data = load_yaml_file(path)
+    try:
+        data = load_yaml_file(path)
+    except ValueError as exc:
+        return ["tolerances file does not parse: %s" % exc]
     problems = []
     for section, keys in TOLERANCES_KEYS.items():
         sec = data.get(section)
@@ -1237,6 +1335,9 @@ def validate_tolerances(path):
                 problems.append("tolerances: %s.%s missing" % (section, key))
             elif sec[key] in (None, "", []):
                 problems.append("tolerances: %s.%s is an EMPTY placeholder — the user decides this value" % (section, key))
+            elif PLACEHOLDER_RE.fullmatch(str(sec[key]).strip()):
+                problems.append("tolerances: %s.%s is a placeholder (%r) — the user decides this value"
+                                % (section, key, sec[key]))
     return problems
 
 
@@ -1248,17 +1349,16 @@ def validate_budget_statement(path):
     if not os.path.isfile(path):
         return ["budget statement not found: %s (write one: `approved-by: <name>` and `budget: <units>` lines, pass --budget)" % path]
     text = open(path, "r", encoding="utf-8").read()
-    placeholder = re.compile(r"^(<[^>]*>|\.{3}|TBD|FIXME)$")
     problems = []
     approver = re.search(r"^approved-by:\s*(\S.*)$", text, re.M)
     budget = re.search(r"^budget:\s*(\S.*)$", text, re.M)
     if not approver:
         problems.append("budget statement: no `approved-by: <name>` line")
-    elif placeholder.fullmatch(approver.group(1).strip()):
+    elif PLACEHOLDER_RE.fullmatch(approver.group(1).strip()):
         problems.append("budget statement: approved-by is still a placeholder")
     if not budget:
         problems.append("budget statement: no `budget: <units>` line")
-    elif placeholder.fullmatch(budget.group(1).strip()):
+    elif PLACEHOLDER_RE.fullmatch(budget.group(1).strip()):
         problems.append("budget statement: budget is still a placeholder")
     return problems
 
@@ -1712,17 +1812,41 @@ def execute_stub_or_real(argv, cwd, env, transcript_path):
     return rc, "", ""
 
 
-def discover_session_transcript(run_dir):
-    """Post-run discovery of the session jsonl for cwd $RUN/repo under
-    ~/.claude/projects/<slug>/ (newest matching file)."""
-    projects = os.path.expanduser("~/.claude/projects")
+def projects_dir():
+    """The platform session-store root (~/.claude/projects). PAIRED_EVAL_PROJECTS_DIR
+    is a selftest seam ONLY — real runs always use the platform path."""
+    return os.path.abspath(os.environ.get(
+        "PAIRED_EVAL_PROJECTS_DIR", os.path.expanduser("~/.claude/projects")))
+
+
+def session_slug_dir(run_dir):
     repo = os.path.join(run_dir, "repo")
-    slug = re.sub(r"[^A-Za-z0-9-]", "-", repo)
-    slug_dir = os.path.join(projects, slug)
-    if not os.path.isdir(slug_dir):
+    return os.path.join(projects_dir(), re.sub(r"[^A-Za-z0-9-]", "-", repo))
+
+
+def discover_session_file_by_id(run_dir, session_id):
+    """Exact session-id match under the platform projects dir — the ONLY path
+    the g5 producer freeze may pin (review I-2: newest-mtime can select a
+    probe-session file; the harness transcript copy is never the pin target)."""
+    if not session_id:
         return None
-    candidates = [os.path.join(slug_dir, f) for f in os.listdir(slug_dir) if f.endswith(".jsonl")]
-    return max(candidates, key=os.path.getmtime) if candidates else None
+    candidate = os.path.join(session_slug_dir(run_dir), session_id + ".jsonl")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def discover_session_transcript(run_dir):
+    """Fallback discovery of the session jsonl for cwd $RUN/repo when the
+    harness copy is absent: newest-by-mtime in the slug dir. Returns
+    (path, discovery) — the caller records "mtime-fallback" so a fallback
+    pick is never mistaken for an id-verified platform pin."""
+    slug_dir = session_slug_dir(run_dir)
+    if not os.path.isdir(slug_dir):
+        return None, None
+    candidates = [os.path.join(slug_dir, f) for f in os.listdir(slug_dir)
+                  if f.endswith(".jsonl")]
+    if not candidates:
+        return None, None
+    return max(candidates, key=os.path.getmtime), "mtime-fallback"
 
 
 def tree_digest_scrub_git(repo):
@@ -1750,6 +1874,24 @@ def scan_transcript_canary(events, canary_path):
     return [token] if token in json.dumps(events, ensure_ascii=False) else []
 
 
+# Documented platform denial phrasings. A probe result counts as DENIED only
+# when is_error AND the content matches one of these markers — a bare is_error
+# (EISDIR on a directory target, a tool crash, an unexpected EOF) is an
+# `error`, never confinement evidence: fail-closed (review I-5, repro-proven).
+DENIAL_MARKERS = ("denied", "not allowed", "doesn't match", "does not match",
+                  "outside allowed", "permission")
+
+
+def classify_tool_result(res):
+    """"allowed" | "denied" | "error" for one tool_result block."""
+    content = str(res.get("content", "")).lower()
+    if not res.get("is_error"):
+        return "allowed"
+    if any(marker in content for marker in DENIAL_MARKERS):
+        return "denied"
+    return "error"
+
+
 def evaluate_probe_transcript(probe, transcript_path):
     """Verify a probe transcript: the expected tool_use happened and its
     tool_result shows the expected confinement. Missing evidence is FAIL —
@@ -1763,14 +1905,22 @@ def evaluate_probe_transcript(probe, transcript_path):
         reads = [(tid, inp) for _, tid, name, inp in transcript_tool_uses(events) if name == "Read"]
         if not reads:
             return {"status": "FAIL", "detail": "no Read tool_use in probe transcript"}
-        denied, allowed = [], []
+        denied, allowed, errors = [], [], []
         for tid, inp in reads:
             res = results.get(tid) or {}
             path = str(inp.get("file_path", ""))
-            if res.get("is_error") or "denied" in str(res.get("content", "")).lower():
+            verdict = classify_tool_result(res)
+            if verdict == "denied":
                 denied.append(path)
+            elif verdict == "error":
+                errors.append(path)
             else:
                 allowed.append(path)
+        # any unclassifiable error fails the probe: an unknown failure is
+        # never evidence of confinement (EISDIR / crash must not read PASS)
+        if errors:
+            return {"status": "FAIL",
+                    "detail": "non-denial error results (never confinement evidence): %s" % errors}
         if kind == "read_deny":
             hit = any(probe["target"] in d for d in denied)
             return {"status": "PASS" if hit else "FAIL",
@@ -1799,7 +1949,9 @@ def evaluate_probe_transcript(probe, transcript_path):
                 if "summoner-sandbox-probe/v1" in str(res.get("content", "")):
                     probe_wrapper = True
             if "cat " in command and ("truth.json" in command or "evals/paired" in command):
-                if res.get("is_error") or "denied" in str(res.get("content", "")).lower():
+                # bare is_error is NOT a denial (classify_tool_result) — a
+                # crash is never confinement evidence
+                if classify_tool_result(res) == "denied":
                     corpus_denied = True
         return {"status": "PASS" if (corpus_denied and probe_wrapper) else "FAIL",
                 "detail": "bash-child corpus read denied=%s, sandbox-probe wrapper observed=%s"
@@ -1891,19 +2043,38 @@ def cmd_run(args):
     failed = sorted({pid for phase in ("preflight_phase", "run_phase")
                      for pid, rec in (probe_results.get(phase) or {}).items()
                      if rec.get("status") in ("FAIL", "BLOCKED")})
+    mode = "headless" if args.headless else "attended"
+
+    if failed:
+        # (review I-4) the probes already failed — the main actor session must
+        # NOT launch into a known-leaky environment (P1 failing means the probe
+        # session just READ the truth file). Minimal run record, NO transcript
+        # fields, never a score.
+        write_json(os.path.join(control, "run-record.json"), {
+            "run_id": manifest["run_id"], "case_id": case.case_id,
+            "arm": arm["arm"], "mode": mode,
+            "launch_settings_digest": launch_settings_digest,
+            "operator": operator, "probe_failures": failed,
+            "status": "BLOCKED"})
+        write_run_status(control, "BLOCKED",
+                         "isolation probe failures: %s (the main launch never ran)"
+                         % ", ".join(failed))
+        sys.stderr.write("paired-eval: BLOCKED — isolation probe failures: %s "
+                         "(main launch suppressed)\n" % ", ".join(failed))
+        sys.exit(7)
 
     # the main launch
     if arm["arm"] == "producer":
         prompt = open(os.path.join(control, "producer-prompt.md"), "r", encoding="utf-8").read()
     else:
         prompt = open(os.path.join(case.case_dir, "task.md"), "r", encoding="utf-8").read()
-    mode = "headless" if args.headless else "attended"
     resume = producer_state.get("session_id") if arm.get("fork_from_producer") else None
     argv = build_launch(arm, run_dir, mode=mode, prompt=prompt, resume_session=resume)
     transcript_path = os.path.join(run_dir, "out", "transcript.jsonl")
     rc, _, _ = execute_stub_or_real(argv, os.path.join(run_dir, "repo"), env, transcript_path)
+    discovery = "harness-copy"
     if not os.path.isfile(transcript_path):
-        discovered = discover_session_transcript(run_dir)
+        discovered, discovery = discover_session_transcript(run_dir)
         if discovered:
             shutil.copyfile(discovered, transcript_path)
 
@@ -1915,6 +2086,7 @@ def cmd_run(args):
         "launch_settings_digest": launch_settings_digest,
         "prepare_settings_digest": manifest["inputs"]["settings_digest"],
         "transcript": transcript_path, "transcript_events": len(events),
+        "transcript_discovery": discovery,
         "operator": operator, "probe_failures": failed, "status": None}
     if not events:
         run_record["status"] = "EMPTY"
@@ -1928,11 +2100,6 @@ def cmd_run(args):
         write_json(os.path.join(control, "run-record.json"), run_record)
         write_run_status(control, "QUARANTINED", "canary token observed in transcript: %s" % canary_hits)
         sys.exit(6)
-    if failed:
-        run_record["status"] = "BLOCKED"
-        write_json(os.path.join(control, "run-record.json"), run_record)
-        write_run_status(control, "BLOCKED", "isolation probe failures: %s" % ", ".join(failed))
-        sys.exit(7)
 
     if arm["arm"] == "producer":
         current = tree_digest_scrub_git(os.path.join(run_dir, "repo"))
@@ -1941,12 +2108,32 @@ def cmd_run(args):
             write_run_status(control, "BLOCKED", "producer workspace digest drifted after the "
                              "run (%s -> %s)" % (frozen_digest[:12], current[:12]))
             sys.exit(8)
+        # (review I-2) pin the PLATFORM session file (~/.claude/projects/<slug>/
+        # <session_id>.jsonl), discovered by exact session-id match — NOT the
+        # harness transcript copy (which sits under blanket-denied out/** /
+        # sibling paths) and NOT newest-mtime. Undiscoverable ⇒ fail-closed
+        # BLOCKED: never silently pin the wrong file.
+        session_id = transcript_session_id(events)
+        platform_file = discover_session_file_by_id(run_dir, session_id)
+        if platform_file is None:
+            run_record["status"] = "BLOCKED"
+            write_json(os.path.join(control, "run-record.json"), run_record)
+            write_run_status(control, "BLOCKED",
+                             "producer session file not discoverable by session id %r under "
+                             "%s — cannot pin the P8 single-file allowance (fail-closed; never "
+                             "silently pin the harness transcript copy)"
+                             % (session_id, projects_dir()))
+            sys.exit(8)
+        platform_digest = sha256_file(platform_file)
         producer_state = read_json(os.path.join(control, "producer-state.json"))
         producer_state.update({
             "status": "frozen",
-            "session_id": transcript_session_id(events),
-            "session_file": transcript_path,
+            "session_id": session_id,
+            "session_file": platform_file,
+            "session_file_digest": platform_digest,
+            "transcript_copy": transcript_path,
             "transcript_digest": sha256_file(transcript_path),
+            "session_file_matches_copy": platform_digest == sha256_file(transcript_path),
             "frozen_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "producer_history": "seeded"})
         write_json(os.path.join(control, "producer-state.json"), producer_state)
@@ -1957,7 +2144,7 @@ def cmd_run(args):
 
     records, dwell_source = gate_records_from_trace(
         manifest["env"][ENV_TRACE], arm["arm"], manifest["channel"],
-        manifest["gate_policy_digest"], operator or "unattended")
+        manifest["gate_policy_digest"], operator or "unattended", mode=mode)
     write_json(os.path.join(control, "gate-records.json"),
                {"records": records, "dwell_source": dwell_source})
     run_record.update(status="RUN_COMPLETE", gate_records=len(records))
@@ -2007,7 +2194,7 @@ def diff_trees(old_root, new_root):
     return changed, added, removed
 
 
-def judge_deterministic(case, control, run_dir, manifest):
+def judge_deterministic(case, control, run_dir, manifest, mode="attended"):
     truth = read_json(os.path.join(control, "truth.json"))
     pristine = os.path.join(control, "pristine-repo")
     events = parse_transcript(os.path.join(run_dir, "out", "transcript.jsonl"))
@@ -2082,16 +2269,28 @@ def judge_deterministic(case, control, run_dir, manifest):
     probes = read_json(os.path.join(control, "probes.json")) if os.path.isfile(os.path.join(control, "probes.json")) else {}
 
     protocol_violations = []
-    if case.case_id.startswith("g1") and manifest["arm"] == "candidate":
-        for record in gate_records:
-            if "accept" in str(record.get("gate_id", "")).lower() and record.get("answerer") in ("mechanical", "secondary-channel"):
-                protocol_violations.append("g1 acceptance gate answered mechanically — case BLOCKED")
+    # (review I-1) SEMANTIC rule — no gate-id string matching (the corpus meta
+    # carries no acceptance-gate id). In headless mode every decision is
+    # mechanical by construction (the stream-json responder), and a g1 fix-run
+    # cannot reach scoring without passing its acceptance gate — so ANY headless
+    # g1 decided-gate IS the mechanically-answered acceptance gate ⇒ protocol
+    # violation ⇒ BLOCKED (exit 9). Non-g1 headless runs with decided gates are
+    # the SANCTIONED secondary channel — no violation. Attended runs keep the
+    # answerer taxonomy ("secondary-channel" vs operator name) for metrics
+    # honesty only: an attended-but-secretly-mechanical answer is platform-
+    # undetectable (declared residual, ruling 55) — not pretended here.
+    if case.group == 1 and mode == "headless" and gate_records:
+        protocol_violations.append(
+            "headless g1 run has %d decided gate record(s): in headless mode every decision "
+            "is mechanical, and a g1 fix-run cannot reach scoring without its acceptance gate "
+            "— mechanically answered acceptance gate violates the human-only rule"
+            % len(gate_records))
 
     blocking_ids = {d["id"] for d in defects if d.get("severity") == "blocking"}
     major_ids = {d["id"] for d in defects if d.get("severity") == "major"}
     return {
         "run_id": manifest["run_id"], "case_id": case.case_id, "arm": manifest["arm"],
-        "group": case.group, "split": case.split,
+        "group": case.group, "split": case.split, "run_mode": mode,
         "clean_negative": bool(truth.get("clean_negative")),
         "blocking_total": len(blocking_ids),
         "blocking_cited": sorted(k for k in cited if k in blocking_ids),
@@ -2153,7 +2352,8 @@ def cmd_judge(args):
     if not os.path.isdir(run_dir):
         die("cannot locate run dir for %s (run-record launch_cwd missing)" % args.run_id)
     case = get_case(manifest["case_id"])
-    row = judge_deterministic(case, control, run_dir, manifest)
+    row = judge_deterministic(case, control, run_dir, manifest,
+                              mode=run_record.get("mode", "attended"))
     if row is None:
         die("transcript for %s vanished — EMPTY judge input is a hard error" % args.run_id, code=5)
     os.makedirs(os.path.join(control, "judge"), exist_ok=True)

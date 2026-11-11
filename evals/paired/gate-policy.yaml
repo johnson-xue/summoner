@@ -49,4 +49,4 @@ record_fields:
   - channel
   - answerer
   - policy_digest
-  - dwell_ms
+  - dwell_s
