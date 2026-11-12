@@ -179,7 +179,7 @@ func TestRenderWaitUser(t *testing.T) {
 		"docs/diag.md @ a1b2c3d4e5f6",
 		"- crit-stale-1 (stale)",
 		"awaiting: user decision at checkpoint cp-2",
-		"default recall: context (latest accepted prior phase)",
+		"default recall: latest → context@v1 (offered: latest, context@v1)",
 		"budget: phase_tool_calls 4/40 · failed_checks 0/3 · run_rework 0/2 · delegations 1/5 · 未确认（首检查点待确认）",
 		"sandbox: L1（未配置沙箱）",
 		"⚡ SUMMONER CHECKPOINT cp-2 — nonce " + cp.Nonce + " — PHASE",

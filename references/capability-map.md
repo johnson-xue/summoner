@@ -74,8 +74,8 @@ GO/NO-GO，不重复同一审查。`commands/review.md` 与 `commands/ship.md` �
 | skill `summoner-release` | 控制（默认实现） | yes | "Version release automation … Keeps ALL THREE version manifests synchronized … Use when user invokes /summoner:release." |
 | skill `phase-submit` | 控制通道 | **false** | "ONLY to submit a completed phase result — invoke when a phase's work is done; never for anything else" |
 | skill `change` | 控制通道 | **false** | "ONLY to open or apply a requirement change in a live Summoner run; never for anything else" |
-| skill `review-submit` | 控制通道 | **false** | "ONLY to register one review envelope in a live Summoner run — REVIEW_PENDING or the terminal default review position; never for anything else" |
-| skill `probe-submit` | 控制通道 | **false** | "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else" |
+| skill `review-submit` | 控制通道 | **false** | "ONLY to register one review (identity-only form) in a live Summoner run, or to recover a wedged RUNNING review attempt — invoke when the review must start or the reviewer's child died mid-review; never for anything else" |
+| skill `probe-submit` | 控制通道 | **false** | "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else"（判定由 PostToolUse matcher 机械计算，wire 上不收 outcome） |
 | agent `reviewer` | ⑤契约 | — | 单一 reviewer 定义：黑盒重导出 + evidence_tool_call_ids（空证据的 PASS 是 rubber-stamp 协议错误） |
 | agent `worker` | 受限 worker | — | 在盘未注册（T15 评测放行后再决定注册；validate-repo PENDING_AGENTS 豁免保留） |
 | commands ×8 | 薄入口 | — | fix/new/debug/ops/review/ship/release/status——定目标、选能力、管闭环；方法论正文由 provider skill 承载 |

@@ -264,6 +264,27 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 				}
 				resultPayload["sandbox_probe"] = map[string]interface{}{"effect": effect}
 			}
+			// Recovery round I3: this admission consumed an unknown's one-shot
+			// probe ticket — the matcher judges the observed stdout against
+			// the entry's frozen declaration and records its verdict HERE, on
+			// the probe's own result. Nothing the model supplies participates;
+			// a lost/unparseable observation or an unsupported declaration
+			// records indeterminate, never a guess.
+			if unknownID, _ := started["probe_of"].(string); unknownID != "" {
+				var decl *shared.MutationDecl
+				for i := range run.OutcomeUnknowns {
+					if run.OutcomeUnknowns[i].ToolUseID == unknownID && !run.OutcomeUnknowns[i].Resolved {
+						decl = run.OutcomeUnknowns[i].MutationDecl
+						break
+					}
+				}
+				verdict, observed := shared.MatchProbeVerdict(decl, bashStdout(in.ToolResponse))
+				match := map[string]interface{}{"unknown_id": unknownID, "verdict": verdict}
+				if observed != "" {
+					match["observed"] = observed
+				}
+				resultPayload["probe_match"] = match
+			}
 		}
 		if err := appendTrace(run, in, shared.TraceEvent{
 			Type:    shared.EventToolResult,

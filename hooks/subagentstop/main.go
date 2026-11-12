@@ -214,6 +214,39 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 	if !ok {
 		return // absent/unparseable: registration only
 	}
+	// F2 ownership classification FIRST (adjudication §3 "After user
+	// retry/rotation, A is archival only"): match the transcript's initial
+	// record against EVERY admitted attempt's capsule — the platform-origin
+	// owner, whichever generation it is. A late RETIRED attempt's stop is
+	// ARCHIVAL: its receipt gets the observed transcript, and the stop leaves —
+	// the result is never replayed, B stays in flight, the review is neither
+	// concluded nor failed by its predecessor's ghost.
+	owner := shared.IdentifyChildAttempt(run, rv, in.TranscriptPath)
+	if owner != "" && owner != rv.ActiveAttemptID {
+		if att := rv.ActiveAttempt(owner); att != nil && att.ChildTranscriptPath == "" {
+			att.ChildTranscriptPath = in.TranscriptPath
+			if err := run.Save(); err != nil {
+				fmt.Fprintf(errW, "summoner subagentstop: archival receipt Save failed (transcript stays trace-registered only): %v\n", err)
+				return
+			}
+		}
+		fmt.Fprintf(errW, "summoner subagentstop: retired attempt %s stopped late (after retry/rotation) — archival: its receipt carries the transcript, the result is never replayed; active attempt %s stays in flight\n", owner, rv.ActiveAttemptID)
+		return
+	}
+	// Recovery round C3 (§3 line 35: attempt receipts carry the "observed
+	// child identity/transcript"): stamp the platform-registered transcript
+	// path on the ACTIVE attempt's receipt — first observation wins
+	// (append-only receipt), and only once the capsule match PROVED the
+	// transcript is the active attempt's own (owner == "" leaves the receipt
+	// unstamped — an unproven correlation must not become a false evidence
+	// join when the quarantine below persists). In-memory only here; the
+	// conclusion commit below persists it, and a refusal path discards it
+	// with the rest of the untouched state.
+	if owner == rv.ActiveAttemptID {
+		if att := rv.ActiveAttempt(rv.ActiveAttemptID); att != nil && att.ChildTranscriptPath == "" {
+			att.ChildTranscriptPath = in.TranscriptPath
+		}
+	}
 	// QA-1 ownership bind (final-fix wave, adjudication §3): the child must
 	// OWN its launch before its transcript can conclude or fail this review —
 	// the transcript's INITIAL record must be the EXACT admitted capsule of
@@ -266,6 +299,17 @@ func backfillReview(run *shared.RunState, in *subagentStopInput, errW io.Writer)
 	payload := map[string]interface{}{
 		"review_id":  res.ReviewID,
 		"run_status": res.RunStatus,
+	}
+	// M3 (recovery round): the verdict names the ATTEMPT it concluded — the
+	// reducer defaults an attempt-less result to the active attempt; belt the
+	// same default here so the trace always carries the join key.
+	if res.AttemptID == "" {
+		if rv := reviewRecord(run, res.ReviewID); rv != nil {
+			res.AttemptID = rv.ActiveAttemptID
+		}
+	}
+	if res.AttemptID != "" {
+		payload["attempt_id"] = res.AttemptID
 	}
 	if res.Verdict != "" {
 		payload["verdict"] = res.Verdict

@@ -3,14 +3,17 @@ package main
 // gate.go — the pure decision core: decide() inspects the parsed payload plus
 // the loaded run state and returns allow/deny with the side-effect plan;
 // apply() performs the I/O (reducer transitions, counters, trace appends).
-// Nothing in decide touches the filesystem, so tests can drive the matrix
-// without process-global state beyond the env-overridden roots.
+// decide() touches the filesystem in exactly ONE place: buildMutationDecl's
+// preimage read (recovery round I3, §4) — freezing what the target's bytes
+// ARE is part of admission itself and cannot be deferred past the effect.
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -73,19 +76,21 @@ type submitReject struct {
 // except phase-submit reducer rejections, which also trace
 // phase_submitted.rejected per ruling 6, and T19's denyEvents).
 type effects struct {
-	openPhase     string                  // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
-	submit        *shared.PhaseSubmission // SubmitPhase payload (ruling 6)
-	staged        *shared.StagedSnapshot  // C1: hook-verified semantic staging pinned onto the checkpoint
-	l1Checks      []shared.CheckDef       // T19: framework-adapter refs of the submit, run in-gate
-	delegation    string                  // subagent_type — StartDelegation + delegation.started
-	delegateRevID string                  // review_id bound to the delegation, when reviewer
-	delegateAttID string                  // attempt id bound to the reviewer delegation (C3)
-	reviewSubmit  *shared.Envelope        // RequestReview + review.prepared (summoner:review-submit)
-	reviewReg     []shared.CheckDef       // the manifest registry the mint re-freezes check defs from
-	changeOpen    *changeOpenEffect       // OpenRequirementChangeAt + change.opened (summoner:change open)
+	openPhase     string                   // OpenPhase(id): Skill candidate (ruling 3) or phase-submit fallback
+	submit        *shared.PhaseSubmission  // SubmitPhase payload (ruling 6)
+	staged        *shared.StagedSnapshot   // C1: hook-verified semantic staging pinned onto the checkpoint
+	l1Checks      []shared.CheckDef        // T19: framework-adapter refs of the submit, run in-gate
+	delegation    string                   // subagent_type — StartDelegation + delegation.started
+	delegateRevID string                   // review_id bound to the delegation, when reviewer
+	delegateAttID string                   // attempt id bound to the reviewer delegation (C3)
+	reviewSubmit  *shared.Envelope         // RequestReview + review.prepared (summoner:review-submit)
+	reviewRecover *reviewRecovery          // RecoverReview — the wedged-attempt recovery form (recovery round C3)
+	reviewReg     []shared.CheckDef        // the manifest registry the mint re-freezes check defs from
+	changeOpen    *changeOpenEffect        // OpenRequirementChangeAt + change.opened (summoner:change open)
 	changeApply   *shared.RequirementDelta // ApplyRequirementDelta + change.delta_applied (summoner:change apply)
-	probeSubmit   *probeSubmitEffect      // ResolveOutcomeProbed + tool.resolved (summoner:probe-submit)
+	probeSubmit   *probeSubmitEffect       // ResolveOutcomeProbed + tool.resolved (summoner:probe-submit)
 	bashClass     *bashClassEffect         // T19: read-class Bash markers on tool.started
+	writeDecl     *shared.MutationDecl     // I3: the frozen pre-effect declaration on an admitted Write/Edit
 }
 
 // changeOpenEffect is the summoner:change `open` payload: the note (what the
@@ -95,6 +100,15 @@ type changeOpenEffect struct {
 	position shared.DevPosition
 }
 
+// reviewRecovery is the review-submit RECOVERY form's strict metadata
+// (recovery round C3): the wedged in-flight review and exactly the attempt
+// whose result never arrived. Nothing else rides this channel — no envelope,
+// no transcript path, no verdict.
+type reviewRecovery struct {
+	reviewID  string
+	attemptID string
+}
+
 // bashClassEffect is the T19 admission record for a READ-CLASS Bash call: the
 // markers apply() writes on its tool.started. read_class is the crash-scan
 // class (a Bash intent without it is write-class by definition); probe marks
@@ -102,24 +116,33 @@ type changeOpenEffect struct {
 // it); l2 carries the admitted project check whose result posttooluse joins.
 // At most one of probe/l2 is set (the shapes are mutually exclusive: the probe
 // invocation has no operands, an exact-match check line is a fixed command).
+// command + probeOf are the recovery-round I3 additions: every read-class
+// Bash's started carries its command verbatim, and when the command BYTE-EQUALS
+// an unresolved declared unknown's ExactProbeCommand (and that ticket is not
+// yet bound — one-shot), started also carries probe_of: the PostToolUse
+// matcher then records its verdict on the probe's result.
 type bashClassEffect struct {
 	readClass bool
 	probe     bool
 	l2        *shared.CheckDef
+	command   string
+	probeOf   string
 }
 
 // probeSubmitEffect is the validated resolution batch of summoner:probe-submit
 // — decide() already verified every pair against the trace; apply() replays
-// the validation findings into reducer receipts.
+// the validation findings into reducer receipts. Each pair carries its OWN
+// verdict: the one the PostToolUse matcher recorded on the probe's result
+// (never model-supplied — the wire outcome field is gone).
 type probeSubmitEffect struct {
-	outcome string
-	pairs   []probePair // positionally joined: unknown ↔ its own probe
+	pairs []probePair // positionally joined: unknown ↔ its own probe + the matcher's verdict
 }
 
 type probePair struct {
 	unknownID string
 	probeID   string
-	replay    bool // entry already resolved with this exact pair: idempotent no-op
+	verdict   string // the recorded probe_match verdict (absent ⇒ indeterminate)
+	replay    bool   // entry already resolved with this exact pair: idempotent no-op
 }
 
 func deny(reason string) decision { return decision{allow: false, reason: reason} }
@@ -174,8 +197,25 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	switch in.ToolName {
 	case "Skill":
 		return decideSkill(in, run, skill)
-	case "Edit", "Write", "NotebookEdit":
-		return decideWrite(run, in.ToolName)
+	case "Edit", "Write":
+		// Recovery round I3 (§4): a declared mutation freezes its pre-effect
+		// declaration at admission — eligibility first (the matrix denial is
+		// the more fundamental one), then the literal-intent validation over
+		// the ACTUAL preimage, which may deny BEFORE any effect runs.
+		d := decideWrite(run, in.ToolName)
+		if !d.allow {
+			return d
+		}
+		decl, problem := buildMutationDecl(in)
+		if problem != "" {
+			return deny(problem)
+		}
+		d.eff = &effects{writeDecl: decl}
+		return d
+	case "NotebookEdit":
+		// §4: notebook edits have no shipped declaration (the mechanical
+		// matcher cannot freeze what it cannot compute) — denied pre-effect.
+		return deny("Summoner gate: NotebookEdit has no supported mutation declaration (notebook edits are an unsupported capability) — denied before effects (spec §4).")
 	case "Bash":
 		command := stringField(in.ToolInput, "command")
 		// T19 ladder order (spec §3 Bash 副作用信任阶梯): the probe channel,
@@ -198,8 +238,15 @@ func decide(in *gateInput, run *shared.RunState) decision {
 			return decideL2Check(run, def)
 		}
 		// Ordinary read-class Bash: observed only, class persisted for the
-		// crash scan (a Bash intent without read_class is write-class).
-		return allow(&effects{bashClass: &bashClassEffect{readClass: true}})
+		// crash scan (a Bash intent without read_class is write-class). The
+		// exact-command probe ticket binds here (I3): status serves each
+		// unresolved declared unknown's ExactProbeCommand; the admission that
+		// byte-equals it consumes the one-shot ticket (probe_of on started).
+		return allow(&effects{bashClass: &bashClassEffect{
+			readClass: true,
+			command:   command,
+			probeOf:   probeTicketFor(run, command),
+		}})
 	case "Agent":
 		return decideAgent(in, run)
 	case "AskUserQuestion":
@@ -209,6 +256,120 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	default:
 		return deny(fmt.Sprintf("Summoner gate: unmodeled tool %q has no supported read-only or mutation/probe declaration — denied before effects (MCP is not presumed read-only).", in.ToolName))
 	}
+}
+
+// declFileCap bounds the preimage read: a target whose declared bytes exceed
+// 16 MiB is refused declaration (the frozen expect hash would be computable,
+// but the pre-effect read itself becomes the cost a caller can impose).
+const declFileCap = 16 << 20
+
+// buildMutationDecl freezes a Write/Edit intent's pre-effect declaration
+// (recovery round I3, §4): capability, the RESOLVED absolute target (F5
+// "normalized target": a relative file_path and its absolute spelling mint
+// byte-identical decls — and the exact probe command probes the resolved
+// path), input digest, the ACTUAL preimage (sha256 of the target's current
+// bytes, or "absent" for a new file), and the expect hash of the exact
+// resulting bytes. The literal Edit validates over the actual preimage
+// BEFORE any effect: old_string must occur exactly once (or carry
+// replace_all with ≥1 occurrence); ambiguous or non-applying edits are
+// denied pre-effect. A non-regular or oversized target is denied — a
+// declaration the matcher cannot compute is never minted.
+func buildMutationDecl(in *gateInput) (*shared.MutationDecl, string) {
+	target := stringField(in.ToolInput, "file_path")
+	if target == "" {
+		return nil, "Summoner gate: " + in.ToolName + " requires a file_path to declare its mutation — denied before effects."
+	}
+	resolved := target
+	if !filepath.IsAbs(target) {
+		resolved = filepath.Join(shared.ProjectDir(), target)
+	}
+	st, err := os.Stat(resolved)
+	if err == nil && !st.Mode().IsRegular() {
+		return nil, fmt.Sprintf("Summoner gate: %s target %s is not a regular file — no supported mutation declaration, denied before effects.", in.ToolName, target)
+	}
+	if err == nil && st.Size() > declFileCap {
+		return nil, fmt.Sprintf("Summoner gate: %s target %s exceeds the 16 MiB declaration cap — denied before effects.", in.ToolName, target)
+	}
+	current, err := os.ReadFile(resolved)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Sprintf("Summoner gate: cannot read the current bytes of %s to freeze its mutation declaration — denying before effects: %v", target, err)
+	}
+	preimage := "absent"
+	if err == nil {
+		preimage = shared.HashBytes(current)
+	}
+
+	switch in.ToolName {
+	case "Write":
+		content := stringField(in.ToolInput, "content")
+		return &shared.MutationDecl{
+			Capability:  shared.CapabilityFileWrite,
+			Target:      resolved, // F5: the normalized absolute target
+			InputDigest: shared.HashBytes([]byte(content)),
+			Preimage:    preimage,
+			Expect:      shared.HashBytes([]byte(content)),
+		}, ""
+	case "Edit":
+		old, new := stringField(in.ToolInput, "old_string"), stringField(in.ToolInput, "new_string")
+		replaceAll, _ := in.ToolInput["replace_all"].(bool)
+		n := strings.Count(string(current), old)
+		if n == 0 || (n > 1 && !replaceAll) {
+			if n == 0 {
+				return nil, fmt.Sprintf("Summoner gate: Edit's old_string is not present in %s — the literal edit does not apply; denied before effects.", target)
+			}
+			return nil, fmt.Sprintf("Summoner gate: Edit's old_string must occur exactly once in %s without replace_all — it occurs %d times, the literal edit is ambiguous; denied before effects.", target, n)
+		}
+		transformed := string(current)
+		if replaceAll {
+			transformed = strings.ReplaceAll(transformed, old, new)
+		} else {
+			transformed = strings.Replace(transformed, old, new, 1)
+		}
+		return &shared.MutationDecl{
+			Capability:  shared.CapabilityFileEdit,
+			Target:      resolved, // F5: the normalized absolute target
+			InputDigest: shared.HashBytes([]byte(old + "\x00" + new)),
+			Preimage:    preimage,
+			Expect:      shared.HashBytes([]byte(transformed)),
+		}, ""
+	}
+	return nil, "" // unreachable: only Write/Edit reach here
+}
+
+// probeTicketFor returns the unknown id whose EXACT probe command this read
+// command byte-equals (I3 ticket binding): unresolved declared entries only,
+// first match, and only while the ticket is unbound — a started event already
+// carrying probe_of for the id consumes it permanently (one probe per
+// unknown; a crashed probe is a lost observation that resolves indeterminate,
+// never a free rebind). An unreadable trace degrades to no binding: the probe
+// still runs as an ordinary read, but no resolution will accept it later.
+func probeTicketFor(run *shared.RunState, command string) string {
+	if run.Status != shared.StatusOutcomeUnknown || command == "" {
+		return ""
+	}
+	evs, err := shared.LoadRunEvents(run.RunID)
+	if err != nil {
+		return ""
+	}
+	bound := make(map[string]bool)
+	for _, ev := range evs {
+		if ev.Type != shared.EventToolStarted {
+			continue
+		}
+		if id, _ := ev.Payload["probe_of"].(string); id != "" {
+			bound[id] = true
+		}
+	}
+	for i := range run.OutcomeUnknowns {
+		e := &run.OutcomeUnknowns[i]
+		if e.Resolved || bound[e.ToolUseID] {
+			continue
+		}
+		if e.MutationDecl != nil && e.MutationDecl.ExactProbeCommand() == command {
+			return e.ToolUseID
+		}
+	}
+	return ""
 }
 
 // matchProjectCheck resolves an exact-match project check definition for a
@@ -310,6 +471,13 @@ func budgetControlExempt(in *gateInput, run *shared.RunState, isSubmit bool) boo
 		return true
 	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillProbeSubmit &&
 		run.Status == shared.StatusOutcomeUnknown:
+		return true
+	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillReviewSubmit &&
+		isReviewRecoveryForm(in):
+		// Recovery-round C3: the review-submit RECOVERY form (strict
+		// expected_attempt_id metadata) is the user's channel out of a wedged
+		// RUNNING review — it must stay reachable with every budget exhausted
+		// (adjudication §3 line 37). The plain registration form is NOT exempt.
 		return true
 	case in.ToolName == "Bash" && isStatusInvocation(stringField(in.ToolInput, "command")):
 		return true
@@ -521,6 +689,19 @@ func decideChangeSkill(in *gateInput, run *shared.RunState) decision {
 	}
 }
 
+// isReviewRecoveryForm reports whether a Skill(summoner:review-submit) call
+// carries the RECOVERY form: strict args decoding whose envelope includes a
+// non-empty expected_attempt_id (recovery round C3). Undecodable args are not
+// the recovery form — the ordinary registration path reports them.
+func isReviewRecoveryForm(in *gateInput) bool {
+	args, ok := in.ToolInput["args"].(string)
+	if !ok {
+		return false
+	}
+	env, err := shared.DecodeEnvelope([]byte(args))
+	return err == nil && env.ExpectedAttemptID != ""
+}
+
 // decideReviewSubmit maps Skill(summoner:review-submit) onto the envelope
 // channel (T17): decode the args strictly, validate the envelope against the
 // run's frozen acceptance view minus recorded drops with the project manifest's
@@ -530,7 +711,29 @@ func decideChangeSkill(in *gateInput, run *shared.RunState) decision {
 // denial ONLY — untraced (standing ruling: non-phase-submit denials are
 // untraced). The WAIT_USER discipline in decideSkill already refuses the
 // channel while a checkpoint is pending.
+//
+// Recovery round C3: the args may instead carry the RECOVERY form (identity
+// triple + strict expected_attempt_id) — the wedged-RUNNING-attempt recovery
+// operation (budget-exempt via budgetControlExempt). A recovery never mints
+// or registers: it hands RecoverReview the strict metadata and nothing else.
 func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
+	args, ok := in.ToolInput["args"].(string)
+	if ok {
+		if env, err := shared.DecodeEnvelope([]byte(args)); err == nil && env.ExpectedAttemptID != "" {
+			// F6 (re-review): the recovery form is bound to THIS run — a
+			// payload naming a foreign run id (a replayed form from another
+			// session's wedged review) never recovers here.
+			if env.RunID != run.RunID {
+				return deny(fmt.Sprintf(
+					"Summoner gate: summoner:review-submit recovery form names run %q but this session's live run is %q — the recovery channel serves this run's own wedged review only.",
+					env.RunID, run.RunID))
+			}
+			// Recovery form: the in-flight review's wedged attempt, nothing
+			// else. The reducer owns every legality rule (status, RUNNING
+			// review, attempt match); its refusal denies here untraced.
+			return allow(&effects{reviewRecover: &reviewRecovery{reviewID: env.ReviewID, attemptID: env.ExpectedAttemptID}})
+		}
+	}
 	if run.Status != shared.StatusReviewPending && !terminalDefaultReviewReady(run) {
 		if reviewPhaseSkipped(run) {
 			return deny("Summoner gate: summoner:review-submit refused — the review phase was explicitly skipped (UNREVIEWED), so the default terminal review is closed; [v] at a checkpoint is the on-demand path if the user wants one anyway.")
@@ -539,7 +742,6 @@ func decideReviewSubmit(in *gateInput, run *shared.RunState) decision {
 			"Summoner gate: summoner:review-submit is the envelope registration channel and is legal only in REVIEW_PENDING (a [v] decision's obligation or an in-flight review) or at the terminal default position (ACTIVE immediately after the review phase's acceptance), status is %s.",
 			run.Status))
 	}
-	args, ok := in.ToolInput["args"].(string)
 	if !ok {
 		return deny("Summoner gate: summoner:review-submit requires args — a JSON string carrying the identity-only registration {schema_version, run_id, review_id} (skills/review-submit/SKILL.md).")
 	}
@@ -914,14 +1116,36 @@ func validateCheckRefs(run *shared.RunState, sub *shared.PhaseSubmission) ([]sha
 
 // --- T19: probe-submit (OUTCOME_UNKNOWN resolution channel) ---------------------
 
-// probeSubmitArgs is the strict payload of summoner:probe-submit: one OBSERVED
-// probe per unknown, positionally joined, equal lengths — a single probe never
-// resolves two unknowns, and an unresolved unknown is never resolved without
-// its own probe.
+// probeSubmitArgs is the strict payload of summoner:probe-submit (recovery
+// round I3): one OBSERVED probe per unknown, positionally joined, equal
+// lengths — a single probe never resolves two unknowns, and an unresolved
+// unknown is never resolved without its own probe. There is NO outcome field
+// on the wire: the PostToolUse matcher computes every verdict from the
+// probe's observed stdout and records it on the probe's tool.result; this
+// submit only NAMES the pairs.
 type probeSubmitArgs struct {
+	Op                string   `json:"op"`
 	UnknownToolUseIDs []string `json:"unknown_tool_use_ids"`
-	Outcome           string   `json:"outcome"`
 	ProbeToolUseIDs   []string `json:"probe_tool_use_ids"`
+}
+
+// recordedProbeVerdict reads the matcher's verdict off the probe's recorded
+// tool.result (posttooluse writes payload probe_match). Absent — the result
+// never landed or carried no match — returns "": a lost observation resolves
+// indeterminate, never a guess.
+func recordedProbeVerdict(evs []shared.TraceEvent, probeID string) string {
+	for _, ev := range evs {
+		if ev.Type != shared.EventToolResult || ev.ToolUseID != probeID {
+			continue
+		}
+		m, _ := ev.Payload["probe_match"].(map[string]interface{})
+		if m == nil {
+			return ""
+		}
+		v, _ := m["verdict"].(string)
+		return v
+	}
+	return ""
 }
 
 // decideProbeSubmit validates the ENTIRE resolution batch before any partial
@@ -930,12 +1154,20 @@ type probeSubmitArgs struct {
 //
 //   - legal only while OUTCOME_UNKNOWN (the WAIT_USER discipline in
 //     decideSkill already blocks it at checkpoints);
-//   - strict shape: unknown_tool_use_ids and probe_tool_use_ids are equal-
-//     length non-empty arrays with no duplicates inside the batch;
-//   - every unknown id must be a recorded entry of THIS run: unresolved
-//     entries take the verdict; an already-resolved entry accepts only the
-//     IDENTICAL (outcome, probe) pair as an idempotent replay — anything else
-//     is rejected (a different probe for a resolved id never re-resolves it);
+//   - strict shape: op "resolve", equal-length non-empty id arrays with no
+//     duplicates inside the batch — and NO outcome field (the strict decode
+//     rejects it; verdicts belong to the matcher, never the wire);
+//   - every unknown id must be a recorded entry of THIS run: an unresolved
+//     entry takes the verdict the matcher RECORDED on its probe's result
+//     (absent ⇒ indeterminate — a lost observation); an already-resolved
+//     entry accepts only the IDENTICAL (verdict, probe) pair as an idempotent
+//     replay — anything else is rejected;
+//   - a SUPPORTED declaration (exact probe command exists) resolves only
+//     through the probe that bound its ticket: the probe's started must carry
+//     probe_of == the unknown AND the exact command byte-for-byte. An
+//     unsupported/absent declaration imposes look-discipline only
+//     (shared.ProbeEvidence) and resolves indeterminate REGARDLESS of what
+//     any recorded match says;
 //   - every probe id must be UNUSED as a receipt anywhere in the run (stale
 //     or reused probes are rejected) and must validate as evidence via the
 //     trace join: a read-class BASH call with an observed result, recorded
@@ -948,18 +1180,18 @@ type probeSubmitArgs struct {
 func decideProbeSubmit(in *gateInput, run *shared.RunState) decision {
 	args, ok := in.ToolInput["args"].(string)
 	if !ok {
-		return deny("Summoner gate: summoner:probe-submit requires args — a JSON string carrying {unknown_tool_use_ids[], outcome, probe_tool_use_ids[]} (skills/probe-submit/SKILL.md).")
+		return deny("Summoner gate: summoner:probe-submit requires args — a JSON string carrying {op:\"resolve\", unknown_tool_use_ids[], probe_tool_use_ids[]} (skills/probe-submit/SKILL.md). The outcome is NOT supplied: the PostToolUse matcher records it from the probe's observed stdout.")
 	}
 	var a probeSubmitArgs
 	if err := strictUnmarshal([]byte(args), &a); err != nil {
-		return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit args is malformed (unknown or mistyped field): %v", err))
-	}
-	switch a.Outcome {
-	case shared.OutcomeAccepted, shared.OutcomeFailed, shared.OutcomeIndeterminate:
-	default:
 		return deny(fmt.Sprintf(
-			"Summoner gate: summoner:probe-submit outcome must be %s, %s or %s (what the probes actually showed), got %q.",
-			shared.OutcomeAccepted, shared.OutcomeFailed, shared.OutcomeIndeterminate, a.Outcome))
+			"Summoner gate: summoner:probe-submit args is malformed (unknown or mistyped field): %v — the resolution form is {op:\"resolve\", unknown_tool_use_ids[], probe_tool_use_ids[]}; outcomes are no longer accepted on the wire, the PostToolUse matcher computes every verdict from the observed stdout.",
+			err))
+	}
+	if a.Op != "resolve" {
+		return deny(fmt.Sprintf(
+			"Summoner gate: summoner:probe-submit requires op \"resolve\" (the only operation; verdicts come from the PostToolUse matcher, never the wire), got %q.",
+			a.Op))
 	}
 	if len(a.UnknownToolUseIDs) == 0 {
 		return deny("Summoner gate: summoner:probe-submit requires at least one unknown_tool_use_ids entry.")
@@ -983,16 +1215,22 @@ func decideProbeSubmit(in *gateInput, run *shared.RunState) decision {
 		}
 		seenProbe[id] = true
 	}
+	// The verdicts live in the trace (the matcher's probe_match records), so
+	// every path — replay included — needs it. Unreadable trace: fail closed.
+	evs, err := shared.LoadRunEvents(run.RunID)
+	if err != nil {
+		return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit cannot read the run's trace to validate the probes — denying (fail-closed): %v", err))
+	}
 	entryByID := make(map[string]*shared.OutcomeUnknown, len(run.OutcomeUnknowns))
 	for i := range run.OutcomeUnknowns {
 		entryByID[run.OutcomeUnknowns[i].ToolUseID] = &run.OutcomeUnknowns[i]
 	}
 	// Replay-first classification (the RecordDecision precedent): an entry
-	// already resolved with the IDENTICAL (outcome, probe) pair is an
+	// already resolved with the IDENTICAL (verdict, probe) pair is an
 	// idempotent no-op whose legality must not depend on the CURRENT status —
 	// the original resolution may have already moved the run on. Any fresh
 	// resolution in the batch re-imposes the OUTCOME_UNKNOWN requirement.
-	eff := &probeSubmitEffect{outcome: a.Outcome}
+	eff := &probeSubmitEffect{}
 	fresh := false
 	for i, unknownID := range a.UnknownToolUseIDs {
 		probeID := a.ProbeToolUseIDs[i]
@@ -1002,17 +1240,32 @@ func decideProbeSubmit(in *gateInput, run *shared.RunState) decision {
 				"Summoner gate: summoner:probe-submit names unknown %q — no such OUTCOME_UNKNOWN entry in this run (foreign or invented ids never resolve).",
 				unknownID))
 		}
+		verdict := recordedProbeVerdict(evs, probeID)
+		if verdict != "" && verdict != shared.OutcomeAccepted && verdict != shared.OutcomeFailed && verdict != shared.OutcomeIndeterminate {
+			verdict = "" // a corrupted/foreign record is no verdict at all
+		}
 		if entry.Resolved {
-			if entry.Outcome == a.Outcome && entry.ProbeToolUseID == probeID {
-				eff.pairs = append(eff.pairs, probePair{unknownID: unknownID, probeID: probeID, replay: true})
+			if entry.Outcome == verdict && entry.ProbeToolUseID == probeID {
+				eff.pairs = append(eff.pairs, probePair{unknownID: unknownID, probeID: probeID, verdict: verdict, replay: true})
 				continue // identical re-delivery: idempotent no-op
 			}
 			return deny(fmt.Sprintf(
 				"Summoner gate: summoner:probe-submit cannot re-resolve %s — it already resolved as %s via probe %s (a conflicting or probe-swapped replay is rejected).",
 				unknownID, entry.Outcome, entry.ProbeToolUseID))
 		}
+		// Fresh resolution: an absent matcher record is a LOST observation —
+		// indeterminate, never a guess and never another free probe.
+		if verdict == "" {
+			verdict = shared.OutcomeIndeterminate
+		}
+		// An unsupported/absent declaration resolves indeterminate REGARDLESS
+		// of what any recorded match says — the reducer belt coerces too;
+		// defense in depth.
+		if entry.MutationDecl.ExactProbeCommand() == "" {
+			verdict = shared.OutcomeIndeterminate
+		}
 		fresh = true
-		eff.pairs = append(eff.pairs, probePair{unknownID: unknownID, probeID: probeID})
+		eff.pairs = append(eff.pairs, probePair{unknownID: unknownID, probeID: probeID, verdict: verdict})
 	}
 	if fresh && run.Status != shared.StatusOutcomeUnknown {
 		return deny(fmt.Sprintf(
@@ -1021,10 +1274,6 @@ func decideProbeSubmit(in *gateInput, run *shared.RunState) decision {
 	}
 	if !fresh {
 		return allow(&effects{probeSubmit: eff}) // pure replay: nothing to re-validate
-	}
-	evs, err := shared.LoadRunEvents(run.RunID)
-	if err != nil {
-		return deny(fmt.Sprintf("Summoner gate: summoner:probe-submit cannot read the run's trace to validate the probes — denying (fail-closed): %v", err))
 	}
 	for _, pair := range eff.pairs {
 		if pair.replay {
@@ -1049,6 +1298,21 @@ func decideProbeSubmit(in *gateInput, run *shared.RunState) decision {
 			return deny(fmt.Sprintf(
 				"Summoner gate: summoner:probe-submit probe %s is not valid evidence for unknown %s — %v (evidence is a read-class Bash call with an observed result, recorded after the unknown was marked, never failed).",
 				pair.probeID, pair.unknownID, err))
+		}
+		// A supported declaration resolves ONLY through its bound ticket: the
+		// probe's started must carry probe_of == this unknown AND the exact
+		// declared command byte-for-byte (R6: an unrelated read-class call —
+		// however well observed — is not this unknown's evidence).
+		entry := entryByID[pair.unknownID]
+		if cmd := entry.MutationDecl.ExactProbeCommand(); cmd != "" {
+			started, _, _ := shared.StartedEvent(evs, pair.probeID)
+			boundID, _ := started["probe_of"].(string)
+			boundCmd, _ := started["command"].(string)
+			if boundID != pair.unknownID || boundCmd != cmd {
+				return deny(fmt.Sprintf(
+					"Summoner gate: summoner:probe-submit probe %s does not bind unknown %s's ticket — a declared mutation resolves ONLY through its exact probe command (%q), admitted with probe_of == the unknown on its tool.started. Re-run the exact command (summoner-status serves it), then re-submit.",
+					pair.probeID, pair.unknownID, cmd))
+			}
 		}
 	}
 	return allow(&effects{probeSubmit: eff})
@@ -1420,6 +1684,30 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		return nil
 	}
 
+	// --- review-submit RECOVERY path (recovery round C3): the wedged RUNNING
+	// attempt parks at its retry checkpoint — reducer-first like every runtime
+	// channel; a reducer refusal consumes nothing, leaves NO trace and denies
+	// with its reason. A recovery registers NOTHING (no review.prepared) and
+	// charges NOTHING (§5: recovery escapes uncharged); the only trace is the
+	// admitted call's tool.started, exactly like any control-plane Skill call.
+	if eff != nil && eff.reviewRecover != nil {
+		if err := run.RecoverReview(eff.reviewRecover.reviewID, eff.reviewRecover.attemptID); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: summoner:review-submit recovery rejected — %v\n", err)
+			return err
+		}
+		if err := appendAll([]shared.TraceEvent{{
+			Type:    shared.EventToolStarted,
+			Payload: map[string]interface{}{"tool_name": in.ToolName},
+		}}); err != nil {
+			return err // state already moved — deny fail-closed
+		}
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
+			return err
+		}
+		return nil
+	}
+
 	// --- review-submit path (summoner:review-submit): reducer first, like the
 	// submit path — a reducer rejection (illegal status, envelope/consumption
 	// problems the pre-checks could not see) consumes nothing, leaves NO trace
@@ -1503,7 +1791,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 			Payload: map[string]interface{}{"tool_name": in.ToolName},
 		}}
 		for _, pair := range eff.probeSubmit.pairs {
-			newly, err := run.ResolveOutcomeProbed(pair.unknownID, eff.probeSubmit.outcome, pair.probeID)
+			newly, err := run.ResolveOutcomeProbed(pair.unknownID, pair.verdict, pair.probeID)
 			if err != nil {
 				fmt.Fprintf(errW, "Summoner gate: summoner:probe-submit rejected — %v\n", err)
 				return err
@@ -1513,7 +1801,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 					Type: shared.EventToolResolved,
 					Payload: map[string]interface{}{
 						"tool_use_id":       pair.unknownID,
-						"outcome":           eff.probeSubmit.outcome,
+						"outcome":           pair.verdict,
 						"probe_tool_use_id": pair.probeID,
 					},
 				})
@@ -1534,6 +1822,16 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 	started := map[string]interface{}{"tool_name": in.ToolName}
 	if eff != nil && eff.bashClass != nil {
 		started["read_class"] = true
+		// I3: the read-class admission carries its command verbatim (the
+		// probe-submit binding and the posttooluse matcher join on it) and,
+		// when this admission consumed an unknown's one-shot ticket, the
+		// probe_of reference the matcher needs.
+		if eff.bashClass.command != "" {
+			started["command"] = eff.bashClass.command
+		}
+		if eff.bashClass.probeOf != "" {
+			started["probe_of"] = eff.bashClass.probeOf
+		}
 		if eff.bashClass.probe {
 			started["sandbox_probe"] = "v1"
 		}
@@ -1546,6 +1844,18 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 			}
 		}
 	}
+	// I3: an admitted Write/Edit freezes its pre-effect declaration onto the
+	// intent record — the crash scan carries it onto the OUTCOME_UNKNOWN entry
+	// and the mechanical matcher resolves against exactly these bytes.
+	if eff != nil && eff.writeDecl != nil {
+		started["mutation_decl"] = map[string]interface{}{
+			"capability":   eff.writeDecl.Capability,
+			"target":       eff.writeDecl.Target,
+			"input_digest": eff.writeDecl.InputDigest,
+			"preimage":     eff.writeDecl.Preimage,
+			"expect":       eff.writeDecl.Expect,
+		}
+	}
 	events := []shared.TraceEvent{{
 		Type:    shared.EventToolStarted,
 		Payload: started,
@@ -1554,6 +1864,12 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		payload := map[string]interface{}{"subagent_type": eff.delegation}
 		if eff.delegateRevID != "" {
 			payload["review_id"] = eff.delegateRevID
+		}
+		// M3 (recovery round): the reviewer delegation names the ATTEMPT it
+		// dispatches — the C3 ownership key the trace-side verdict join binds
+		// against (review.verdict.attempt_id must equal this).
+		if eff.delegateAttID != "" {
+			payload["attempt_id"] = eff.delegateAttID
 		}
 		events = append(events, shared.TraceEvent{
 			Type:    shared.EventDelegationStarted,

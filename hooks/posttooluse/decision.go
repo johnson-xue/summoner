@@ -297,6 +297,25 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	if !ok {
 		return settleAndReject(fmt.Sprintf("option %q leads with a keyword that maps to no decision", truncate(label, 80)))
 	}
+	// Recovery round I4 + re-review F1: a "Recall: <target>" answer names its
+	// target — but the SHIPPED kind-menu recall label is a DESCRIPTION whose
+	// remainder names nothing, and pre-F1 that description reached the
+	// reducer as an "unknown target" and rejected EVERY real recall answer.
+	// The S2 offered-set pinning makes the clicked label a persisted page
+	// label, so the classification over persisted state is closed: an
+	// offered target label (or "latest"/empty) names that visit / the
+	// default; any OTHER label a persisted page carries (the description
+	// label) means the DEFAULT recall; a label on NO persisted page is a
+	// gate-bypass artifact — rejected, never guessed.
+	_, target := splitLabelKeyword(label)
+	if d == shared.DecisionRecall && !cp.IsOfferedRecallTarget(target) {
+		if !cp.OnMenuPage(label) {
+			return settleAndReject(fmt.Sprintf(
+				"recall answer %q is a label of no persisted menu page of checkpoint %s — not an offered recall target (offered pages: the kind menu + the recall-target page)",
+				truncate(label, 80), cp.ID))
+		}
+		target = "" // the shipped description label — the §4 default recall
+	}
 
 	// 8. Record through the reducer: display binding, decision-time digest
 	// recheck and kind legality live there. Its errors are rejections, not
@@ -307,10 +326,10 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	beforeExts := len(run.BudgetExtensions)
 	if settling {
 		settle.ToolUseID = in.ToolUseID
-		if err := run.RecordDecisionWithBudget(cp.ID, d, in.ToolUseID, &settle); err != nil {
+		if err := run.RecordDecisionWithBudgetTarget(cp.ID, d, in.ToolUseID, target, &settle); err != nil {
 			return reject(err.Error())
 		}
-	} else if err := run.RecordDecision(cp.ID, d, in.ToolUseID); err != nil {
+	} else if err := run.RecordDecisionWithTarget(cp.ID, d, in.ToolUseID, target); err != nil {
 		return reject(err.Error())
 	}
 	// The settlement's traces precede checkpoint.decided, mirroring the
@@ -346,6 +365,33 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		},
 	}, errW); err != nil {
 		return 2
+	}
+	// Recovery round I4 (§5): an applied recall records its full provenance
+	// (recall.applied) and the re-entered visit's phase.started — the exact
+	// event pair scorers/deterministic/recovery-check.sh audits against real
+	// visit history. AFTER checkpoint.decided, matching the commit order.
+	if d == shared.DecisionRecall && len(run.Recalls) > 0 {
+		rec := run.Recalls[len(run.Recalls)-1]
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type: shared.EventRecallApplied,
+			Payload: map[string]interface{}{
+				"from_phase_id":   rec.FromPhaseID,
+				"target_phase_id": rec.TargetPhaseID,
+				"target_visit_id": rec.TargetVisitID,
+				"provenance":      rec.Provenance,
+				"label":           rec.Label,
+				"reason":          rec.Reason,
+				"run_rework":      run.Counters.RunRework,
+			},
+		}, errW); err != nil {
+			return 2
+		}
+		if err := appendTrace(run, in, shared.TraceEvent{
+			Type:    shared.EventPhaseStarted,
+			Payload: map[string]interface{}{"phase_id": rec.TargetPhaseID},
+		}, errW); err != nil {
+			return 2
+		}
 	}
 	// The change loop's single-point close (T10): a successful
 	// ACCEPT_REQUIREMENT_CHANGE resumes the run in place — record the resume

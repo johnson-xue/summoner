@@ -461,6 +461,106 @@ type DanglingIntent struct {
 	ToolUseID string
 	Kind      string // "tool" | "worker-delegation"
 	ToolName  string
+	// Decl is the intent's frozen pre-effect declaration parsed from its
+	// tool.started payload (recovery round I3): nil for intents admitted
+	// without one — their entries are indeterminate-only by construction.
+	Decl *MutationDecl
+}
+
+// ParseMutationDecl decodes a mutation_decl payload map (the shape the gate
+// persists on a mutating intent's tool.started) into a MutationDecl. A nil or
+// empty map returns nil.
+func ParseMutationDecl(m map[string]interface{}) *MutationDecl {
+	if m == nil {
+		return nil
+	}
+	d := &MutationDecl{}
+	d.Capability, _ = m["capability"].(string)
+	if d.Capability == "" {
+		return nil
+	}
+	d.Target, _ = m["target"].(string)
+	d.InputDigest, _ = m["input_digest"].(string)
+	d.Preimage, _ = m["preimage"].(string)
+	d.Expect, _ = m["expect"].(string)
+	return d
+}
+
+// ExactProbeCommand returns the deterministic read-only probe command a
+// declared mutation prescribes (recovery round I3): status serves these exact
+// bytes, the gate binds the probe ticket by byte equality, and the PostToolUse
+// matcher parses the observed sha256 from its stdout. Unsupported capabilities
+// have NO exact command — their resolution is look-discipline only and always
+// indeterminate.
+func (d *MutationDecl) ExactProbeCommand() string {
+	if d == nil {
+		return ""
+	}
+	switch d.Capability {
+	case "file.write", "file.edit":
+		if d.Target == "" {
+			return ""
+		}
+		return fmt.Sprintf("shasum -a 256 '%s'", d.Target)
+	default:
+		return ""
+	}
+}
+
+// ParseSHADigest extracts the first 64-char lowercase-hex sha256 token from a
+// probe's observed stdout ("shasum" output or any hash-bearing line). Absent
+// or ambiguous ⇒ false — the matcher then records indeterminate, never a
+// guess.
+func ParseSHADigest(stdout string) (string, bool) {
+	fields := strings.Fields(stdout)
+	for _, f := range fields {
+		if len(f) == 64 {
+			ok := true
+			for _, r := range f {
+				if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return f, true
+			}
+		}
+	}
+	return "", false
+}
+
+// HashBytes is the declaration digester (recovery round I3): the hex sha256
+// of exactly the bytes given — the frozen preimage/expect/input_digest of a
+// MutationDecl and nothing else.
+func HashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// MatchProbeVerdict is the mechanical matcher (recovery round I3, §4): it
+// judges a probe's OBSERVED stdout against the entry's frozen declaration —
+// observed == expect ⇒ accepted (the mutation landed); observed == preimage ⇒
+// failed (proven non-application); anything else, a lost/unparseable
+// observation, or an unsupported/nil declaration ⇒ indeterminate. The verdict
+// comes ONLY from these bytes: nothing the model says participates, and an
+// unsupported capability can never conclude better than indeterminate.
+func MatchProbeVerdict(decl *MutationDecl, stdout string) (verdict, observed string) {
+	if decl == nil || (decl.Capability != CapabilityFileWrite && decl.Capability != CapabilityFileEdit) ||
+		decl.Expect == "" || decl.Preimage == "" {
+		return OutcomeIndeterminate, ""
+	}
+	h, ok := ParseSHADigest(stdout)
+	if !ok {
+		return OutcomeIndeterminate, "" // lost or ambiguous observation
+	}
+	switch h {
+	case decl.Expect:
+		return OutcomeAccepted, h
+	case decl.Preimage:
+		return OutcomeFailed, h
+	}
+	return OutcomeIndeterminate, h
 }
 
 // traceIndex is the join index over one run's events.
@@ -560,7 +660,8 @@ func MutatingDanglingIntents(evs []TraceEvent, includeWorkerDelegations bool) []
 		if _, already := idx.markSeq[ev.ToolUseID]; already {
 			continue // a prior scan already classified this id
 		}
-		out = append(out, DanglingIntent{ToolUseID: ev.ToolUseID, Kind: "tool", ToolName: name})
+		decl, _ := ev.Payload["mutation_decl"].(map[string]interface{})
+		out = append(out, DanglingIntent{ToolUseID: ev.ToolUseID, Kind: "tool", ToolName: name, Decl: ParseMutationDecl(decl)})
 	}
 	if includeWorkerDelegations {
 		// FIFO-per-type correlation (fix-round M2 direction note): a

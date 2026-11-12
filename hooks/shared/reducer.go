@@ -320,11 +320,15 @@ func StartRun(runID, sessionID, workflow string, limits BudgetLimits) (*RunState
 		return nil, err
 	}
 	r := &RunState{
-		SchemaVersion:       RunStateSchemaVersion,
-		RunID:               runID,
-		SessionID:           sessionID,
-		Workflow:            workflow,
-		Status:              StatusActive,
+		SchemaVersion: RunStateSchemaVersion,
+		RunID:         runID,
+		SessionID:     sessionID,
+		Workflow:      workflow,
+		Status:        StatusActive,
+		// I1 (adjudication §5): the run start is the first lifecycle boundary —
+		// pre-first-OpenPhase work charges the upcoming visit's bucket, and the
+		// first OpenPhase adopts that accrual instead of resetting it.
+		UpcomingVisit:       true,
 		RequirementsVersion: 1,
 		Limits:              limits,
 		StartedAt:           nowUTC(),
@@ -444,6 +448,63 @@ func (r *RunState) addCheckpoint(kind CheckpointKind, phaseID, note string, arti
 	}
 	if exhausted, _ := r.BudgetExhausted(); exhausted {
 		cp.ExtendAsk = r.newExtendAsk()
+	}
+	// Recovery round I4 (§5): the checkpoint offers the run's REAL accepted
+	// visit history as named recall targets — the digest-bound provenance a
+	// later "Recall: <target>" answer resolves against. One target per
+	// accepted visit (label = its durable visit id), oldest first, plus the
+	// "latest" default pointing at the most recent accepted visit. No
+	// accepted history → no named offers (the §4 default still applies).
+	latest := -1
+	for i := range r.Phases {
+		if r.Phases[i].Outcome == "accepted" {
+			cp.RecallTargets = append(cp.RecallTargets, RecallTarget{
+				VisitID: r.Phases[i].VisitID,
+				Label:   r.Phases[i].VisitID,
+				PhaseID: r.Phases[i].ID,
+			})
+			latest = i
+		}
+	}
+	if latest >= 0 {
+		cp.RecallTargets = append([]RecallTarget{{
+			VisitID: r.Phases[latest].VisitID,
+			Label:   "latest",
+			PhaseID: r.Phases[latest].ID,
+		}}, cp.RecallTargets...)
+	}
+	// Re-review F1: the named targets must be OFFERABLE — the S2 gate pins
+	// every decision question's options to a persisted page, so a checkpoint
+	// with real targets persists a target page ("Recall: latest" plus one
+	// "Recall: <visit>" per offered visit, pages of ≤4). The kind pages keep
+	// the shipped description label, which the recorder maps to the DEFAULT
+	// recall.
+	if len(cp.RecallTargets) > 0 && menuHasRecallAction(kind) {
+		targets := []string{"Recall: latest"}
+		for _, t := range cp.RecallTargets {
+			if t.Label != "latest" {
+				targets = append(targets, "Recall: "+t.Label)
+			}
+		}
+		for i := 0; i < len(targets); i += menuPageMaxOptions {
+			end := i + menuPageMaxOptions
+			if end > len(targets) {
+				end = len(targets)
+			}
+			cp.MenuPages = append(cp.MenuPages, MenuPage{
+				Labels: append([]string(nil), targets[i:end]...),
+			})
+		}
+		for i := range cp.MenuPages {
+			cp.MenuPages[i].NavNext = ""
+			cp.MenuPages[i].NavPrev = ""
+			if i+1 < len(cp.MenuPages) {
+				cp.MenuPages[i].NavNext = MenuNavNext
+			}
+			if i > 0 {
+				cp.MenuPages[i].NavPrev = MenuNavPrev
+			}
+		}
 	}
 	r.Checkpoints = append(r.Checkpoints, cp)
 	return cp, nil
@@ -596,7 +657,8 @@ func (r *RunState) OpenPhase(id string) error {
 		if ph := s.openPhaseState(); ph != nil {
 			return fmt.Errorf("OpenPhase(%s): phase %q is already open", id, ph.ID)
 		}
-		s.Phases = append(s.Phases, PhaseState{ID: id, Open: true, OpenedAt: nowUTC()})
+		visitID := s.nextVisitID(id)
+		s.Phases = append(s.Phases, PhaseState{ID: id, VisitID: visitID, Open: true, OpenedAt: nowUTC()})
 		if s.UpcomingVisit {
 			// Same-visit adoption: keep the pre-provider accrual.
 			s.UpcomingVisit = false
@@ -684,8 +746,8 @@ func (r *RunState) SubmitPhaseUnstaged(sub PhaseSubmission) (CheckpointState, er
 // freezeAcceptance at acceptance time.
 func (s *RunState) buildPendingSnapshot(ph *PhaseState, cp *CheckpointState, sub PhaseSubmission, staged *StagedSnapshot) FrozenView {
 	view := FrozenView{
-		Version:           s.RequirementsVersion,
-		SourceVisitID:     ph.VisitID,
+		Version:            s.RequirementsVersion,
+		SourceVisitID:      ph.VisitID,
 		SourceCheckpointID: cp.ID,
 	}
 	if staged != nil {
@@ -1133,12 +1195,40 @@ func (r *RunState) planRecall(cp *CheckpointState) (int, error) {
 	return 0, errors.New("RecordDecision: RECALL has no phase target")
 }
 
+// planRecallTarget resolves a NAMED recall target (recovery round I4,
+// adjudication §5): the label remainder of the "Recall: <target>" answer
+// against the checkpoint's offered targets. "" and "latest" keep the §4
+// default; an exact label re-enters exactly that offered visit; anything
+// else is a decision rejection naming the offers — the target must be part
+// of the digest-bound display the user actually decided on.
+func (r *RunState) planRecallTarget(cp *CheckpointState, target string) (int, error) {
+	if target == "" || target == "latest" {
+		return r.planRecall(cp)
+	}
+	for _, t := range cp.RecallTargets {
+		if t.Label == target {
+			for i := range r.Phases {
+				if r.Phases[i].VisitID == t.VisitID && r.Phases[i].ID == t.PhaseID {
+					return i, nil
+				}
+			}
+		}
+	}
+	labels := make([]string, 0, len(cp.RecallTargets))
+	for _, t := range cp.RecallTargets {
+		labels = append(labels, t.Label)
+	}
+	return 0, fmt.Errorf("RecordDecision: recall target %q is not an offered recall target of checkpoint %s (offered: %s; \"latest\" is the default)", target, cp.ID, strings.Join(labels, ", "))
+}
+
 // applyRecallAt applies a recall at the target visit (task-2.5 M11): the old
 // visit keeps its full history with Outcome "recalled" (its acceptance is
 // revoked), and a FRESH visit of the same id is appended open — checkpoint
 // history stays complete and "the phase" resolves to the latest visit. Every
-// later visit's criteria go stale.
-func (r *RunState) applyRecallAt(cp *CheckpointState, targetIdx int) {
+// later visit's criteria go stale. Recovery round I4 (§5): the record names
+// the exact target visit and the human decision's provenance, and a recall
+// ticks the run-rework budget.
+func (r *RunState) applyRecallAt(cp *CheckpointState, targetIdx int, target, label, toolUseID string) {
 	for i := targetIdx + 1; i < len(r.Phases); i++ {
 		for _, c := range r.Phases[i].CriteriaIDs {
 			r.addStale(c)
@@ -1147,13 +1237,43 @@ func (r *RunState) applyRecallAt(cp *CheckpointState, targetIdx int) {
 			r.addStale(c)
 		}
 	}
-	target := &r.Phases[targetIdx]
-	target.Open = false
-	target.Outcome = "recalled"
-	r.Phases = append(r.Phases, PhaseState{ID: target.ID, Open: true, OpenedAt: nowUTC()})
+	targetPhase := &r.Phases[targetIdx]
+	targetPhase.Open = false
+	targetPhase.Outcome = "recalled"
+	reason := target
+	if reason == "" {
+		reason = "latest"
+	}
+	if label == "" {
+		label = "Recall: " + reason
+	}
+	freshVisitID := r.nextVisitID(targetPhase.ID)
+	r.Phases = append(r.Phases, PhaseState{ID: targetPhase.ID, VisitID: freshVisitID, Open: true, OpenedAt: nowUTC()})
 	r.Counters.PhaseToolCalls = 0 // a redone phase gets a fresh tool budget
-	r.Recalls = append(r.Recalls, RecallRecord{FromPhaseID: cp.PhaseID, TargetPhaseID: target.ID, At: nowUTC()})
+	r.Counters.RunRework++        // a recall IS rework (§5 work-budget visits)
+	r.Recalls = append(r.Recalls, RecallRecord{
+		TargetVisitID: targetPhase.VisitID,
+		Provenance:    "ask:" + cp.ID + "/" + toolUseID,
+		Reason:        reason,
+		Label:         label,
+		FromPhaseID:   cp.PhaseID,
+		TargetPhaseID: targetPhase.ID,
+		At:            nowUTC(),
+	})
 	r.Status = StatusActive
+}
+
+// nextVisitID mints the durable visit id <phase>@v<n> — n counts this run's
+// visits of the same phase id INCLUDING the one being appended (call BEFORE
+// the append; v1 is the first).
+func (r *RunState) nextVisitID(phaseID string) string {
+	n := 0
+	for i := range r.Phases {
+		if r.Phases[i].ID == phaseID {
+			n++
+		}
+	}
+	return fmt.Sprintf("%s@v%d", phaseID, n+1)
 }
 
 // terminalReviewSettled reports whether the mandatory terminal ⑤ (spec §0
@@ -1259,8 +1379,19 @@ func (r *RunState) restoreRecoveryPrior() {
 // callback never overwrites a recorded decision. Direct (non-platform)
 // callers may pass "" — replays of "" are idempotent the same way.
 func (r *RunState) RecordDecision(checkpointID string, d Decision, toolUseID string) error {
+	return r.RecordDecisionWithTarget(checkpointID, d, toolUseID, "")
+}
+
+// RecordDecisionWithTarget applies a decision carrying its named target
+// (recovery round I4, adjudication §5): the remainder of a "Recall: <target>"
+// answer resolves against the checkpoint's OFFERED recall targets — the
+// digest-bound provenance of what the user actually saw. "" and "latest" keep
+// the default (most recent accepted prior phase); an exact label re-enters
+// exactly that visit; anything else is a decision rejection, never a guess.
+// Non-recall decisions ignore the target.
+func (r *RunState) RecordDecisionWithTarget(checkpointID string, d Decision, toolUseID, target string) error {
 	return r.commit(func(s *RunState) error {
-		return s.applyDecision(checkpointID, d, toolUseID)
+		return s.applyDecision(checkpointID, d, toolUseID, target)
 	})
 }
 
@@ -1270,20 +1401,26 @@ func (r *RunState) RecordDecision(checkpointID string, d Decision, toolUseID str
 // leaves NEITHER applied (state authority never half-applies one human
 // callback). settle == nil degrades to RecordDecision exactly.
 func (r *RunState) RecordDecisionWithBudget(checkpointID string, d Decision, toolUseID string, settle *BudgetSettlement) error {
+	return r.RecordDecisionWithBudgetTarget(checkpointID, d, toolUseID, "", settle)
+}
+
+// RecordDecisionWithBudgetTarget is the named-target form (recovery round
+// I4): settlement and a "Recall: <target>" decision still land in ONE commit.
+func (r *RunState) RecordDecisionWithBudgetTarget(checkpointID string, d Decision, toolUseID, target string, settle *BudgetSettlement) error {
 	return r.commit(func(s *RunState) error {
 		if settle != nil {
 			if _, err := s.applyBudgetSettlement(settle); err != nil {
 				return err
 			}
 		}
-		return s.applyDecision(checkpointID, d, toolUseID)
+		return s.applyDecision(checkpointID, d, toolUseID, target)
 	})
 }
 
 // applyDecision is the decision core shared by RecordDecision and
 // RecordDecisionWithBudget — everything the landed RecordDecision validated,
 // unchanged, running against the commit snapshot s.
-func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID string) error {
+func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, target string) error {
 	// Replay idempotency first: it must not depend on the current status.
 	for i := range s.Checkpoints {
 		cp := &s.Checkpoints[i]
@@ -1339,7 +1476,7 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID stri
 	recallIdx := -1
 	if d == DecisionRecall {
 		var err error
-		if recallIdx, err = s.planRecall(cp); err != nil {
+		if recallIdx, err = s.planRecallTarget(cp, target); err != nil {
 			return err
 		}
 	}
@@ -1353,6 +1490,13 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID stri
 	cp.DecisionToolUseID = toolUseID
 	switch d {
 	case DecisionContinue:
+		// Recovery round C3: CONTINUE on a retry-pending review-result
+		// checkpoint IS the user's funded same-envelope retry authorization
+		// (§3 line 38 — no new decision channel); budget extension rides the
+		// same answer through the settlement that already applied.
+		if cp.ReviewRetry != nil {
+			return s.rotateReviewAttempt(cp)
+		}
 		if cp.Kind == CheckpointRecovery {
 			// Accept the status quo; restore the episode prior (B3).
 			s.restoreRecoveryPrior()
@@ -1364,6 +1508,13 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID stri
 			s.Status = StatusActive
 		}
 	case DecisionSkip:
+		// Recovery round C3: SKIP on a retry-pending review-result checkpoint
+		// declines the retry — the review ends visibly UNREVIEWED and work
+		// resumes (the mandatory terminal ⑤ debt machinery re-engages at
+		// DONE: SKIPPED never settles it).
+		if cp.ReviewRetry != nil {
+			return s.skipReviewRetry(cp)
+		}
 		// At the review-debt checkpoint, skip IS the explicit UNREVIEWED
 		// finish (spec §0 item 2: 可显式跳过 → UNREVIEWED) — the debt is
 		// discharged as unreviewed, visibly, and the run closes through the
@@ -1416,18 +1567,31 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID stri
 				}
 			}
 		}
-		s.applyRecallAt(cp, recallIdx)
+		s.applyRecallAt(cp, recallIdx, target, "", toolUseID)
 		s.RecoveryPrior = "" // a recall supersedes the episode's restore
 	case DecisionReviewOnDemand:
 		// B2: park the run under a persisted obligation — no work may
 		// open until the matching review is requested and concluded.
+		// New#2 (recovery round): pin the source checkpoint's DISPLAYED
+		// pending snapshot at [v] time — the owed review reviews what the
+		// user saw, not whatever the state becomes by request time.
 		s.ReviewObligation = &ReviewObligation{
+			Snapshot:           cp.Snapshot,
 			SourceCheckpointID: cp.ID,
 			PhaseID:            cp.PhaseID,
 			At:                 nowUTC(),
 		}
 		s.Status = StatusReviewPending
 	case DecisionStop:
+		// F4 (re-review): STOP on a retry-pending checkpoint settles the
+		// review the way SKIP does — visibly UNREVIEWED — instead of leaving
+		// an in-flight review dangling over a stopped run. The stop itself
+		// stands (state kept, exit journal is the caller's duty).
+		if cp.ReviewRetry != nil {
+			if err := s.stopReviewRetry(cp); err != nil {
+				return err
+			}
+		}
 		s.Status = StatusPostGamePending // minimal exit journal is the caller's duty
 		s.RecoveryPrior = ""
 	case DecisionAcceptRequirementChange:
@@ -1727,6 +1891,17 @@ func (r *RunState) RequestReview(identity Envelope, registry []CheckDef) (string
 		return "", fmt.Errorf("RequestReview: illegal status %s (want ACTIVE for a new review, or REVIEW_PENDING for a same-envelope re-send / an outstanding [v] obligation)", r.Status)
 	}
 
+	// Recovery round C3 (§3 line 37): the recovery form — the identity
+	// triple plus strict expected_attempt_id — is the wedged-attempt
+	// recovery operation, budget-exempt, on the EXISTING channel. It is not
+	// a registration: no envelope minting, no re-send semantics.
+	if identity.ExpectedAttemptID != "" {
+		if err := r.RecoverReview(identity.ReviewID, identity.ExpectedAttemptID); err != nil {
+			return "", fmt.Errorf("RequestReview (recovery): %v", err)
+		}
+		return identity.ReviewID, nil
+	}
+
 	if rv := r.findReview(identity.ReviewID); rv != nil {
 		// Re-send of a registered review: only mid-flight, only in
 		// REVIEW_PENDING, only the content-identical envelope (the record is
@@ -1811,6 +1986,162 @@ func (r *RunState) RequestReview(identity Envelope, registry []CheckDef) (string
 		return "", err
 	}
 	return identity.ReviewID, nil
+}
+
+// RecoverReview is the wedged-RUNNING-attempt recovery operation (recovery
+// round C3, adjudication §3 line 37): re-send no-ops, a RUNNING review has no
+// servable dispatch (StartDelegation needs PREPARED) and new review ids are
+// refused — a RUNNING review whose child died with no result callback was an
+// unrecoverable production state. The recovery is USER-initiated through the
+// review-submit recovery form (strict review_id + expected_attempt_id,
+// budget-exempt) and parks the review at an EXISTING-KIND review-result
+// checkpoint carrying the ReviewRetry obligation. The attempt stays RUNNING:
+// its late result may still conclude at exactly this checkpoint (§3 line 39).
+// Retirement is the rotation's atomic step, not the recovery's.
+func (r *RunState) RecoverReview(reviewID, expectedAttemptID string) error {
+	if expectedAttemptID == "" {
+		return errors.New("RecoverReview: expected_attempt_id is required (strict recovery metadata — never a guess)")
+	}
+	return r.commit(func(s *RunState) error {
+		if err := s.requireStatus(StatusReviewPending, "RecoverReview"); err != nil {
+			return err
+		}
+		rv := s.findReview(reviewID)
+		if rv == nil {
+			return fmt.Errorf("RecoverReview: unknown review %q", reviewID)
+		}
+		if rv.Status != ReviewRunning {
+			return fmt.Errorf("RecoverReview: review %s is %s, not RUNNING — the recovery targets a dispatched attempt whose result never arrived (a PREPARED review is already dispatchable; a concluded review needs a new review id)", reviewID, rv.Status)
+		}
+		att := rv.ActiveAttempt(rv.ActiveAttemptID)
+		if att == nil {
+			return fmt.Errorf("RecoverReview: review %s has no active attempt", reviewID)
+		}
+		if att.AttemptID != expectedAttemptID {
+			return fmt.Errorf("RecoverReview: expected_attempt_id %q does not match the active attempt %q — strict metadata pins exactly the wedged attempt", expectedAttemptID, att.AttemptID)
+		}
+		if att.State != "RUNNING" {
+			return fmt.Errorf("RecoverReview: attempt %s is %s, not RUNNING — nothing is wedged", att.AttemptID, att.State)
+		}
+		cp, err := s.addCheckpoint(CheckpointReviewResult, "", "RUNNING review attempt produced no result — retry the same envelope (funded) or finish the review UNREVIEWED", nil, nil)
+		if err != nil {
+			return err
+		}
+		// addCheckpoint returns a value copy: stamp the obligation on the
+		// STORED checkpoint (recovery-round fix — copy mutation never
+		// persisted checkpoint side data).
+		stored := &s.Checkpoints[len(s.Checkpoints)-1]
+		if stored.ID != cp.ID { // belt: never stamp the wrong element
+			return fmt.Errorf("RecoverReview: checkpoint index drift for %s", cp.ID)
+		}
+		stored.ReviewID = rv.ReviewID
+		stored.ReviewDisposition = "RETRY_PENDING"
+		stored.ReviewRetry = &ReviewRetry{
+			ReviewID:       rv.ReviewID,
+			AttemptID:      att.AttemptID,
+			EnvelopeDigest: rv.EnvelopeDigest,
+			ResumeTarget:   "active",
+			RetryLabel:     "Continue: retry the review — one funded same-envelope attempt",
+			SkipLabel:      "Skip: finish this review UNREVIEWED and resume work",
+		}
+		s.Status = StatusWaitUser
+		return nil
+	})
+}
+
+// rotateReviewAttempt is the funded same-envelope retry (§3 line 38):
+// CONTINUE on a retry checkpoint atomically retires A, mints PREPARED B
+// under the SAME pinned envelope, consumes the obligation and returns the
+// run to REVIEW_PENDING so the gate dispatches B (admitted/charged once —
+// StartDelegation owns that charge). No free Agent and no invented budget
+// number: after any riding settlement the delegation limit must cover the
+// retry, else the decision is refused and the checkpoint stays decidable.
+func (s *RunState) rotateReviewAttempt(cp *CheckpointState) error {
+	rr := cp.ReviewRetry
+	rv := s.findReview(rr.ReviewID)
+	if rv == nil {
+		return fmt.Errorf("RecordDecision: retry obligation names unknown review %s", rr.ReviewID)
+	}
+	if rv.Status != ReviewRunning {
+		return fmt.Errorf("RecordDecision: retry obligation names review %s in state %s, not RUNNING", rr.ReviewID, rv.Status)
+	}
+	if l := s.Limits.Delegations; l > 0 && s.Counters.Delegations >= l {
+		return fmt.Errorf("RecordDecision: the retry needs delegation budget (%d/%d used) — extend the budget with this answer or skip the retry; no free Agent and no invented budget", s.Counters.Delegations, l)
+	}
+	att := rv.ActiveAttempt(rv.ActiveAttemptID)
+	if att == nil || att.AttemptID != rr.AttemptID || att.State != "RUNNING" {
+		return fmt.Errorf("RecordDecision: retry obligation pins attempt %s, which is no longer the RUNNING active attempt %s", rr.AttemptID, rv.ActiveAttemptID)
+	}
+	now := nowUTC()
+	att.State = "RETIRED"
+	att.RetiredAt = now
+	token, err := newNonce()
+	if err != nil {
+		return fmt.Errorf("RecordDecision: retry attempt token: %w", err)
+	}
+	bID := fmt.Sprintf("%s-a%d", rv.ReviewID, len(rv.Attempts)+1)
+	rv.Attempts = append(rv.Attempts, ReviewAttempt{
+		AttemptID:    bID,
+		Token:        token,
+		State:        "PREPARED",
+		DispatchedAt: now,
+	})
+	rv.ActiveAttemptID = bID
+	rv.Status = ReviewPrepared
+	cp.ReviewRetry = nil // consumed: one authorization, one attempt
+	s.Status = StatusReviewPending
+	return nil
+}
+
+// stopReviewRetry settles a pending retry obligation on STOP (re-review F4):
+// the review ends visibly UNREVIEWED — SKIPPED, no verdict, attempt retired —
+// never dangling in flight over a stopped run. SKIPPED ≠ settled for the
+// terminal ⑤ debt (a resumed run re-engages the debt machinery). Unlike
+// skip, the run does not resume work: the caller's STOP routing stands.
+func (s *RunState) stopReviewRetry(cp *CheckpointState) error {
+	rr := cp.ReviewRetry
+	rv := s.findReview(rr.ReviewID)
+	if rv == nil {
+		return fmt.Errorf("RecordDecision: retry obligation names unknown review %s", rr.ReviewID)
+	}
+	if rv.Status != ReviewRunning {
+		return fmt.Errorf("RecordDecision: stop of a retry obligation whose review %s is %s, not RUNNING", rr.ReviewID, rv.Status)
+	}
+	if att := rv.ActiveAttempt(rv.ActiveAttemptID); att != nil && att.State == "RUNNING" {
+		att.State = "RETIRED"
+		att.RetiredAt = nowUTC()
+	}
+	rv.Status = ReviewSkipped
+	rv.ConcludedAt = nowUTC()
+	cp.ReviewRetry = nil
+	return nil
+}
+
+// skipReviewRetry declines the pending retry (§3 line 38's sibling): the
+// review concludes visibly UNREVIEWED (terminal SKIPPED, no verdict — never
+// a fabricated PASS, and terminalReviewSettled keeps refusing: SKIPPED ≠
+// settled) and the run resumes work at the obligation's target.
+func (s *RunState) skipReviewRetry(cp *CheckpointState) error {
+	rr := cp.ReviewRetry
+	rv := s.findReview(rr.ReviewID)
+	if rv == nil {
+		return fmt.Errorf("RecordDecision: retry obligation names unknown review %s", rr.ReviewID)
+	}
+	if rv.Status != ReviewRunning {
+		return fmt.Errorf("RecordDecision: skip of a retry obligation whose review %s is %s, not RUNNING", rr.ReviewID, rv.Status)
+	}
+	if att := rv.ActiveAttempt(rv.ActiveAttemptID); att != nil && att.State == "RUNNING" {
+		att.State = "RETIRED"
+		att.RetiredAt = nowUTC()
+	}
+	rv.Status = ReviewSkipped
+	rv.ConcludedAt = nowUTC()
+	cp.ReviewRetry = nil
+	s.decidePhase(cp, false)
+	// Work resumes: the next visit's bucket is authorized (I1 semantics).
+	s.newVisitBucket()
+	s.Status = StatusActive
+	return nil
 }
 
 // MarkReviewRunning moves a PREPARED review to RUNNING (the reviewer agent
@@ -1914,8 +2245,21 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 	// returning it from the closure would roll the routing back.
 	var protocolErr error
 	err := r.commit(func(s *RunState) error {
-		if err := s.requireStatus(StatusReviewPending, "RecordReviewResult"); err != nil {
-			return err
+		// Recovery round C3 (§3 line 39): attempt A may still conclude while
+		// the run parks at ITS OWN still-undecided ReviewRetry checkpoint —
+		// one commit validates the result, supersedes the retry checkpoint
+		// and opens a fresh result display. Any other WAIT_USER conclusion
+		// still refuses (the outer gate below).
+		atRetry := false
+		if s.Status == StatusWaitUser {
+			if cur := s.CurrentCheckpoint(); cur != nil && cur.Kind == CheckpointReviewResult && cur.ReviewRetry != nil && cur.ReviewRetry.ReviewID == res.ReviewID {
+				atRetry = true
+			}
+		}
+		if !atRetry {
+			if err := s.requireStatus(StatusReviewPending, "RecordReviewResult"); err != nil {
+				return err
+			}
 		}
 		rv := s.findReview(res.ReviewID)
 		if rv == nil {
@@ -1923,6 +2267,13 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 		}
 		if rv.Status != ReviewPrepared && rv.Status != ReviewRunning {
 			return fmt.Errorf("RecordReviewResult: review %s already concluded (%s) — late results must not affect a new generation", res.ReviewID, rv.Status)
+		}
+		if atRetry {
+			// The fresh display (verdict or FAILED routing) that follows
+			// supersedes the retry window — CurrentCheckpoint skips it.
+			if cur := s.CurrentCheckpoint(); cur != nil && cur.ReviewRetry != nil {
+				cur.Superseded = true
+			}
 		}
 		problem := ""
 		switch res.RunStatus {
@@ -1976,12 +2327,16 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 				res.AttemptID = rv.ActiveAttemptID
 			}
 			if res.AttemptID != rv.ActiveAttemptID {
-				att := rv.ActiveAttempt(res.AttemptID)
-				what := "not an attempt of this review"
-				if att != nil {
-					what = "a retired (non-active) attempt"
+				if att := rv.ActiveAttempt(res.AttemptID); att != nil {
+					// F2 (adjudication §3): the id names a real but NON-ACTIVE
+					// attempt of THIS review — a late A after retry/rotation.
+					// A is archival only: its result may neither conclude NOR
+					// FAIL the live successor. Refuse from the closure with NO
+					// mutation (commit leaves the state exactly as it was) —
+					// B stays in flight, no FAILED routing, no checkpoint.
+					return fmt.Errorf("RecordReviewResult: result names attempt %q — a retired (non-active) attempt is archival only and may not conclude or fail the live successor (active attempt %q stays in flight)", res.AttemptID, rv.ActiveAttemptID)
 				}
-				problem = fmt.Sprintf("result names attempt %q (%s) — only the active attempt %q may conclude the review", res.AttemptID, what, rv.ActiveAttemptID)
+				problem = fmt.Sprintf("result names attempt %q (not an attempt of this review) — only the active attempt %q may conclude the review", res.AttemptID, rv.ActiveAttemptID)
 			}
 		}
 		if problem != "" {
@@ -1993,6 +2348,14 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 			cp, err := s.addCheckpoint(CheckpointReviewResult, "", "FAILED "+problem, nil, nil)
 			if err != nil {
 				return err
+			}
+			// Stamp the STORED checkpoint (addCheckpoint returns a copy).
+			for i := range s.Checkpoints {
+				if s.Checkpoints[i].ID == cp.ID {
+					s.Checkpoints[i].ReviewID = rv.ReviewID
+					s.Checkpoints[i].ReviewDisposition = "FAILED"
+					break
+				}
 			}
 			s.Status = StatusWaitUser
 			protocolErr = fmt.Errorf("RecordReviewResult: %s — review %s marked FAILED, routed to checkpoint %s", problem, res.ReviewID, cp.ID)
@@ -2029,10 +2392,17 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 		if err != nil {
 			return err
 		}
-		cp.ReviewID = rv.ReviewID
-		cp.ReviewDisposition = string(res.RunStatus)
-		if res.Verdict != "" {
-			cp.ReviewDisposition += " " + res.Verdict
+		// Stamp the STORED checkpoint (addCheckpoint returns a copy — the
+		// recovery-round fix; these fields never persisted before).
+		for i := range s.Checkpoints {
+			if s.Checkpoints[i].ID == cp.ID {
+				s.Checkpoints[i].ReviewID = rv.ReviewID
+				s.Checkpoints[i].ReviewDisposition = string(res.RunStatus)
+				if res.Verdict != "" {
+					s.Checkpoints[i].ReviewDisposition += " " + res.Verdict
+				}
+				break
+			}
 		}
 		s.Status = StatusWaitUser
 		return nil
@@ -2185,6 +2555,14 @@ func (r *RunState) RecordReviewProtocolError(reviewID, reason string) (bool, err
 // memory only — callers persist via Save; recovery probes never auto-replay
 // mutating actions.
 func (r *RunState) MarkOutcomeUnknown(toolUseID string) {
+	r.MarkOutcomeUnknownWithDecl(toolUseID, nil)
+}
+
+// MarkOutcomeUnknownWithDecl is the crash-scan marking entry (recovery round
+// I3): it also freezes the intent's pre-effect declaration onto the entry —
+// the one-shot probe matcher resolves against exactly what was declared at
+// admission, never a later lookup (adjudication §4 line 44).
+func (r *RunState) MarkOutcomeUnknownWithDecl(toolUseID string, decl *MutationDecl) {
 	if toolUseID == "" || r.Status == StatusClosed || r.Status == StatusPostGamePending {
 		return
 	}
@@ -2202,10 +2580,11 @@ func (r *RunState) MarkOutcomeUnknown(toolUseID string) {
 		episode++
 	}
 	r.OutcomeUnknowns = append(r.OutcomeUnknowns, OutcomeUnknown{
-		ToolUseID:   toolUseID,
-		PriorStatus: r.RecoveryPrior,
-		Episode:     episode,
-		RecordedAt:  nowUTC(),
+		ToolUseID:    toolUseID,
+		PriorStatus:  r.RecoveryPrior,
+		Episode:      episode,
+		RecordedAt:   nowUTC(),
+		MutationDecl: decl,
 	})
 	r.Status = StatusOutcomeUnknown
 }
@@ -2247,6 +2626,39 @@ func (r *RunState) ResolveOutcomeProbed(toolUseID, outcome, probeToolUseID strin
 		return false, errors.New("ResolveOutcomeProbed: probe_tool_use_id is required (every unknown resolves through its own observed probe)")
 	}
 	return r.resolveOutcome(toolUseID, outcome, probeToolUseID)
+}
+
+// ResolveOutcomeMechanical is the recovery-round I3 resolution entry
+// (adjudication §4 line 47): the verdict comes from the GATE's observed
+// matcher over the frozen declaration — never a model-supplied outcome — and
+// the reducer belt coerces to INDETERMINATE whenever the entry cannot support
+// the claim (no declaration, unsupported capability, or a declared capability
+// with no expected effect): unsupported/uncertain NEVER auto-restores.
+func (r *RunState) ResolveOutcomeMechanical(toolUseID, verdict, probeToolUseID string) (bool, error) {
+	if probeToolUseID == "" {
+		return false, errors.New("ResolveOutcomeMechanical: probe_tool_use_id is required (every unknown resolves through its own observed probe)")
+	}
+	switch verdict {
+	case OutcomeAccepted, OutcomeFailed, OutcomeIndeterminate:
+	default:
+		return false, fmt.Errorf("ResolveOutcomeMechanical: invalid verdict %q (want accepted|failed|indeterminate — the matcher's observed result)", verdict)
+	}
+	// The belt runs against the CURRENT entry (a resolved entry replays
+	// exactly below; coercion never rewrites history).
+	for i := range r.OutcomeUnknowns {
+		if r.OutcomeUnknowns[i].ToolUseID != toolUseID || r.OutcomeUnknowns[i].Resolved {
+			continue
+		}
+		d := r.OutcomeUnknowns[i].MutationDecl
+		supported := d != nil &&
+			(d.Capability == "file.write" || d.Capability == "file.edit") &&
+			d.Expect != "" && d.Preimage != ""
+		if !supported && verdict != OutcomeIndeterminate {
+			verdict = OutcomeIndeterminate
+		}
+		break
+	}
+	return r.resolveOutcome(toolUseID, verdict, probeToolUseID)
 }
 
 // resolveOutcome is the shared resolution core (ResolveOutcome without a

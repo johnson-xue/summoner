@@ -48,13 +48,21 @@ func unsetenv16(t *testing.T, key string) {
 }
 
 // useGateEnv redirects v2 state, traces and the project key into fresh temp
-// dirs so no test ever touches real Summoner state.
+// dirs so no test ever touches real Summoner state. It also seeds the shared
+// write-target fixture x.go (content carries the literal "a" exactly once):
+// under the §4 pre-effect declaration, an admitted Edit must APPLY — the
+// old /tmp/x.go fixture pointed at a nonexistent file, which is now (correctly)
+// a pre-effect denial, not an admit.
 func useGateEnv(t *testing.T) {
 	t.Helper()
 	setenv16(t, "SUMMONER_STATE_DIR", t.TempDir())
 	setenv16(t, "SUMMONER_TRACE_DIR", t.TempDir())
-	setenv16(t, "CLAUDE_PROJECT_DIR", t.TempDir())
+	proj := t.TempDir()
+	setenv16(t, "CLAUDE_PROJECT_DIR", proj)
 	unsetenv16(t, "SUMMONER_HOOKS_DISABLE")
+	if err := os.WriteFile(filepath.Join(proj, "x.go"), []byte("package x\n// SEED-TOKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // callGate runs the whole hook on a payload; returns (exit code, stderr).
@@ -168,12 +176,12 @@ func toolPayloadID(t *testing.T, toolName, id string, toolInput map[string]inter
 
 func editInput() map[string]interface{} {
 	return map[string]interface{}{
-		"file_path": "/tmp/x.go", "old_string": "a", "new_string": "b",
+		"file_path": "x.go", "old_string": "SEED-TOKEN", "new_string": "PATCHED",
 	}
 }
 
 func writeInput() map[string]interface{} {
-	return map[string]interface{}{"file_path": "/tmp/x.go", "content": "package x\n"}
+	return map[string]interface{}{"file_path": "x.go", "content": "package x\n"}
 }
 
 func notebookInput() map[string]interface{} {
@@ -181,7 +189,7 @@ func notebookInput() map[string]interface{} {
 }
 
 func readInput() map[string]interface{} {
-	return map[string]interface{}{"file_path": "/tmp/x.go"}
+	return map[string]interface{}{"file_path": "x.go"}
 }
 
 func bashInput(cmd string) map[string]interface{} {
@@ -1344,19 +1352,25 @@ func TestGateMalformedKnownToolPayloads(t *testing.T) {
 		}
 	}
 
-	// Well-typed payloads of the same tools pass shape validation.
+	// Well-typed payloads of the same tools pass shape validation (Write/Edit
+	// additionally admit with their §4 declaration; NotebookEdit is denied
+	// pre-effect — no supported mutation declaration — shape notwithstanding).
 	for _, ok := range []struct {
 		name      string
 		toolName  string
 		toolInput map[string]interface{}
+		wantDeny  string // "" = exit 0
 	}{
-		{"Write", "Write", writeInput()},
-		{"Edit", "Edit", editInput()},
-		{"NotebookEdit", "NotebookEdit", notebookInput()},
+		{"Write", "Write", writeInput(), ""},
+		{"Edit", "Edit", editInput(), ""},
+		{"NotebookEdit", "NotebookEdit", notebookInput(), "no supported"},
 	} {
-		code, _ := callGate(t, toolPayload(t, ok.toolName, ok.toolInput))
-		if code != 0 {
-			t.Errorf("%s: exit %d, want 0", ok.name, code)
+		code, stderr := callGate(t, toolPayload(t, ok.toolName, ok.toolInput))
+		if ok.wantDeny == "" && code != 0 {
+			t.Errorf("%s: exit %d, want 0 (stderr %q)", ok.name, code, stderr)
+		}
+		if ok.wantDeny != "" && code == 0 {
+			t.Errorf("%s: exit 0, want denial", ok.name)
 		}
 	}
 
@@ -1384,14 +1398,16 @@ func TestNotebookEditGate(t *testing.T) {
 	r := startFixRun(t, shared.BudgetLimits{})
 	acceptPhase(t, r, "context")
 
+	// §4 (recovery round I3): notebook edits have NO supported mutation
+	// declaration — denied BEFORE effects at every status, so even the
+	// diagnosis iron law is never reached (the denial is capability-shaped,
+	// not workflow-shaped).
 	code, stderr := callGate(t, toolPayload(t, "NotebookEdit", notebookInput()))
-	wantExit2(t, code, stderr, "diagnosis")
+	wantExit2(t, code, stderr, "no supported")
 
 	acceptPhase(t, r, "diagnosis")
-	code, _ = callGate(t, toolPayload(t, "NotebookEdit", notebookInput()))
-	if code != 0 {
-		t.Fatalf("NotebookEdit after diagnosis accepted: exit %d, want 0", code)
-	}
+	code, stderr = callGate(t, toolPayload(t, "NotebookEdit", notebookInput()))
+	wantExit2(t, code, stderr, "no supported")
 }
 
 func TestNewWorkflowSequence(t *testing.T) {

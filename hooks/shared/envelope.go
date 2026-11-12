@@ -637,7 +637,7 @@ func ChildEvidencePairs(transcript string) (map[string]EvidenceAnchor, error) {
 		Content   json.RawMessage `json:"content"`
 	}
 	uses := make(map[string]string) // id → tool name
-	ok := make(map[string]bool)      // id → successful result seen
+	ok := make(map[string]bool)     // id → successful result seen
 	for _, line := range strings.Split(transcript, "\n") {
 		if !strings.Contains(line, "tool_use") && !strings.Contains(line, "tool_result") {
 			continue
@@ -861,6 +861,37 @@ func VerifyChildOwnership(run *RunState, rv *ReviewRecord, transcriptPath string
 		return errors.New("child ownership: the transcript's initial task record does not equal the admitted launch capsule — the child is not the dispatched reviewer; quarantined, never inferred ownership (QA-1)")
 	}
 	return nil
+}
+
+// IdentifyChildAttempt returns the attempt whose ADMITTED launch capsule the
+// transcript's initial task record equals (the platform-origin owner), or ""
+// when it matches none (re-review F2: a late RETIRED attempt's transcript is
+// recognized as ITS OWN — never mistaken for the active attempt's, and never
+// allowed to conclude or fail the live successor).
+func IdentifyChildAttempt(run *RunState, rv *ReviewRecord, transcriptPath string) string {
+	initial, err := initialTaskRecord(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	norm := NormalizePrompt(initial)
+	for i := range rv.Attempts {
+		att := &rv.Attempts[i]
+		if att.ParentToolUseID == "" {
+			continue // never dispatched — owns no transcript
+		}
+		capsule, ok := BuildReviewCapsule(run, rv.ReviewID, att.AttemptID)
+		if !ok {
+			continue
+		}
+		want, err := capsule.Bytes()
+		if err != nil {
+			continue
+		}
+		if norm == NormalizePrompt(string(want)) {
+			return att.AttemptID
+		}
+	}
+	return ""
 }
 
 // initialTaskRecord extracts the FIRST record's initial task content from a

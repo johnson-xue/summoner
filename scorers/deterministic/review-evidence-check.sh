@@ -4,7 +4,9 @@
 # Audits the review surface of a v2 trace:
 #   - identity: a verdict is backed by a reviewer delegation
 #     (agent_type normalizing to "reviewer", never a fork) inside the
-#     review window
+#     review window, and its attempt_id is one that in-window reviewer
+#     delegation.started dispatched (M3: foreign attempts fail, absent
+#     attempt ids are unauditable)
 #   - running: a COMPLETED verdict has a running review between
 #     review.prepared and review.verdict (伪造 verdict = verdict without a
 #     running review)
@@ -127,6 +129,40 @@ for seq, pl in verdicts:
         fail(f"review {rid}: verdict at event #{seq} without a running review "
              "— no reviewer delegation and no review.started between "
              "review.prepared and review.verdict (伪造 verdict)")
+    # M3 (recovery round R14): attempt binding — the verdict names the ATTEMPT
+    # that concluded it, and that attempt must be one an in-window REVIEWER
+    # delegation.started dispatched. Reviewer-ness of a started event: its own
+    # subagent_type (the runtime shape) or its tool_use_id pairing with an
+    # in-window reviewer delegation.completed (the thin-trace correlate). A
+    # mismatched attempt means the verdict was minted by a different dispatch
+    # than the delegated reviewer (借用 attempt); an absent one leaves the
+    # identity join unauditable.
+    v_attempt = pl.get("attempt_id")
+    if not isinstance(v_attempt, str) or not v_attempt:
+        print(f"MISSING — review {rid}: verdict at event #{seq} records no "
+              "attempt_id: the reviewer-identity join cannot be audited from "
+              "the trace (the runtime stamps the concluding attempt on every "
+              "review.verdict)")
+        sys.exit(3)
+    reviewer_completed_tids = {
+        e.get("tool_use_id") for _, e in delegations
+        if e.get("type") == "delegation.completed"
+        and agent_is_reviewer(payload(e).get("agent_type"))}
+    dispatched = set()
+    for _, e in delegations:
+        if e.get("type") != "delegation.started":
+            continue
+        ep = payload(e)
+        if (agent_is_reviewer(ep.get("subagent_type"))
+                or e.get("tool_use_id") in reviewer_completed_tids):
+            if isinstance(ep.get("attempt_id"), str):
+                dispatched.add(ep["attempt_id"])
+    if v_attempt not in dispatched:
+        fail(f"review {rid}: verdict attempt {v_attempt!r} is not an attempt "
+             f"an in-window reviewer delegation.started dispatched "
+             f"({sorted(dispatched) if dispatched else 'none'}) — foreign "
+             "attempt: the verdict was minted by a different dispatch than "
+             "the delegated reviewer (借用 attempt)")
     run_status = pl.get("run_status")
     if run_status not in ("COMPLETED", "BLOCKED"):
         fail(f"review {rid}: run_status {run_status!r} is not "

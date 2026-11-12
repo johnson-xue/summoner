@@ -42,9 +42,11 @@ a date-keyed filename.
 Post-game review triggers when the run reaches POST_GAME_PENDING:
 - Workflow completes: the user decides `done:` at a checkpoint — kind
   `normal`.
-- Emergency stop: the user decides `stop:` (or a free-text stop signal) —
-  kind `emergency_minimal`, minimal journal written at once, questionnaire
-  owed at next resume (补答).
+- Emergency stop: the user decides `stop:` at a checkpoint — kind
+  `emergency_minimal`, minimal journal written at once, questionnaire
+  owed at next resume (补答). A free-text stop signal is NOT a post-game
+  trigger (ruling 70): it ends the turn with run state kept — resumable
+  via `/summoner:status` — and never advances the run into POST_GAME_PENDING.
 
 Both kinds are mandatory. There is no idle-skip, no auto-close, and no
 "stop means skip" rule — that older behavior is retired.

@@ -74,6 +74,48 @@ func (cp *CheckpointState) MenuPageFor(offered []string) *MenuPage {
 	return nil
 }
 
+// OnMenuPage reports whether the exact label sits on one of the checkpoint's
+// persisted pages (the S2 pinning makes every legal answer such a label — a
+// label on NO page is a gate-bypass artifact the recorder must reject).
+func (cp *CheckpointState) OnMenuPage(label string) bool {
+	for _, pg := range cp.MenuPages {
+		for _, l := range pg.Labels {
+			if l == label {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsOfferedRecallTarget reports whether a recall answer's remainder names an
+// offered target of this checkpoint: "latest"/empty (the §4 default) or one
+// of the persisted RecallTargets labels. The SHIPPED kind-menu recall label
+// is a description whose remainder names nothing — the caller maps that back
+// to the default (re-review F1).
+func (cp *CheckpointState) IsOfferedRecallTarget(target string) bool {
+	if target == "" || target == "latest" {
+		return true
+	}
+	for _, t := range cp.RecallTargets {
+		if t.Label == target {
+			return true
+		}
+	}
+	return false
+}
+
+// menuHasRecallAction reports whether a kind's full menu carries a recall
+// action (the kinds where a named-target page is meaningful).
+func menuHasRecallAction(kind CheckpointKind) bool {
+	for _, l := range DecisionMenuLabels(kind) {
+		if menuKeyword(l) == "recall" {
+			return true
+		}
+	}
+	return false
+}
+
 // DecisionMenuLabels returns the FULL legal decision menu of a checkpoint
 // kind — the canonical label text: the status render prints these lines, the
 // paged projection partitions them, and every label LEADS with the decision

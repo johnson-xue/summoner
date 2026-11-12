@@ -39,12 +39,12 @@
     {
       "name": "review-submit",
       "path": "skills/review-submit/SKILL.md",
-      "description": "ONLY to register one review envelope in a live Summoner run — REVIEW_PENDING or the terminal default review position; never for anything else. Not user-invocable; it is the main session's single envelope-registration channel (validates against the frozen acceptance view minus drops, prepares the review)."
+      "description": "ONLY to register one review (identity-only form) in a live Summoner run, or to recover a wedged RUNNING review attempt — invoke when the review must start or the reviewer's child died mid-review; never for anything else. Not user-invocable; it is the main session's single registration channel (the reducer mints the envelope from the pinned acceptance view minus drops)."
     },
     {
       "name": "probe-submit",
       "path": "skills/probe-submit/SKILL.md",
-      "description": "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else. Not user-invocable; it is the main session's single crash-recovery channel (one observed read-class probe per unresolved outcome, validated against the run's trace before any transition)."
+      "description": "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else. Not user-invocable; it is the main session's single crash-recovery channel (bound byte-exact probes per unknown; the PostToolUse matcher computes every verdict — outcomes are never accepted on the wire)."
     }
   ],
   "agents": [

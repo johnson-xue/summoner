@@ -40,6 +40,7 @@ valid-review-evidence-real.jsonl|NA|PASS|PASS|NA|NA
 valid-recall.jsonl|NA|NA|NA|PASS|NA
 valid-postgame-emergency.jsonl|NA|NA|PASS|NA|PASS
 valid-change-loop.jsonl|NA|NA|PASS|NA|NA
+valid-usergate-criterion-redrop.jsonl|NA|NA|PASS|NA|NA
 valid-crash-recovery.jsonl|NA|NA|NA|PASS|NA
 valid-checks-ladder.jsonl|NA|NA|MISSING|NA|NA
 valid-release-probe-match.jsonl|NA|NA|NA|PASS|NA
@@ -56,11 +57,14 @@ invalid-usergate-stale-render.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-undisplayed-decision.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-double-decision.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-nonce-mismatch.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-drop-replay.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-redrop-no-reaccept.jsonl|NA|NA|FAIL|NA|NA
 invalid-review-rubber-stamp.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-forged-verdict.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-dangling.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-criterion-gap.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-evidence-forged-id.jsonl|NA|FAIL|NA|NA|NA
+invalid-review-attempt-mismatch.jsonl|NA|FAIL|PASS|NA|NA
 invalid-review-reuse-mismatch.jsonl|NA|FAIL|NA|NA|NA
 invalid-recovery-no-checkpoint.jsonl|NA|NA|NA|FAIL|NA
 invalid-recovery-forged-probe.jsonl|NA|NA|NA|FAIL|NA
@@ -82,11 +86,14 @@ invalid-usergate-stale-render.jsonl|user-gate-check|FAIL|stale render
 invalid-usergate-undisplayed-decision.jsonl|user-gate-check|FAIL|never displayed
 invalid-usergate-double-decision.jsonl|user-gate-check|FAIL|decided twice
 invalid-usergate-nonce-mismatch.jsonl|user-gate-check|FAIL|nonce
+invalid-usergate-drop-replay.jsonl|user-gate-check|FAIL|same answering call
+invalid-usergate-redrop-no-reaccept.jsonl|user-gate-check|FAIL|no phase re-acceptance
 invalid-review-rubber-stamp.jsonl|review-evidence-check|FAIL|rubber-stamp
 invalid-review-forged-verdict.jsonl|review-evidence-check|FAIL|without a running review
 invalid-review-dangling.jsonl|review-evidence-check|FAIL|no review.prepared
 invalid-review-criterion-gap.jsonl|review-evidence-check|FAIL|per-criterion completeness
 invalid-review-evidence-forged-id.jsonl|review-evidence-check|FAIL|not a recorded tool call
+invalid-review-attempt-mismatch.jsonl|review-evidence-check|FAIL|foreign attempt
 invalid-review-reuse-mismatch.jsonl|review-evidence-check|FAIL|same-digest reuse
 invalid-recovery-no-checkpoint.jsonl|recovery-check|FAIL|no recovery checkpoint
 invalid-recovery-forged-probe.jsonl|recovery-check|FAIL|forged probe

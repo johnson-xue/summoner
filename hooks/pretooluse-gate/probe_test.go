@@ -68,13 +68,14 @@ func observeProbe(t *testing.T, runID, toolUseID, effect string) {
 }
 
 // observeRecoveryProbe simulates the record of a read-class Bash probe whose
-// EVIDENCE value (outcome resolution) matters, not its sandbox effect.
+// EVIDENCE value (outcome resolution) matters, not its sandbox effect. The
+// call never consumed a ticket (no probe_of) and carries no recorded match.
 func observeRecoveryProbe(t *testing.T, runID, toolUseID string) {
 	t.Helper()
 	appendTraceEvent(t, runID, shared.TraceEvent{
 		Type:      shared.EventToolStarted,
 		ToolUseID: toolUseID,
-		Payload:   map[string]interface{}{"tool_name": "Bash", "read_class": true},
+		Payload:   map[string]interface{}{"tool_name": "Bash", "read_class": true, "command": "ls -la"},
 	})
 	appendTraceEvent(t, runID, shared.TraceEvent{
 		Type:      shared.EventToolResult,
@@ -83,12 +84,51 @@ func observeRecoveryProbe(t *testing.T, runID, toolUseID string) {
 	})
 }
 
+// recoveryDecl is the canonical declared-unknown fixture: a supported
+// file.write declaration whose exact probe command exists.
+func recoveryDecl(target string) *shared.MutationDecl {
+	return &shared.MutationDecl{
+		Capability: shared.CapabilityFileWrite, Target: target,
+		Preimage: "p0-" + target, Expect: "e1-" + target,
+	}
+}
+
+// observeBoundProbe simulates the full mechanical record (recovery round I3):
+// the gate admission that consumed the unknown's one-shot ticket (probe_of +
+// the exact declared command) and posttooluse's matcher verdict on its result.
+func observeBoundProbe(t *testing.T, runID, probeID, unknownID string, decl *shared.MutationDecl, verdict string) {
+	t.Helper()
+	appendTraceEvent(t, runID, shared.TraceEvent{
+		Type:      shared.EventToolStarted,
+		ToolUseID: probeID,
+		Payload: map[string]interface{}{
+			"tool_name": "Bash", "read_class": true,
+			"command": decl.ExactProbeCommand(), "probe_of": unknownID,
+		},
+	})
+	appendTraceEvent(t, runID, shared.TraceEvent{
+		Type:      shared.EventToolResult,
+		ToolUseID: probeID,
+		Payload: map[string]interface{}{
+			"tool_name":   "Bash",
+			"probe_match": map[string]interface{}{"unknown_id": unknownID, "verdict": verdict},
+		},
+	})
+}
+
 // parkOutcomeUnknown drives a fix run into OUTCOME_UNKNOWN with one marked
 // entry (the marking event appended exactly as session-start/stop do).
 func parkOutcomeUnknown(t *testing.T, r *shared.RunState, unknownID string) {
 	t.Helper()
+	parkOutcomeUnknownDecl(t, r, unknownID, nil)
+}
+
+// parkOutcomeUnknownDecl is the declared form: the entry freezes the intent's
+// pre-effect declaration (the mechanical matcher resolves against it).
+func parkOutcomeUnknownDecl(t *testing.T, r *shared.RunState, unknownID string, decl *shared.MutationDecl) {
+	t.Helper()
 	acceptPhase(t, r, "diagnosis") // writes legal afterwards
-	r.MarkOutcomeUnknown(unknownID)
+	r.MarkOutcomeUnknownWithDecl(unknownID, decl)
 	if err := r.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +140,9 @@ func parkOutcomeUnknown(t *testing.T, r *shared.RunState, unknownID string) {
 }
 
 // probeSubmitPayload builds the Skill(summoner:probe-submit) gate payload with
-// a custom tool_use_id.
-func probeSubmitPayloadAt(t *testing.T, toolUseID string, unknowns []string, outcome string, probes []string) string {
+// a custom tool_use_id — the mechanical resolve form (recovery round I3: no
+// outcome on the wire; the matcher's recorded verdicts decide).
+func probeSubmitPayloadAt(t *testing.T, toolUseID string, unknowns, probes []string) string {
 	t.Helper()
 	return mustJSONStr(t, map[string]interface{}{
 		"session_id":  gateSession,
@@ -110,8 +151,8 @@ func probeSubmitPayloadAt(t *testing.T, toolUseID string, unknowns []string, out
 		"tool_input": map[string]interface{}{
 			"skill": "summoner:probe-submit",
 			"args": mustJSONStr(t, map[string]interface{}{
+				"op":                   "resolve",
 				"unknown_tool_use_ids": unknowns,
-				"outcome":              outcome,
 				"probe_tool_use_ids":   probes,
 			}),
 		},
@@ -127,25 +168,26 @@ func TestProbeSubmitChannelLegality(t *testing.T) {
 	r := startFixRun(t, shared.BudgetLimits{})
 
 	// No live run at all (a session with no runs).
-	code, stderr := callGate(t, strings.Replace(probeSubmitPayloadAt(t, "tu-ps0", []string{"tu-x"}, shared.OutcomeAccepted, []string{"tu-p"}), gateSession, "sess-none", 1))
+	code, stderr := callGate(t, strings.Replace(probeSubmitPayloadAt(t, "tu-ps0", []string{"tu-x"}, []string{"tu-p"}), gateSession, "sess-none", 1))
 	wantExit2(t, code, stderr, "requires an active run")
 
 	// ACTIVE (no episode): status denial.
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps1", []string{"tu-x"}, shared.OutcomeAccepted, []string{"tu-p"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps1", []string{"tu-x"}, []string{"tu-p"}))
 	wantExit2(t, code, stderr, "OUTCOME_UNKNOWN")
 
 	// WAIT_USER: the checkpoint discipline blocks it first.
 	cp := submitDisplayedPhase(t, r, "diagnosis", nil)
 	_ = cp
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps2", []string{"tu-x"}, shared.OutcomeAccepted, []string{"tu-p"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps2", []string{"tu-x"}, []string{"tu-p"}))
 	wantExit2(t, code, stderr, "WAIT_USER")
 	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
 		t.Fatal(err)
 	}
 	acceptPhase(t, r, "diagnosis") // ensure the phase visit settles; writes legal
 
-	// Episode with one entry.
-	r.MarkOutcomeUnknown("tu-u1")
+	// Episode with one DECLARED entry (the mechanical path needs a decl).
+	decl := recoveryDecl("w1.md")
+	r.MarkOutcomeUnknownWithDecl("tu-u1", decl)
 	if err := r.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -154,20 +196,22 @@ func TestProbeSubmitChannelLegality(t *testing.T) {
 		Payload: map[string]interface{}{"tool_use_id": "tu-u1", "detected_by": "stop"},
 	})
 
-	// Shape failures: arity mismatch, empty batch, bad outcome enum.
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps3", []string{"tu-u1", "tu-u2"}, shared.OutcomeAccepted, []string{"tu-p"}))
+	// Shape failures: arity mismatch, empty batch, and the REMOVED outcome
+	// field (the wire form is gone — verdicts belong to the matcher).
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps3", []string{"tu-u1", "tu-u2"}, []string{"tu-p"}))
 	wantExit2(t, code, stderr, "one-for-one")
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps4", nil, shared.OutcomeAccepted, nil))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps4", nil, nil))
 	wantExit2(t, code, stderr, "at least one")
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps5", []string{"tu-u1"}, "maybe", []string{"tu-p"}))
-	wantExit2(t, code, stderr, "accepted")
+	code, stderr = callGate(t, toolPayload(t, "Skill", skillInput("summoner:probe-submit",
+		`{"unknown_tool_use_ids":["tu-u1"],"outcome":"maybe","probe_tool_use_ids":["tu-p"]}`)))
+	wantExit2(t, code, stderr, "matcher")
 
 	// Foreign/invented unknown id.
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps6", []string{"tu-invented"}, shared.OutcomeAccepted, []string{"tu-p"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps6", []string{"tu-invented"}, []string{"tu-p"}))
 	wantExit2(t, code, stderr, "no such OUTCOME_UNKNOWN entry")
 
 	// Probe with no observed call/result.
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps7", []string{"tu-u1"}, shared.OutcomeAccepted, []string{"tu-ghost"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps7", []string{"tu-u1"}, []string{"tu-ghost"}))
 	wantExit2(t, code, stderr, "not valid evidence")
 
 	// Write-class probe (no read_class marker on its started event).
@@ -179,7 +223,7 @@ func TestProbeSubmitChannelLegality(t *testing.T) {
 		Type: shared.EventToolResult, ToolUseID: "tu-pw",
 		Payload: map[string]interface{}{"tool_name": "Bash"},
 	})
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps8", []string{"tu-u1"}, shared.OutcomeAccepted, []string{"tu-pw"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps8", []string{"tu-u1"}, []string{"tu-pw"}))
 	wantExit2(t, code, stderr, "not valid evidence")
 
 	// Stale probe: its result predates the marking event.
@@ -187,12 +231,20 @@ func TestProbeSubmitChannelLegality(t *testing.T) {
 		Type: shared.EventToolResult, ToolUseID: "tu-old",
 		Payload: map[string]interface{}{"tool_name": "Bash"},
 	})
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps9", []string{"tu-u1"}, shared.OutcomeAccepted, []string{"tu-old"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps9", []string{"tu-u1"}, []string{"tu-old"}))
 	wantExit2(t, code, stderr, "not valid evidence")
 
-	// A valid probe resolves the episode: tool.resolved appended, run ACTIVE.
-	observeRecoveryProbe(t, "run-1", "tu-p1")
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psA", []string{"tu-u1"}, shared.OutcomeAccepted, []string{"tu-p1"}))
+	// An observed read-class probe that never consumed the ticket: valid
+	// evidence, but a DECLARED unknown resolves only through its bound exact
+	// command (R6 false-allow).
+	observeRecoveryProbe(t, "run-1", "tu-loose")
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psL", []string{"tu-u1"}, []string{"tu-loose"}))
+	wantExit2(t, code, stderr, "does not bind")
+
+	// A bound probe with the matcher's accepted verdict resolves the episode:
+	// tool.resolved appended, run ACTIVE.
+	observeBoundProbe(t, "run-1", "tu-p1", "tu-u1", decl, shared.OutcomeAccepted)
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psA", []string{"tu-u1"}, []string{"tu-p1"}))
 	if code != 0 {
 		t.Fatalf("valid probe-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -206,7 +258,7 @@ func TestProbeSubmitChannelLegality(t *testing.T) {
 	}
 
 	// Identical replay: silent no-op (exit 0, no second tool.resolved).
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psB", []string{"tu-u1"}, shared.OutcomeAccepted, []string{"tu-p1"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psB", []string{"tu-u1"}, []string{"tu-p1"}))
 	if code != 0 {
 		t.Fatalf("idempotent replay exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -216,7 +268,7 @@ func TestProbeSubmitChannelLegality(t *testing.T) {
 
 	// A DIFFERENT probe for the resolved id is rejected even with fresh evidence.
 	observeRecoveryProbe(t, "run-1", "tu-p2")
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psC", []string{"tu-u1"}, shared.OutcomeFailed, []string{"tu-p2"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-psC", []string{"tu-u1"}, []string{"tu-p2"}))
 	wantExit2(t, code, stderr, "already resolved")
 }
 
@@ -227,8 +279,9 @@ func TestProbeSubmitTwinAndReuseRejection(t *testing.T) {
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
 	acceptPhase(t, r, "diagnosis")
-	r.MarkOutcomeUnknown("tu-a")
-	r.MarkOutcomeUnknown("tu-b")
+	declA, declB := recoveryDecl("a.md"), recoveryDecl("b.md")
+	r.MarkOutcomeUnknownWithDecl("tu-a", declA)
+	r.MarkOutcomeUnknownWithDecl("tu-b", declB)
 	if err := r.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -241,10 +294,10 @@ func TestProbeSubmitTwinAndReuseRejection(t *testing.T) {
 	observeRecoveryProbe(t, "run-1", "tu-shared")
 
 	// One probe for two unknowns in one batch.
-	code, stderr := callGate(t, probeSubmitPayloadAt(t, "tu-ps1", []string{"tu-a", "tu-b"}, shared.OutcomeAccepted, []string{"tu-shared", "tu-shared"}))
+	code, stderr := callGate(t, probeSubmitPayloadAt(t, "tu-ps1", []string{"tu-a", "tu-b"}, []string{"tu-shared", "tu-shared"}))
 	wantExit2(t, code, stderr, "reuses probe tu-shared")
 	// Mismatched array (the twin via arity).
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps2", []string{"tu-a", "tu-b"}, shared.OutcomeAccepted, []string{"tu-shared"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps2", []string{"tu-a", "tu-b"}, []string{"tu-shared"}))
 	wantExit2(t, code, stderr, "one-for-one")
 	for _, id := range []string{"tu-a", "tu-b"} {
 		if e := entryOf(t, reloadRun(t, "run-1"), id); e.Resolved {
@@ -254,8 +307,8 @@ func TestProbeSubmitTwinAndReuseRejection(t *testing.T) {
 
 	// A DIFFERENT probe exists; a two-pair batch where the SECOND pair is
 	// invalid must resolve NOTHING (whole-batch validation before transition).
-	observeRecoveryProbe(t, "run-1", "tu-good")
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps3", []string{"tu-a", "tu-b"}, shared.OutcomeAccepted, []string{"tu-good", "tu-ghost"}))
+	observeBoundProbe(t, "run-1", "tu-good", "tu-a", declA, shared.OutcomeAccepted)
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps3", []string{"tu-a", "tu-b"}, []string{"tu-good", "tu-ghost"}))
 	wantExit2(t, code, stderr, "not valid evidence")
 	for _, id := range []string{"tu-a", "tu-b"} {
 		if e := entryOf(t, reloadRun(t, "run-1"), id); e.Resolved {
@@ -264,8 +317,8 @@ func TestProbeSubmitTwinAndReuseRejection(t *testing.T) {
 	}
 
 	// The clean two-pair batch resolves both (episode completes; restore).
-	observeRecoveryProbe(t, "run-1", "tu-good2")
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps4", []string{"tu-a", "tu-b"}, shared.OutcomeAccepted, []string{"tu-good", "tu-good2"}))
+	observeBoundProbe(t, "run-1", "tu-good2", "tu-b", declB, shared.OutcomeAccepted)
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps4", []string{"tu-a", "tu-b"}, []string{"tu-good", "tu-good2"}))
 	if code != 0 {
 		t.Fatalf("valid batch exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
@@ -284,20 +337,22 @@ func TestProbeSubmitTwinAndReuseRejection(t *testing.T) {
 		Type: shared.EventToolOutcomeUnknown, ToolUseID: "tu-c",
 		Payload: map[string]interface{}{"tool_use_id": "tu-c", "detected_by": "stop"},
 	})
-	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps5", []string{"tu-c"}, shared.OutcomeAccepted, []string{"tu-good"}))
+	code, stderr = callGate(t, probeSubmitPayloadAt(t, "tu-ps5", []string{"tu-c"}, []string{"tu-good"}))
 	wantExit2(t, code, stderr, "stale")
 }
 
 // TestProbeSubmitFailedOutcomeOpensRecoveryCheckpoint: a failed/indeterminate
 // episode verdict opens the RECOVERY checkpoint instead of auto-restoring —
-// the human decides; nothing auto-replays.
+// the human decides; nothing auto-replays. The failed verdict comes from the
+// matcher's record (observed == preimage), never the wire.
 func TestProbeSubmitFailedOutcomeOpensRecoveryCheckpoint(t *testing.T) {
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
-	parkOutcomeUnknown(t, r, "tu-u1")
-	observeRecoveryProbe(t, "run-1", "tu-p1")
+	decl := recoveryDecl("w1.md")
+	parkOutcomeUnknownDecl(t, r, "tu-u1", decl)
+	observeBoundProbe(t, "run-1", "tu-p1", "tu-u1", decl, shared.OutcomeFailed)
 
-	code, stderr := callGate(t, probeSubmitPayloadAt(t, "tu-ps1", []string{"tu-u1"}, shared.OutcomeFailed, []string{"tu-p1"}))
+	code, stderr := callGate(t, probeSubmitPayloadAt(t, "tu-ps1", []string{"tu-u1"}, []string{"tu-p1"}))
 	if code != 0 {
 		t.Fatalf("failed-outcome probe-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}

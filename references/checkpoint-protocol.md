@@ -313,14 +313,22 @@ Mutating actions are never auto-replayed.
   auto-replayed. Read-class Bash probes stay allowed — they are the evidence
   channel, exempt from budget exhaustion alongside `summoner:probe-submit`.
 - **Resolution** goes ONLY through `Skill(summoner:probe-submit, args=<batch>)`
-  (`skills/probe-submit/SKILL.md` is the payload contract). Evidence rules:
-  ONE observed read-class Bash probe per unknown (recorded after the marking,
-  not failed, never reused across entries or episodes); the gate validates
-  the WHOLE batch against the run's trace before any transition — one bad
-  pair resolves nothing. All `accepted` → the pre-episode status restores;
-  any `failed`/`indeterminate` → this RECOVERY checkpoint. A re-delivered
-  identical batch is an idempotent no-op; a different outcome or probe for
-  an already-resolved id is rejected.
+  (`skills/probe-submit/SKILL.md` is the payload contract — `{op:"resolve",
+  unknown_tool_use_ids[], probe_tool_use_ids[]}`, NO outcome field). Evidence
+  rules: every unknown's mutation declaration is frozen at admission
+  (capability, target, preimage, expect); the probe is the EXACT command
+  summoner-status serves (`shasum -a 256 '<target>'` for write/edit —
+  unsupported capabilities have none and resolve indeterminate-only); the
+  first byte-exact call binds a one-shot ticket, and the PostToolUse matcher
+  computes every verdict (accepted / failed / indeterminate) mechanically
+  from the observed stdout — outcomes are never accepted on the wire, and a
+  lost observation resolves indeterminate (never a second free probe). The
+  gate validates the WHOLE batch against the run's trace (marking freshness,
+  evidence receipts, ticket binding) before any transition — one bad pair
+  resolves nothing. All `accepted` → the pre-episode status restores; any
+  `failed`/`indeterminate` → this RECOVERY checkpoint. A re-delivered
+  identical batch is an idempotent no-op; a different probe for an
+  already-resolved id is rejected.
 
 ## Stop asymmetry & recovery
 

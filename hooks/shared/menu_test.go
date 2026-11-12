@@ -205,8 +205,17 @@ func TestCheckpointsCarryMenuProjection(t *testing.T) {
 	if rr == nil || rr.Kind != CheckpointReviewResult {
 		t.Fatalf("review-result checkpoint = %+v", rr)
 	}
-	if !reflect.DeepEqual(rr.MenuPages, MenuProjection(CheckpointReviewResult)) {
-		t.Fatalf("review-result menu_pages = %+v, want the REVIEW_RESULT projection", rr.MenuPages)
+	// Re-review F1: a checkpoint with real accepted history appends the
+	// recall-TARGET page after the kind projection (and the last kind page
+	// gains NavNext — a page follows it now).
+	rrWant := append([]MenuPage{}, MenuProjection(CheckpointReviewResult)...)
+	rrWant[len(rrWant)-1].NavNext = MenuNavNext
+	rrWant = append(rrWant, MenuPage{
+		Labels:  []string{"Recall: latest", "Recall: context@v1"},
+		NavPrev: MenuNavPrev,
+	})
+	if !reflect.DeepEqual(rr.MenuPages, rrWant) {
+		t.Fatalf("review-result menu_pages = %+v, want the REVIEW_RESULT projection + the target page %+v", rr.MenuPages, rrWant)
 	}
 
 	// RECOVERY.

@@ -539,8 +539,102 @@ func TestSubagentStopChildOwnershipBind(t *testing.T) {
 	if code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path)); code != 0 {
 		t.Fatalf("owned backfill exit = %d, want 0 (stderr %q)", code, stderr)
 	}
-	if rv := reviewByID(t, reloadRun(t, "run-1"), "rev-1"); rv.Status != shared.ReviewReviewed || rv.Verdict != shared.VerdictPass {
+	disk := reloadRun(t, "run-1")
+	rv := reviewByID(t, disk, "rev-1")
+	if rv.Status != shared.ReviewReviewed || rv.Verdict != shared.VerdictPass {
 		t.Fatalf("owned review = %s/%s, want REVIEWED PASS", rv.Status, rv.Verdict)
+	}
+	// Recovery round C3: the platform-registered transcript lands on the
+	// attempt receipt (observed child transcript — append-only, first wins).
+	if att := rv.ActiveAttempt(rv.ActiveAttemptID); att == nil || att.ChildTranscriptPath != path {
+		t.Fatalf("attempt receipt transcript = %+v, want the observed path %s", att, path)
+	}
+}
+
+// TestSubagentStopRetiredAttemptArchival (re-review F2, adjudication §3
+// "After user retry/rotation, A is archival only"): after the user rotates a
+// wedged review (A RETIRED, fresh B PREPARED, run REVIEW_PENDING), attempt A's
+// late stop arrives carrying A's OWN capsule as the initial record and a
+// well-formed result naming A. That stop must be ARCHIVAL: A's receipt gets
+// the observed transcript, B stays untouched and in flight, no verdict, no
+// review.failed, the run stays REVIEW_PENDING — a late A never concludes OR
+// fails the successor.
+func TestSubagentStopRetiredAttemptArchival(t *testing.T) {
+	useSubagentEnv(t)
+	r := startRun(t)
+	startRunningReview(t, r, "rev-1")
+	rv := r.FindReview("rev-1")
+	attA := rv.ActiveAttemptID
+
+	// Capture A's capsule BEFORE the rotation (after it the review's active
+	// attempt is B — the capsule the classifier must still match A against).
+	capsuleA := capsuleOf(t, r, "rev-1")
+	if capsuleA == "" {
+		t.Fatal("capsuleOf: empty capsule for the dispatched attempt A")
+	}
+
+	// The user wedges and rotates: retry checkpoint → CONTINUE (funded).
+	if err := r.RecoverReview("rev-1", attA); err != nil {
+		t.Fatalf("RecoverReview: %v", err)
+	}
+	cp := r.CurrentCheckpoint()
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatalf("MarkDisplayed: %v", err)
+	}
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, "tu-rotate"); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	rv = r.FindReview("rev-1")
+	attB := rv.ActiveAttemptID
+	if rv.Status != shared.ReviewPrepared || attB == attA {
+		t.Fatalf("after rotation: review = %s, active = %q, want PREPARED with fresh B ≠ A %q", rv.Status, attB, attA)
+	}
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A's late transcript: A's own capsule as the initial record, a passing
+	// handback naming A — everything a hostile-but-real late child carries.
+	res := passingResult(t, r, "rev-1")
+	res.AttemptID = attA
+	resJSON, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, capsuleA, string(resJSON))
+	code, stderr := callSubagentStop(t, subStopPayload(t, "reviewer", path))
+	if code != 0 {
+		t.Fatalf("late A stop exit = %d, want 0 (stderr %q)", code, stderr)
+	}
+
+	// ARCHIVAL: B in flight, nothing concluded, nothing failed.
+	disk := reloadRun(t, "run-1")
+	drv := reviewByID(t, disk, "rev-1")
+	if drv.Status != shared.ReviewPrepared || drv.ActiveAttemptID != attB {
+		t.Fatalf("review = %s active %q, want PREPARED with B %q in flight (a late A never concludes or fails the successor)", drv.Status, drv.ActiveAttemptID, attB)
+	}
+	if disk.Status != shared.StatusReviewPending {
+		t.Fatalf("run = %s, want REVIEW_PENDING (no quarantine, no result display)", disk.Status)
+	}
+	// A's receipt carries the observed transcript (append-only, first wins);
+	// B's receipt must NOT be stamped with A's transcript (false evidence join).
+	if att := drv.ActiveAttempt(attA); att == nil || att.ChildTranscriptPath != path {
+		t.Fatalf("A's receipt = %+v, want ChildTranscriptPath %q (archival registration)", att, path)
+	}
+	if att := drv.ActiveAttempt(attB); att == nil || att.ChildTranscriptPath != "" {
+		t.Fatalf("B's receipt = %+v, want NO transcript (A's stop must not stamp the active attempt)", att)
+	}
+	// No verdict, no failure — the trace carries the delegation.completed
+	// registration and nothing review-concluding.
+	evs := readTrace(t, "run-1")
+	if len(eventsOfType(evs, shared.EventReviewVerdict)) != 0 {
+		t.Fatal("A's late stop must not trace review.verdict")
+	}
+	if failed := eventsOfType(evs, shared.EventReviewFailed); len(failed) != 0 {
+		t.Fatalf("A's late stop must not trace review.failed, got %+v", failed)
+	}
+	if !strings.Contains(stderr, "archival") {
+		t.Fatalf("stderr should name the archival handling, got %q", stderr)
 	}
 }
 

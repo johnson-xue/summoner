@@ -69,7 +69,8 @@ func scanDanglingIntents(sessionID string) {
 		}
 		before := len(run.OutcomeUnknowns)
 		for _, d := range shared.MutatingDanglingIntents(evs, true) {
-			run.MarkOutcomeUnknown(d.ToolUseID)
+			// Recovery round I3: freeze the intent's pre-effect declaration.
+			run.MarkOutcomeUnknownWithDecl(d.ToolUseID, d.Decl)
 		}
 		if len(run.OutcomeUnknowns) == before {
 			continue

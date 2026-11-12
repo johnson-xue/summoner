@@ -234,7 +234,10 @@ func markDanglingIntents(run *shared.RunState, in *stopInput, errW io.Writer) {
 	}
 	before := len(run.OutcomeUnknowns)
 	for _, d := range shared.MutatingDanglingIntents(evs, false) {
-		run.MarkOutcomeUnknown(d.ToolUseID)
+		// Recovery round I3: the entry freezes the intent's pre-effect
+		// declaration — the matcher resolves against exactly what was
+		// declared at admission.
+		run.MarkOutcomeUnknownWithDecl(d.ToolUseID, d.Decl)
 	}
 	if len(run.OutcomeUnknowns) == before {
 		return

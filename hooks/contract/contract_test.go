@@ -1168,11 +1168,12 @@ func budgetRides(cp *shared.CheckpointState, budgetChoice, extendChoice string) 
 // renderAndDecide drives the two-turn decision cycle over the REAL binaries
 // for the given already-open checkpoint: Stop binds the pasted render, the
 // gate admits the page-pinned nonce question (pageIdx of the persisted
-// pages; negative = the LAST page, where the review: option lives),
-// PostToolUse records the chosen label. sel picks the offered label. T18:
-// the persisted budget/extension asks ride along with their DEFAULT answers
-// (unlimited / hold) so the generic cycle settles them; budget-specific
-// tests use renderAndDecideSettle.
+// pages; negative = the page CARRYING the review: option — re-review F1
+// appends the recall-target page AFTER the kind pages, so "last page" no
+// longer means "the review page"), PostToolUse records the chosen label.
+// sel picks the offered label. T18: the persisted budget/extension asks ride
+// along with their DEFAULT answers (unlimited / hold) so the generic cycle
+// settles them; budget-specific tests use renderAndDecideSettle.
 func renderAndDecide(t *testing.T, runID, toolUseID string, cp *shared.CheckpointState, pageIdx int, sel func([]string) string) {
 	t.Helper()
 	renderAndDecideSettle(t, runID, toolUseID, cp, pageIdx, sel, "unlimited", "hold")
@@ -1199,7 +1200,15 @@ func renderAndDecideSettle(t *testing.T, runID, toolUseID string, cp *shared.Che
 		t.Fatalf("the Stop hook must bind the display first (cp: %+v)", cp)
 	}
 	if pageIdx < 0 {
+		// F1: the review page is the one CARRYING a review-led label — not
+		// the last page (the recall-target page is appended after it).
 		pageIdx = len(cp.MenuPages) - 1
+		for i, pg := range cp.MenuPages {
+			if labelHasKeyword(pg.Labels, "review") {
+				pageIdx = i
+				break
+			}
+		}
 	}
 	page := cp.MenuPages[pageIdx]
 	answer := sel(page.Labels)
@@ -1263,6 +1272,18 @@ func firstLabelWithKeyword(labels []string, keyword string) string {
 		}
 	}
 	return labels[0]
+}
+
+// labelHasKeyword reports whether any label leads with the keyword (no
+// fallback — firstLabelWithKeyword silently returns labels[0]).
+func labelHasKeyword(labels []string, keyword string) bool {
+	for _, l := range labels {
+		fields := strings.Fields(l)
+		if len(fields) > 0 && strings.ToLower(strings.TrimRight(fields[0], ":?!")) == keyword {
+			return true
+		}
+	}
+	return false
 }
 
 // contractReviewerTranscript writes a reviewer transcript: the platform
@@ -1369,13 +1390,24 @@ func contractRunAtReviewPending(t *testing.T, frozen, pending []string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The [v] lives on page 2 of the PHASE menu; the offered set must equal a
-	// persisted page, so ask with page 2's labels and answer `review:`.
+	// The [v] lives on the second kind page of the PHASE menu; the offered
+	// set must equal a persisted page, so ask with THAT page's labels and
+	// answer `review:` (F1 appends the recall-target page after the kind
+	// pages — locate the page by its label, not by position).
 	cp := run.CurrentCheckpoint()
 	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(run, cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	page2 := cp.MenuPages[len(cp.MenuPages)-1]
+	for _, pg := range cp.MenuPages {
+		if labelHasKeyword(pg.Labels, "review") {
+			page2 = pg
+			break
+		}
+	}
+	if !labelHasKeyword(page2.Labels, "review") {
+		t.Fatalf("no PHASE menu page carries the review label: %+v", cp.MenuPages)
+	}
 	if code, _, stderr := runBinary(t, "pretooluse-gate", askQuestionPayload(t, "tu-ask-2", cp.Nonce, page2.Labels), nil); code != 0 {
 		t.Fatalf("gate [v] ask exit = %d, want 0 (stderr: %q)", code, stderr)
 	}

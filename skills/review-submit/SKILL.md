@@ -1,73 +1,74 @@
 ---
 name: review-submit
-description: ONLY to register one review envelope in a live Summoner run (REVIEW_PENDING or the terminal default position) — invoke when the review's scope is frozen and the reviewer must be dispatched; never for anything else
+description: ONLY to register one review (identity-only) in a live Summoner run, or to recover a wedged RUNNING review attempt — invoke when the review must start or the reviewer's child died mid-review; never for anything else
 user-invocable: false
 when_to_use:
-  - The run sits in REVIEW_PENDING (a [v] obligation or an in-flight review) or at the terminal default position (ACTIVE right after the review phase's acceptance), and the review envelope must be registered
+  - The run sits in REVIEW_PENDING (a [v] obligation or an in-flight review) or at the terminal default position (ACTIVE right after the review phase's acceptance), and the review must be registered
+  - A RUNNING review's child delegation died (no SubagentStop result, no servable capsule) and the run is wedged — the recovery form opens the retry checkpoint
   - Never to submit a phase, render a checkpoint, dispatch the reviewer (that is Agent), or bypass a decision
 ---
 
-# review-submit — the ONLY envelope-registration channel
+# review-submit — the ONLY review-registration (and wedged-attempt recovery) channel
 
-Zero logic lives here. This skill exists so the PreToolUse gate can observe and
-validate the review envelope (spec §3 ⑤ 审查信封): the main session MUST
-register every review through `Skill(summoner:review-submit, args=<envelope
-JSON>)`. The channel's two legal entries: REVIEW_PENDING — a `[v]` decision's
-obligation (consumed by the registration), a same-envelope re-send, or an
-in-flight review — and the TERMINAL DEFAULT position (spec §1 终局⑤默认强制):
-ACTIVE immediately after the run's review phase took a plain `continue:` at
-its checkpoint, which is the default way a terminal review starts with NO
-[v] opt-in. An explicit `skip:` of the review phase (UNREVIEWED) closes the
-default. The gate decodes the args strictly (unknown fields are rejected),
-validates the envelope against the run's frozen acceptance view minus
-recorded user drops and the project's check registry (`summoner.yaml`), then
-registers the review PREPARED and traces `review.prepared`. A rejection
-(exit 2) names the reason and is never traced.
+Zero logic lives here. This skill exists so the PreToolUse gate can observe
+the registration (spec §3 ⑤ 审查信封): the main session MUST register every
+review through `Skill(summoner:review-submit, args=<JSON>)`. The gate decodes
+the args STRICTLY (unknown fields rejected) into one of two forms.
 
-## args = one review-envelope JSON object
+## form 1 — register a review (IDENTITY-ONLY)
 
 ```json
-{
-  "schema_version": "2",
-  "run_id": "run-0192…",
-  "review_id": "rev-0192…",
-  "artifact_set": [
-    {"path": "docs/reviews/2026-11-10-npe.md", "digest": "<sha256 of the file bytes>", "kind": "report"}
-  ],
-  "requirements": {"version": 1, "requirements": []},
-  "exit_criteria": [
-    {"id": "crit-root-cause-identified", "method": "judgment"},
-    {"id": "crit-go-test", "method": "mechanical", "check_id": "go-test"}
-  ],
-  "verification_scope": {
-    "readable": ["docs/reviews/2026-11-10-npe.md"],
-    "check_ids": ["go-test@<definition digest>"]
-  }
-}
+{"schema_version": "2", "run_id": "run-0192…", "review_id": "rev-0192…"}
 ```
 
-Field rules:
+- IDENTITY-ONLY (C1): the reducer MINTS the complete envelope from the pinned
+  acceptance snapshot. `artifact_set` / `exit_criteria` /
+  `verification_scope` / any producer-authored content on the wire is
+  REJECTED as an unknown field — the producer can neither trim nor extend
+  the frozen view; the user's recorded per-id `drop:` answers are the only
+  subtractions the mint applies.
+- Legal entries: REVIEW_PENDING — a `[v]` decision's obligation (consumed by
+  the registration), an idempotent same-id re-send, or an in-flight review —
+  and the TERMINAL DEFAULT position (ACTIVE immediately after the review
+  phase took a plain `continue:`; an explicit `skip:` closes it UNREVIEWED).
+- One review at a time: while a review is PREPARED/RUNNING, only a re-send
+  of ITS id is legal; a new review id is refused.
+- An empty frozen view with nothing dropped is rejected — nothing accepted,
+  no review due.
 
-- `exit_criteria` — MUST equal the frozen acceptance view minus recorded user
-  drops, BOTH directions: a missing id is a producer trim (the producer cannot
-  trim the frozen view), an invented id is rejected. The user's per-id `drop:`
-  answers at decision checkpoints are the only legal way a criterion leaves
-  the set.
-- `artifact_set` — the artifact versions the review re-derives; non-empty.
-- mechanical criteria must reference a registered `check_id` and — with a
-  registry present — freeze its definition digest in
-  `verification_scope.check_ids` as `check_id@digest`.
-- An empty frozen view with nothing dropped is the vacuous case: rejected —
-  nothing has been accepted yet, no review is due.
-- One review at a time: while a review is PREPARED/RUNNING, only a re-send of
-  ITS envelope is legal (idempotent); a new review id is refused.
+## dispatch — the launch capsule, VERBATIM
 
-On success the gate consumes any outstanding [v] obligation into the review
-record (PREPARED; the terminal default path records none) and the reviewer
-delegation becomes admissible: dispatch with `Agent(subagent_type=
-summoner:reviewer)` carrying the PREPARED `review_id` in the prompt — the
-gate admits the plugin spelling and the bare `reviewer`, nothing else. The
-reviewer returns a structured ReviewResult; SubagentStop reconciles its
-claimed evidence ids against the reviewer's own transcript before accepting
-the verdict (a forged id fails the review, never the run — the user decides
-at the routed checkpoint).
+After PREPARED, run `/summoner:status` (view:review) and copy the EXACT
+launch capsule it serves for the active attempt. The reviewer dispatch is
+`Agent(subagent_type=summoner:reviewer)` whose prompt EQUALS the capsule
+bytes — whole-message equality. Prose prompts, prefixes, suffixes or partial
+payloads never bind (denied fail-closed). `summoner:reviewer` or bare
+`reviewer` only; forks and general-purpose agents are refused.
+
+## form 2 — recover a wedged RUNNING attempt (C3)
+
+A RUNNING review whose child died is unrecoverable by re-send (no-ops), by
+re-dispatch (not PREPARED) or by a new review id (one at a time). The
+recovery form is the identity triple plus the WEDGED attempt:
+
+```json
+{"schema_version": "2", "run_id": "run-0192…", "review_id": "rev-0192…", "expected_attempt_id": "att-0192…"}
+```
+
+- `expected_attempt_id` must equal the RUNNING attempt (the same
+  `attempt_id` the delegation.started carried — review.verdict joins on it).
+- Budget-exempt: legal with EVERY budget exhausted.
+- Opens a REVIEW_RESULT checkpoint offering `ReviewRetry(A)`; the status
+  render shows the offer. `continue:` there atomically retires A and appends
+  PREPARED B (fresh token) → REVIEW_PENDING; view:review then serves B's
+  capsule and one Agent dispatch with it binds and charges EXACTLY once. If
+  the delegation limit is exhausted at that checkpoint, the answer must ride
+  an extension — a bare `continue:` is rejected and no budget number is
+  invented.
+- A recovery never registers or mints anything: it only opens the checkpoint.
+
+Every rejection (exit 2) names the reason and is never traced. The reviewer
+returns a structured ReviewResult; SubagentStop verifies child ownership
+(the transcript's initial record must be the exact admitted capsule),
+reconciles the claimed evidence ids against the reviewer's own transcript,
+and stamps the concluding `attempt_id` on review.verdict.

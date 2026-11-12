@@ -1369,6 +1369,34 @@ func TestB2ReviewOnDemandObligation(t *testing.T) {
 	}
 }
 
+// TestReviewObligationSnapshotPinnedAtV (recovery round New#2): the [v]
+// obligation pins the SOURCE CHECKPOINT'S displayed pending snapshot — the
+// review that later consumes the obligation reviews exactly what the user
+// saw at the checkpoint they marked for review, not whatever the run state
+// looks like when the review is finally requested.
+func TestReviewObligationSnapshotPinnedAtV(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "p1", "c1")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue) // freeze {c1}
+	cp := openAndSubmit(t, r, "p2", "c2")
+	displayCurrent(t, r)
+	if cp.Snapshot.SourceCheckpointID != cp.ID || len(cp.Snapshot.Criteria) == 0 {
+		t.Fatalf("fixture premise: checkpoint snapshot = %+v, want a populated displayed snapshot", cp.Snapshot)
+	}
+	if err := r.RecordDecision(cp.ID, DecisionReviewOnDemand, ""); err != nil {
+		t.Fatalf("RecordDecision(REVIEW_ON_DEMAND): %v", err)
+	}
+	ob := r.ReviewObligation
+	if ob == nil {
+		t.Fatal("no ReviewObligation recorded")
+	}
+	if !reflect.DeepEqual(ob.Snapshot, cp.Snapshot) {
+		t.Fatalf("obligation snapshot = %+v, want the source checkpoint's displayed snapshot %+v",
+			ob.Snapshot, cp.Snapshot)
+	}
+}
+
 // TestB3RecoveryCheckpointOnFailedOrIndeterminate pins the B3 recovery
 // checkpoint: a failed or indeterminate probe never auto-restores — it opens a
 // `recovery` checkpoint whose only legal decisions are CONTINUE / RECALL /
@@ -1511,21 +1539,28 @@ func TestM1aRequestReviewStatusGateFirst(t *testing.T) {
 	}
 }
 
-// TestM1bCountToolCallRequiresOpenPhase pins M1b: the per-phase tool budget
-// charges only while a phase is open.
+// TestM1bCountToolCallRequiresOpenPhase pins M1b + the I1 run-start window
+// (recovery round, adjudication §5): the per-phase tool budget charges while a
+// phase is open OR while the upcoming-visit window is open (pre-provider work
+// at run start charges the first visit, which adopts the accrual at
+// OpenPhase; the original M1b "no-op with no open phase" premise — a fresh
+// ACTIVE run with no window — no longer exists).
 func TestM1bCountToolCallRequiresOpenPhase(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	r.CountToolCall("")
 	r.CountToolCall("")
-	if r.Counters.PhaseToolCalls != 0 {
-		t.Fatalf("CountToolCall with no open phase: %d, want 0 (no-op)", r.Counters.PhaseToolCalls)
+	if r.Counters.PhaseToolCalls != 2 {
+		t.Fatalf("CountToolCall before the first phase: %d, want 2 (charges the upcoming bucket)", r.Counters.PhaseToolCalls)
 	}
 	if err := r.OpenPhase("p1"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
 	}
+	if r.Counters.PhaseToolCalls != 2 {
+		t.Fatalf("first OpenPhase must ADOPT the pre-phase accrual, got %d", r.Counters.PhaseToolCalls)
+	}
 	r.CountToolCall("")
-	if r.Counters.PhaseToolCalls != 1 {
-		t.Fatalf("CountToolCall with an open phase: %d, want 1", r.Counters.PhaseToolCalls)
+	if r.Counters.PhaseToolCalls != 3 {
+		t.Fatalf("CountToolCall with an open phase: %d, want 3", r.Counters.PhaseToolCalls)
 	}
 }
 

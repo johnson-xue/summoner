@@ -286,6 +286,7 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	b.WriteString(artifactLines(run))
 	b.WriteString(unmetLines(run))
 	b.WriteString(changeLines(run))
+	b.WriteString(unknownLines(run))
 	fmt.Fprintf(&b, "awaiting: %s\n", awaitingLine(run))
 	fmt.Fprintf(&b, "default recall: %s\n", defaultRecallLine(run))
 	fmt.Fprintf(&b, "budget: %s\n", budgetLine(run))
@@ -438,6 +439,39 @@ func changeLines(run *shared.RunState) string {
 	return b.String()
 }
 
+// unknownLines renders the reconciliation ladder (recovery round I3): every
+// unresolved OUTCOME_UNKNOWN entry with its capability, target and — for a
+// supported declaration — the EXACT probe command the gate's one-shot ticket
+// binds to. Status SERVES these bytes; it never mints authority (running the
+// command is an ordinary charged read, and only the gate admission that
+// byte-equals this command consumes the ticket). An unsupported declaration
+// names its honest ceiling: indeterminate-only.
+func unknownLines(run *shared.RunState) string {
+	var unresolved []shared.OutcomeUnknown
+	for _, e := range run.OutcomeUnknowns {
+		if !e.Resolved {
+			unresolved = append(unresolved, e)
+		}
+	}
+	if len(unresolved) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "outcome unknowns (%d unresolved):\n", len(unresolved))
+	for _, e := range unresolved {
+		if cmd := e.MutationDecl.ExactProbeCommand(); cmd != "" {
+			fmt.Fprintf(&b, "  - %s: %s %s — exact probe: %s\n", e.ToolUseID, e.MutationDecl.Capability, e.MutationDecl.Target, cmd)
+			continue
+		}
+		cap := shared.CapabilityUnsupported
+		if e.MutationDecl != nil && e.MutationDecl.Capability != "" {
+			cap = e.MutationDecl.Capability
+		}
+		fmt.Fprintf(&b, "  - %s: %s — no exact probe (resolves indeterminate-only)\n", e.ToolUseID, cap)
+	}
+	return b.String()
+}
+
 // awaitingLine names who or what the run currently waits for (当前等待谁).
 func awaitingLine(run *shared.RunState) string {
 	if run.Change != nil && !run.Change.Applied {
@@ -485,8 +519,23 @@ func awaitingLine(run *shared.RunState) string {
 }
 
 // defaultRecallLine mirrors the reducer's recall plan (spec §4: 默认指向最近
-// 已接受前序阶段) — read-only, never applied here.
+// 已接受前序阶段) — read-only, never applied here. I4 (recovery round): when
+// the pending checkpoint carries its offered RecallTargets, the line mirrors
+// THOSE — "latest" resolves to its visit and the offered labels are exactly
+// what "Recall: <target>" accepts here (the reducer's planRecallTarget set,
+// never a status-side recomputation).
 func defaultRecallLine(run *shared.RunState) string {
+	if cp := run.CurrentCheckpoint(); cp != nil && len(cp.RecallTargets) > 0 {
+		labels := make([]string, 0, len(cp.RecallTargets))
+		for _, t := range cp.RecallTargets {
+			labels = append(labels, t.Label)
+		}
+		head := "latest"
+		if t := cp.RecallTargets[0]; t.Label == "latest" && t.VisitID != "" {
+			head = "latest → " + t.VisitID
+		}
+		return fmt.Sprintf("%s (offered: %s)", head, strings.Join(labels, ", "))
+	}
 	for i := len(run.Phases) - 1; i >= 0; i-- {
 		if run.Phases[i].Outcome == "accepted" {
 			return run.Phases[i].ID + " (latest accepted prior phase)"
@@ -522,23 +571,6 @@ func budgetLine(run *shared.RunState) string {
 		lim(run.Limits.RunRework, run.Counters.RunRework),
 		lim(run.Limits.Delegations, run.Counters.Delegations),
 		state)
-}
-
-// budgetLimitsLine is the one-line form of a BudgetLimits value (proposal
-// display): zero axes read 不限 (unlimited — the framework default offer).
-func budgetLimitsLine(l shared.BudgetLimits) string {
-	axis := func(name string, v int) string {
-		if v <= 0 {
-			return name + " 不限"
-		}
-		return fmt.Sprintf("%s %d", name, v)
-	}
-	return strings.Join([]string{
-		axis("phase_tool_calls", l.PhaseToolCalls),
-		axis("failed_checks", l.FailedChecks),
-		axis("run_rework", l.RunRework),
-		axis("delegations", l.Delegations),
-	}, " · ")
 }
 
 // postGameLines renders the POST_GAME_PENDING closure view (T18, spec §6):

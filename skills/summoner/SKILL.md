@@ -86,9 +86,9 @@ straight there; pure Q&A → answer directly.
 ## [v] On-demand review (menu `review:`)
 
 Any phase checkpoint can commission ⑤ independent review of its artifacts: `review:` → REVIEW_PENDING under a review obligation; register via
-`Skill(summoner:review-submit, args=<envelope JSON>)`, then delegate ONE
-typed `reviewer` Agent (gate-bound to the PREPARED review id). Envelope
-rules are canonical in `skills/review-submit/SKILL.md` + `agents/reviewer.md`
+`Skill(summoner:review-submit, args=<identity-only JSON>)`, then ONE
+`reviewer` Agent with the EXACT capsule status serves (view:review); prose
+never binds. Rules: `skills/review-submit/SKILL.md` + `agents/reviewer.md`
 (mechanical criteria freeze `check_id@digest`; forged evidence fails the
 REVIEW, never the run; reusing a prior PASS needs it still valid).
 `drop:`/`keep:` ride-alongs record per-id drops. PASS leaves the
@@ -106,8 +106,9 @@ diagnosis is re-accepted. It NEVER stash/reset/restores files.
 
 ## Stop, emergency stop, resume
 
-- `stop:` (or a free-text stop signal) ends the run now (see Post-game
-  closure).
+- `stop:` at a checkpoint is the emergency channel (ruling 70): post-game
+  closure — minimal journal, questionnaire owed.
+- Free-text stop ends the TURN only — state kept, never post-game.
 - Interruption/crash: run state and trace live on disk keyed by project +
   session + run — resume via `/summoner:status`, never conversation
   re-parsing. Unresolved side effects settle through the OUTCOME_UNKNOWN
@@ -202,11 +203,11 @@ fix/new/debug likewise. The manifest maps CAPABILITIES
   dangling MUTATING tool intents plus dead worker delegations; Stop at turn
   end marks tools only (a live worker is not a crash). Writes are denied
   while an episode is open; a crashed action is NEVER auto-replayed.
-- **Resolution**: one read-class Bash probe per unknown (observe the side
-  effect, let the result land), then `Skill(summoner:probe-submit, args=…)`
-  — one observed probe per unknown, whole batch trace-validated before any
-  transition (`skills/probe-submit/SKILL.md`). All `accepted` → pre-episode
-  status restores; any `failed`/`indeterminate` → RECOVERY checkpoint.
+- **Resolution**: each unknown's EXACT probe (status serves it) binds
+  once; the PostToolUse matcher computes every verdict — no outcome on
+  the wire (`skills/probe-submit/SKILL.md`). All `accepted` →
+  pre-episode status restores; any `failed`/`indeterminate` → RECOVERY
+  checkpoint.
 - **Check ladder** (spec §3; canonical rules: `references/manifest-spec.md`):
   L1 `trust: framework` = shipped adapter ops, computed in-gate at
   phase-submit. L2 `trust: project` = the EXACT registered line as a model

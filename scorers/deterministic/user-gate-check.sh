@@ -175,7 +175,19 @@ for seq, cid, tid in decided:
     seen_tool_decided[tid] = cid
 
 # --- ride-along answers (same-callback binding) ------------------------------------
-seen_drop_ids = set()
+# I6 (recovery round): drop replay identity is per (criterion_id, tool_use_id)
+# — the same answering call replayed, or the same criterion dropped twice at
+# ONE checkpoint, is a true duplicate; the same criterion dropped again at a
+# LATER checkpoint with a FRESH answering call is the LEGAL re-drop shape —
+# and only legal with the re-acceptance AUDITED (F7, re-review): a
+# phase.started strictly between the two drops is the observable evidence
+# that the criterion re-entered an acceptance view (the phase re-opened and
+# re-accepted it); without it a second drop strips an already-dropped
+# criterion — laundering, not a re-drop.
+phase_started_seqs = [s for s, ev in events if ev.get("type") == "phase.started"]
+seen_drop_pairs = set()   # (criterion_id, tool_use_id)
+drop_checkpoint = {}      # criterion_id -> checkpoint_id of its latest drop
+drop_seq = {}             # criterion_id -> seq of its latest drop
 for seq, cid, crit, tid in drops:
     if not cid or not crit or not tid:
         fail(f"criterion.dropped at event #{seq} is malformed: needs "
@@ -185,10 +197,23 @@ for seq, cid, crit, tid in drops:
              f"binds tool_use_id {tid!r}, which is not a recorded "
              "AskUserQuestion call — drops ride a human answer, they are "
              "not self-reported")
-    if crit in seen_drop_ids:
-        fail(f"criterion.dropped for {crit} recorded twice — per-id drops "
-             "are idempotent at the reducer (replays are silent)")
-    seen_drop_ids.add(crit)
+    if (crit, tid) in seen_drop_pairs:
+        fail(f"criterion.dropped for {crit} recorded twice on the same "
+             f"answering call {tid!r} — per-(criterion, call) drops are "
+             "idempotent at the reducer (replays are silent)")
+    if crit in drop_checkpoint and drop_checkpoint[crit] == cid:
+        fail(f"criterion.dropped for {crit} recorded twice at checkpoint "
+             f"{cid} — one checkpoint settles each criterion once")
+    if crit in drop_seq and not any(
+            drop_seq[crit] < ps < seq for ps in phase_started_seqs):
+        fail(f"criterion.dropped for {crit} re-dropped at event #{seq} with "
+             f"no phase re-acceptance in between (no phase.started between "
+             f"#{drop_seq[crit]} and #{seq}) — a dropped criterion re-enters "
+             "the acceptance view only through a fresh phase acceptance; a "
+             "second drop without one is laundering, not a re-drop")
+    seen_drop_pairs.add((crit, tid))
+    drop_checkpoint[crit] = cid
+    drop_seq[crit] = seq
     if cid in seen_decided and seq > seen_decided[cid]:
         fail(f"criterion.dropped for {crit} (event #{seq}) landed after "
              f"checkpoint {cid} was decided (#{seen_decided[cid]}) — drops "

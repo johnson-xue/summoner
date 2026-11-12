@@ -37,16 +37,24 @@ func writeContractCheckManifest(t *testing.T, defs ...shared.CheckDef) {
 }
 
 // probeSubmitViaGate drives Skill(summoner:probe-submit) through the gate.
-func probeSubmitViaGate(t *testing.T, toolUseID string, unknowns []string, outcome string, probes []string) (int, string, string) {
+// Recovery-round I3 form: op "resolve" — NO outcome field on the wire; the
+// PostToolUse matcher computes every verdict from the observed probe stdout.
+func probeSubmitViaGate(t *testing.T, toolUseID string, unknowns []string, probes []string) (int, string, string) {
 	t.Helper()
 	return runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", toolUseID, map[string]interface{}{
 		"skill": "summoner:probe-submit",
 		"args": mustJSON(t, map[string]interface{}{
+			"op":                   "resolve",
 			"unknown_tool_use_ids": unknowns,
-			"outcome":              outcome,
 			"probe_tool_use_ids":   probes,
 		}),
 	}), nil)
+}
+
+// exactProbeLine returns the byte-exact probe command for a target and a
+// real-shape shasum stdout line carrying the given digest.
+func exactProbeLine(target, digest string) (string, string) {
+	return fmt.Sprintf("shasum -a 256 '%s'", target), digest + "  " + target + "\n"
 }
 
 // bashResultViaPostToolUse records a Bash completion through the real
@@ -73,21 +81,23 @@ func bashResultViaPostToolUse(t *testing.T, toolUseID, command, stdout string, e
 
 // TestEndToEndCrashRecoveryLoop: a gate-allowed write whose result never
 // lands (the crash window) is caught by the SessionStart scan → the run goes
-// OUTCOME_UNKNOWN → writes are denied → a read-class probe Bash observes →
-// probe-submit resolves: all-accepted restores ACTIVE; a failed outcome
-// opens the RECOVERY checkpoint; a one-probe-for-two-unknowns batch never
-// partially applies.
+// OUTCOME_UNKNOWN → writes are denied → the EXACT mechanical probe observes
+// (the PostToolUse matcher computes the verdict) → probe-submit resolves:
+// all-accepted restores ACTIVE; a failed verdict opens the RECOVERY
+// checkpoint; a one-probe-for-two-unknowns batch never partially applies.
 func TestEndToEndCrashRecoveryLoop(t *testing.T) {
 	useContractEnv(t)
 	writeContractManifest(t, "")
 	runID := "run-crash"
 	seedLiveRun(t, runID, "new")
+	proj := os.Getenv("CLAUDE_PROJECT_DIR")
+	xgo := filepath.Join(proj, "x.go")
 
-	// The crash window: the REAL gate allows two Writes (tool.started on the
-	// trace) and their PostToolUse never fires.
+	// The crash window: the REAL gate allows two Writes (tool.started +
+	// mutation declarations on the trace) and their PostToolUse never fires.
 	for _, tu := range []string{"tu-w1", "tu-w3"} {
 		if code, _, stderr := runBinary(t, "pretooluse-gate",
-			gatePayload(t, "Write", tu, map[string]interface{}{"file_path": "/tmp/x.go", "content": "package x"}), nil); code != 0 {
+			gatePayload(t, "Write", tu, map[string]interface{}{"file_path": xgo, "content": "package x"}), nil); code != 0 {
 			t.Fatalf("the pre-crash write %s exit = %d, want 0 (stderr: %q)", tu, code, stderr)
 		}
 	}
@@ -119,14 +129,19 @@ func TestEndToEndCrashRecoveryLoop(t *testing.T) {
 		t.Fatalf("write during OUTCOME_UNKNOWN: exit %d stderr %q, want exit 2 naming OUTCOME_UNKNOWN", code, stderr)
 	}
 
-	// One recovery probe observed.
-	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-p1", map[string]interface{}{"command": "ls /tmp"}), nil); code != 0 {
+	// The exact mechanical probes observe: one per unknown, each binding the
+	// one-shot ticket at admission, the matcher computing the verdict.
+	probeCmd, acceptLine := exactProbeLine(xgo, shared.HashBytes([]byte("package x")))
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-p1", map[string]interface{}{"command": probeCmd}), nil); code != 0 {
 		t.Fatalf("probe Bash exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	bashResultViaPostToolUse(t, "tu-p1", "ls /tmp", "x.go", nil)
+	bashResultViaPostToolUse(t, "tu-p1", probeCmd, acceptLine, nil)
+	if m := probeMatchOf(t, "tu-p1"); m["verdict"] != shared.OutcomeAccepted {
+		t.Fatalf("tu-p1 probe_match = %+v, want verdict accepted (digest == expect)", m)
+	}
 
 	// A twin batch (one probe resolving two unknowns) never partially applies.
-	code, _, stderr := probeSubmitViaGate(t, "tu-ps-twin", []string{"tu-w1", "tu-w3"}, shared.OutcomeAccepted, []string{"tu-p1", "tu-p1"})
+	code, _, stderr := probeSubmitViaGate(t, "tu-ps-twin", []string{"tu-w1", "tu-w3"}, []string{"tu-p1", "tu-p1"})
 	if code != 2 || !strings.Contains(stderr, "reuses probe") {
 		t.Fatalf("twin batch: exit %d stderr %q, want exit 2 rejecting the reused probe", code, stderr)
 	}
@@ -134,12 +149,12 @@ func TestEndToEndCrashRecoveryLoop(t *testing.T) {
 		t.Fatalf("a rejected twin batch must resolve nothing: %+v", run.OutcomeUnknowns)
 	}
 
-	// The clean resolution of BOTH unknowns (each its own probe).
-	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-p2", map[string]interface{}{"command": "cat /tmp/x.go"}), nil); code != 0 {
+	// The clean resolution of BOTH unknowns (each its own bound probe).
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-p2", map[string]interface{}{"command": probeCmd}), nil); code != 0 {
 		t.Fatalf("second probe Bash exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	bashResultViaPostToolUse(t, "tu-p2", "cat /tmp/x.go", "package x", nil)
-	if code, _, stderr := probeSubmitViaGate(t, "tu-ps-1", []string{"tu-w1", "tu-w3"}, shared.OutcomeAccepted, []string{"tu-p1", "tu-p2"}); code != 0 {
+	bashResultViaPostToolUse(t, "tu-p2", probeCmd, acceptLine, nil)
+	if code, _, stderr := probeSubmitViaGate(t, "tu-ps-1", []string{"tu-w1", "tu-w3"}, []string{"tu-p1", "tu-p2"}); code != 0 {
 		t.Fatalf("probe-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	if run, _ = shared.LoadRun(runID); run.Status != shared.StatusActive {
@@ -149,10 +164,16 @@ func TestEndToEndCrashRecoveryLoop(t *testing.T) {
 		t.Fatalf("tool.resolved events = %d, want 2", n)
 	}
 
-	// A FAILED outcome on a fresh episode (this one caught by the Stop scan)
-	// opens the recovery checkpoint.
+	// A FAILED verdict on a fresh episode (this one caught by the Stop scan)
+	// opens the recovery checkpoint. The target PRE-EXISTS ("package w0"), so
+	// the declaration's preimage is a real digest and a probe observing it
+	// back (the write never landed) is a mechanical failed.
+	wgo := filepath.Join(proj, "w.go")
+	if err := os.WriteFile(wgo, []byte("package w0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if code, _, stderr := runBinary(t, "pretooluse-gate",
-		gatePayload(t, "Write", "tu-w4", map[string]interface{}{"file_path": "/tmp/w.go", "content": "package w"}), nil); code != 0 {
+		gatePayload(t, "Write", "tu-w4", map[string]interface{}{"file_path": wgo, "content": "package w"}), nil); code != 0 {
 		t.Fatalf("post-restore write exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, "turn end"), nil); code != 0 {
@@ -161,17 +182,36 @@ func TestEndToEndCrashRecoveryLoop(t *testing.T) {
 	if run, _ = shared.LoadRun(runID); len(run.OutcomeUnknowns) != 3 || run.OutcomeUnknowns[2].ToolUseID != "tu-w4" {
 		t.Fatalf("after the Stop scan: entries %+v, want tu-w4 marked third", run.OutcomeUnknowns)
 	}
-	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-p3", map[string]interface{}{"command": "stat /tmp/w.go"}), nil); code != 0 {
+	wCmd, wLine := exactProbeLine(wgo, shared.HashBytes([]byte("package w0")))
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Bash", "tu-p3", map[string]interface{}{"command": wCmd}), nil); code != 0 {
 		t.Fatalf("third probe Bash exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	bashResultViaPostToolUse(t, "tu-p3", "stat /tmp/w.go", "no such file", nil)
-	if code, _, stderr := probeSubmitViaGate(t, "tu-ps-2", []string{"tu-w4"}, shared.OutcomeFailed, []string{"tu-p3"}); code != 0 {
+	bashResultViaPostToolUse(t, "tu-p3", wCmd, wLine, nil)
+	if m := probeMatchOf(t, "tu-p3"); m["verdict"] != shared.OutcomeFailed {
+		t.Fatalf("tu-p3 probe_match = %+v, want verdict failed (digest == preimage)", m)
+	}
+	if code, _, stderr := probeSubmitViaGate(t, "tu-ps-2", []string{"tu-w4"}, []string{"tu-p3"}); code != 0 {
 		t.Fatalf("failed probe-submit exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	run, _ = shared.LoadRun(runID)
 	if run.Status != shared.StatusWaitUser || run.CurrentCheckpoint() == nil || run.CurrentCheckpoint().Kind != shared.CheckpointRecovery {
 		t.Fatalf("failed episode must open a RECOVERY checkpoint, got status %s cp %+v", run.Status, run.CurrentCheckpoint())
 	}
+}
+
+// probeMatchOf returns the PostToolUse matcher's recorded probe_match for a
+// probe call's tool.result (nil if none was recorded).
+func probeMatchOf(t *testing.T, probeToolUseID string) map[string]interface{} {
+	t.Helper()
+	for _, ev := range eventsOfType(allTraceEvents(t), shared.EventToolResult) {
+		if ev.ToolUseID == probeToolUseID {
+			if m, ok := ev.Payload["probe_match"].(map[string]interface{}); ok {
+				return m
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 // TestEndToEndCheckLadder: L3 refused honestly; L2 needs the paired in-band

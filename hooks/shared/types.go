@@ -48,6 +48,11 @@ const (
 	ReviewReviewed ReviewState = "REVIEWED"
 	ReviewFailed   ReviewState = "FAILED"
 	ReviewBlocked  ReviewState = "BLOCKED"
+	// ReviewSkipped is the visible UNREVIEWED conclusion of a review the user
+	// explicitly declined (recovery round C3: skipping a pending retry ends
+	// the review with NO verdict — never a fabricated PASS, and never
+	// discharging the mandatory terminal ⑤ debt).
+	ReviewSkipped ReviewState = "SKIPPED"
 )
 
 // CheckpointKind distinguishes what a checkpoint asks the user to confirm.
@@ -179,6 +184,13 @@ type Envelope struct {
 	SchemaVersion string `json:"schema_version"`
 	RunID         string `json:"run_id"`
 	ReviewID      string `json:"review_id"`
+	// ExpectedAttemptID is the recovery form's strict metadata (recovery
+	// round C3, adjudication §3 line 37): non-empty switches the
+	// identity-only review-submit transport from registration to the
+	// wedged-attempt recovery operation. It never reaches a minted envelope
+	// (MintEnvelope builds from the identity triple only) and never joins a
+	// content digest.
+	ExpectedAttemptID string `json:"expected_attempt_id,omitempty"`
 }
 
 // SemanticEnvelope is the COMPLETE minted review input: the reducer builds it
@@ -379,20 +391,20 @@ type ReviewObligation struct {
 // ReviewRecord is one ⑤ review's lifecycle record.
 type ReviewRecord struct {
 	Envelope           SemanticEnvelope `json:"envelope"`
-	ActiveAttemptID    string          `json:"active_attempt_id"`
-	Attempts           []ReviewAttempt `json:"attempts"`
-	Result             *ReviewResult   `json:"result,omitempty"`
-	DefaultDebt        bool            `json:"default_debt,omitempty"`
-	ReviewID           string          `json:"review_id"`
-	Status             ReviewState     `json:"status"`
-	SourceCheckpointID string          `json:"source_checkpoint_id,omitempty"` // set when [v]-originated (B2)
-	EnvelopeDigest     string          `json:"envelope_digest,omitempty"`
-	ArtifactDigest     string          `json:"artifact_digest,omitempty"`
-	Verdict            string          `json:"verdict,omitempty"`
-	ReasonCode         string          `json:"reason_code,omitempty"`
-	RequestedAt        string          `json:"requested_at,omitempty"`
-	StartedAt          string          `json:"started_at,omitempty"`
-	ConcludedAt        string          `json:"concluded_at,omitempty"`
+	ActiveAttemptID    string           `json:"active_attempt_id"`
+	Attempts           []ReviewAttempt  `json:"attempts"`
+	Result             *ReviewResult    `json:"result,omitempty"`
+	DefaultDebt        bool             `json:"default_debt,omitempty"`
+	ReviewID           string           `json:"review_id"`
+	Status             ReviewState      `json:"status"`
+	SourceCheckpointID string           `json:"source_checkpoint_id,omitempty"` // set when [v]-originated (B2)
+	EnvelopeDigest     string           `json:"envelope_digest,omitempty"`
+	ArtifactDigest     string           `json:"artifact_digest,omitempty"`
+	Verdict            string           `json:"verdict,omitempty"`
+	ReasonCode         string           `json:"reason_code,omitempty"`
+	RequestedAt        string           `json:"requested_at,omitempty"`
+	StartedAt          string           `json:"started_at,omitempty"`
+	ConcludedAt        string           `json:"concluded_at,omitempty"`
 }
 
 // ReviewAttempt is one append-only dispatch receipt. Ownership binds the
@@ -423,6 +435,37 @@ type ReviewRetry struct {
 	RetryLabel     string `json:"retry_label"`
 }
 
+// MutationDecl is the pre-effect capability declaration frozen at the
+// admission of a MUTATING intent (recovery round I3, adjudication §4 line
+// 44): capability, normalized target, the original tool input digest, the
+// preimage (sha256 of the target's bytes BEFORE the mutation, or "absent"),
+// and the expected effect (sha256 of the exact resulting bytes). It rides
+// the intent's tool.started payload and lands on the OUTCOME_UNKNOWN entry
+// the crash scan mints from it — the one-shot probe matcher resolves against
+// exactly this frozen declaration, never a later lookup.
+type MutationDecl struct {
+	Capability  string `json:"capability"`
+	Target      string `json:"target,omitempty"`
+	InputDigest string `json:"input_digest,omitempty"`
+	Preimage    string `json:"preimage,omitempty"`
+	Expect      string `json:"expect,omitempty"`
+}
+
+// CapabilityUnsupported marks an intent with NO shipped declaration
+// (undeclared write-class Bash, worker delegations, legacy intents): its
+// OUTCOME_UNKNOWN entry resolves INDETERMINATE-ONLY — never auto-restored.
+const CapabilityUnsupported = "unsupported"
+
+// CapabilityFileWrite / CapabilityFileEdit are the two declared mutation
+// capabilities (recovery round I3): a decl with either, a target, a preimage
+// and an expect is SUPPORTED — its exact probe command exists and the
+// mechanical matcher may conclude accepted/failed. Everything else is
+// unsupported (indeterminate-only).
+const (
+	CapabilityFileWrite = "file.write"
+	CapabilityFileEdit  = "file.edit"
+)
+
 // OutcomeUnknown is one possibly-executed-but-unpersisted tool side effect
 // (spec §5). Mutating actions are never auto-replayed; the capability's
 // one-shot read-only probe resolves each entry. Episode scopes the entry to
@@ -431,15 +474,18 @@ type ReviewRetry struct {
 // is the durable probe receipt: the read-class Bash observation that resolved
 // the entry — the replay key of probe-submit (a re-delivered resolution with
 // the same pair is silent; a different probe for a resolved id is rejected).
+// MutationDecl (recovery round I3) is the frozen pre-effect declaration the
+// mechanical matcher resolves against; nil/unsupported = indeterminate-only.
 type OutcomeUnknown struct {
-	ToolUseID      string    `json:"tool_use_id"`
-	PriorStatus    RunStatus `json:"prior_status,omitempty"`
-	Episode        int       `json:"episode,omitempty"`
-	RecordedAt     string    `json:"recorded_at,omitempty"`
-	Resolved       bool      `json:"resolved"`
-	Outcome        string    `json:"outcome,omitempty"` // accepted|failed|indeterminate
-	ResolvedAt     string    `json:"resolved_at,omitempty"`
-	ProbeToolUseID string    `json:"probe_tool_use_id,omitempty"`
+	ToolUseID      string        `json:"tool_use_id"`
+	PriorStatus    RunStatus     `json:"prior_status,omitempty"`
+	Episode        int           `json:"episode,omitempty"`
+	RecordedAt     string        `json:"recorded_at,omitempty"`
+	Resolved       bool          `json:"resolved"`
+	Outcome        string        `json:"outcome,omitempty"` // accepted|failed|indeterminate
+	ResolvedAt     string        `json:"resolved_at,omitempty"`
+	ProbeToolUseID string        `json:"probe_tool_use_id,omitempty"`
+	MutationDecl   *MutationDecl `json:"mutation_decl,omitempty"`
 }
 
 // BudgetLimits are the run-start budget confirmations (spec §5); zero = unlimited.
@@ -589,7 +635,7 @@ type RunState struct {
 	// the accrual instead of resetting it; only the lifecycle decision
 	// boundary resets the bucket. ChargedToolUseIDs dedups admitted tool
 	// call ids (one call charges exactly once, hook replay included).
-	UpcomingVisit    bool     `json:"upcoming_visit,omitempty"`
+	UpcomingVisit     bool     `json:"upcoming_visit,omitempty"`
 	ChargedToolUseIDs []string `json:"charged_tool_use_ids,omitempty"`
 	// BudgetConfirmed (T18) marks the run-start budget settlement observed at
 	// the first checkpoint (budget.confirmed); BudgetSettledBy binds it to the
