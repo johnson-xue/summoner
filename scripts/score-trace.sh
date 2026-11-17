@@ -37,8 +37,23 @@ fi
 
 SIDECAR="${TRACE_FILE}.score.json"
 
+# Marketplace trees retain the release host's unsuffixed copy. Prefer this
+# host's shipped variant, as validate-manifest.sh does, before falling back.
+# A missing verifier still records chain FAIL below; there is no rehash fallback.
+BIN_DIR="$(dirname "$SCRIPT_DIR")/hooks/bin"
+VERIFIER="$BIN_DIR/summoner-status"
+SUFFIX=""
+case "$(uname -s)-$(uname -m)" in
+  Darwin-x86_64) SUFFIX=darwin-amd64 ;;
+  Darwin-arm64) SUFFIX=darwin-arm64 ;;
+  Linux-x86_64) SUFFIX=linux-amd64 ;;
+esac
+if [[ -n "$SUFFIX" && -x "$BIN_DIR/summoner-status-$SUFFIX" ]]; then
+  VERIFIER="$BIN_DIR/summoner-status-$SUFFIX"
+fi
+
 SCORE_TABLE=$(
-  python3 - "$TRACE_FILE" "$SIDECAR" "$SCORERS_DIR" "$(dirname "$SCRIPT_DIR")/hooks/bin/summoner-status" <<'PYEOF'
+  python3 - "$TRACE_FILE" "$SIDECAR" "$SCORERS_DIR" "$VERIFIER" <<'PYEOF'
 import datetime, hashlib, json, os, subprocess, sys
 
 trace, sidecar, scorers_dir, verifier = sys.argv[1:]

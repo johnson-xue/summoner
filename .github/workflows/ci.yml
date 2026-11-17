@@ -52,9 +52,11 @@ jobs:
           ./hooks/bin/validate-manifest "$F/valid-minimal.yaml"
           ./hooks/bin/validate-manifest "$F/valid-with-skills.yaml" --skills-dir "$S"
           ./hooks/bin/validate-manifest "$F/valid-plugin-qualified.yaml" --skills-dir "$S"
-          # invalid manifests must FAIL (a pass here means the validator is off)
+          # v1 projects upgrade without editing their manifest.
+          ./hooks/bin/validate-manifest "$F/v1-compat-translates.yaml"
+          # invalid v2 manifests must FAIL (a pass here means the validator is off)
           if ./hooks/bin/validate-manifest "$F/invalid-undeclared-phase.yaml"; then
-            echo "✗ undeclared-phase fixture unexpectedly VALID"; exit 1
+            echo "✗ v2 legacy-topology fixture unexpectedly VALID"; exit 1
           fi
           if ./hooks/bin/validate-manifest "$F/invalid-skill-not-found.yaml" --skills-dir "$S"; then
             echo "✗ missing-skill fixture unexpectedly VALID (skills_check regression?)"; exit 1

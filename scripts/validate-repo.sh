@@ -33,7 +33,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 ERRORS=0
 fail() { echo "✗ $1"; ERRORS=$((ERRORS + 1)); }
@@ -391,8 +391,8 @@ fi
 # tripwires: (a) file-count parity with commands/, (b) each TOML actually
 # points at the canonical skill + its own command file (pointer-form, not
 # paraphrase), and the GEMINI.md table lists every workflow.
-CMD_COUNT=$(ls commands/*.md 2>/dev/null | wc -l | tr -d ' ')
-GEM_COUNT=$(ls .gemini/commands/*.toml 2>/dev/null | wc -l | tr -d ' ')
+CMD_COUNT=$(python3 -c 'import glob; print(len(glob.glob("commands/*.md")))')
+GEM_COUNT=$(python3 -c 'import glob; print(len(glob.glob(".gemini/commands/*.toml")))')
 if [[ "$CMD_COUNT" != "$GEM_COUNT" ]]; then
   fail ".gemini/commands has $GEM_COUNT tomls but commands/ has $CMD_COUNT md files (parity broken)"
 else

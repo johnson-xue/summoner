@@ -57,13 +57,15 @@ fi
 # a reused cache can hold multiple versions — assert exactly one, else the
 # pick below is arbitrary (audit: alphabetical `ls | head -1` picked 0.0.1
 # over 0.1.9 and produced a false RED)
-VERSIONS_FOUND=$(ls "$CACHE_ROOT" | wc -l | tr -d ' ')
+shopt -s nullglob
+version_paths=("$CACHE_ROOT"/*)
+VERSIONS_FOUND=${#version_paths[@]}
 if [[ "$VERSIONS_FOUND" != "1" ]]; then
-  echo "✗ expected exactly 1 installed version, found $VERSIONS_FOUND: $(ls "$CACHE_ROOT" | tr '\n' ' ')"
+  echo "✗ expected exactly 1 installed version, found $VERSIONS_FOUND: ${version_paths[*]}"
   exit 1
 fi
-VERSION_DIR="$(ls "$CACHE_ROOT")"
-INSTALLED="$CACHE_ROOT/$VERSION_DIR"
+INSTALLED="${version_paths[0]}"
+VERSION_DIR="${INSTALLED##*/}"
 echo "   installed at: $INSTALLED (version $VERSION_DIR)"
 
 # Content identity, not version equality: a published GitHub tag carries the
@@ -100,6 +102,8 @@ for b in session-start pretooluse-gate stop validate-manifest posttooluse subage
     exit 1
   fi
 done
+# The plugin-root token below is literal JSON content, not a shell expansion.
+# shellcheck disable=SC2016
 WIRED=$(python3 -c '
 import json, os, sys
 hooks = json.load(open(sys.argv[1] + "/hooks/hooks.json"))
@@ -122,8 +126,10 @@ fi
 echo "   ✓ hook binaries present + executable + hooks.json wiring resolves"
 
 # commands complete vs repo
-repo_cmds=$(ls "$REPO"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
-inst_cmds=$(ls "$INSTALLED"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
+repo_command_paths=("$REPO"/commands/*.md)
+installed_command_paths=("$INSTALLED"/commands/*.md)
+repo_cmds=${#repo_command_paths[@]}
+inst_cmds=${#installed_command_paths[@]}
 if [[ "$repo_cmds" != "$inst_cmds" ]]; then
   echo "✗ command count mismatch: repo=$repo_cmds installed=$inst_cmds"
   exit 1

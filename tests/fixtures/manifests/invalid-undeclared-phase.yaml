@@ -1,6 +1,6 @@
-# Must FAIL (CI router-contract matrix). v2 rejects this whole shape as legacy:
-# chain→phase reference checking is gone with the topology itself.
-version: "1"
+# Must FAIL: a v2 manifest cannot carry the removed workflow topology.
+# The same shape with version "1" is valid through zero-touch compatibility.
+version: "2"
 project:
   name: fixture-project
 phases:

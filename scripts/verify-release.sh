@@ -141,7 +141,7 @@ echo "----------------------------"
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 LOCAL_COMMIT=$(git rev-parse HEAD)
-REMOTE_COMMIT=$(git rev-parse origin/$CURRENT_BRANCH 2>/dev/null || echo "")
+REMOTE_COMMIT=$(git rev-parse "origin/$CURRENT_BRANCH" 2>/dev/null || echo "")
 
 if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
     check_pass "Local and remote are synchronized"

@@ -16,9 +16,6 @@ set -o pipefail
 #
 # Usage: regression-test.sh --baseline <baseline.json> --new-trace <trace.jsonl> [--output <result.json>]
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
-
 BASELINE_FILE=""
 NEW_TRACE=""
 OUTPUT_FILE=""

@@ -1,4 +1,7 @@
 #!/bin/bash
+# pass/fail only update counters and printf; chained reporters intentionally
+# turn a reporter failure into a failed assertion, never retry production work.
+# shellcheck disable=SC2015
 # test-paired-harness.sh — deterministic selftests for the paired behavioral
 # eval harness (spec §7; adjudication 2026-11-11). No model, no network, no
 # claude CLI run: every model-facing surface is exercised through a stub
@@ -485,7 +488,6 @@ done
 
 # digests pinned and reproducible
 DIG_B=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$CTL_B/run-manifest.json'))['staging']['tree_digest'])")
-DIG_C=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$CTL_C/run-manifest.json'))['staging']['tree_digest'])")
 RUN prepare g1-a baseline --run-id g1-a.baseline.selftest2 --results-dir "$RESULTS" --tmp "$TMPROOT" >/dev/null 2>&1
 DIG_B2=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/g1-a.baseline.selftest2/run-manifest.json'))['staging']['tree_digest'])")
 if [ "$DIG_B" = "$DIG_B2" ]; then pass "staging is byte-reproducible (two stages, equal digests)"; else fail "staging digests differ"; fi

@@ -106,6 +106,69 @@ else
   pass "rubber-stamp fixture fails overall"
 fi
 
+echo "── 7. scorer selects the host-platform verifier (real canonical verification)"
+PLATFORM_PLUGIN="$TMP/platform-plugin"
+mkdir -p "$PLATFORM_PLUGIN/scripts" "$PLATFORM_PLUGIN/hooks/bin" "$TMP/platform-path"
+cp "$PLUGIN_ROOT/scripts/score-trace.sh" "$PLATFORM_PLUGIN/scripts/score-trace.sh"
+cp -R "$PLUGIN_ROOT/scorers" "$PLATFORM_PLUGIN/scorers"
+# Select a REAL verifier for this host, then place it under each platform's
+# literal fixture filename. Only uname is faked; hashing/scoring stay real.
+case "$(uname -s)-$(uname -m)" in
+  Darwin-x86_64) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status-darwin-amd64" ;;
+  Darwin-arm64) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status-darwin-arm64" ;;
+  Linux-x86_64) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status-linux-amd64" ;;
+  *) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status" ;;
+esac
+cat > "$TMP/platform-path/uname" <<'UNAME'
+#!/bin/bash
+case "$1" in
+  -s) printf '%s\n' "$TEST_UNAME_SYSTEM" ;;
+  -m) printf '%s\n' "$TEST_UNAME_MACHINE" ;;
+  *) exit 1 ;;
+esac
+UNAME
+chmod +x "$TMP/platform-path/uname"
+# A deliberately unusable unsuffixed copy proves the suffixed one was used:
+# a scorer that still selects the tree binary FAILs on every platform case.
+printf '%s\n' '#!/bin/bash' 'printf "wrong unsuffixed verifier selected\n" >&2' \
+  'exit 71' > "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+chmod +x "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+for platform in Darwin:x86_64:darwin-amd64 Darwin:arm64:darwin-arm64 Linux:x86_64:linux-amd64; do
+  IFS=: read -r test_system test_machine test_suffix <<< "$platform"
+  cp "$NATIVE_VERIFIER" "$PLATFORM_PLUGIN/hooks/bin/summoner-status-$test_suffix"
+  cp "$FIXTURE" "$TMP/platform-$test_suffix.jsonl"
+  if PATH="$TMP/platform-path:$PATH" TEST_UNAME_SYSTEM="$test_system" TEST_UNAME_MACHINE="$test_machine" \
+      bash "$PLATFORM_PLUGIN/scripts/score-trace.sh" --trace "$TMP/platform-$test_suffix.jsonl" >/dev/null 2>&1; then
+    pass "scorer uses $test_suffix verifier instead of unusable unsuffixed copy"
+  else
+    fail "scorer failed with $test_suffix verifier available"
+  fi
+done
+# Unknown hosts retain the native unsuffixed fallback; missing verifiers
+# remain FAIL rather than certifying a trace without canonical verification.
+cp "$NATIVE_VERIFIER" "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+cp "$FIXTURE" "$TMP/platform-fallback.jsonl"
+if PATH="$TMP/platform-path:$PATH" TEST_UNAME_SYSTEM=Unknown TEST_UNAME_MACHINE=unknown \
+    bash "$PLATFORM_PLUGIN/scripts/score-trace.sh" --trace "$TMP/platform-fallback.jsonl" >/dev/null 2>&1; then
+  pass "scorer keeps unsuffixed fallback when no host variant exists"
+else
+  fail "scorer lost the unsuffixed fallback"
+fi
+rm "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+cp "$FIXTURE" "$TMP/platform-missing.jsonl"
+if PATH="$TMP/platform-path:$PATH" TEST_UNAME_SYSTEM=Unknown TEST_UNAME_MACHINE=unknown \
+    bash "$PLATFORM_PLUGIN/scripts/score-trace.sh" --trace "$TMP/platform-missing.jsonl" >/dev/null 2>&1; then
+  fail "missing verifier certified a trace"
+else
+  missing_status=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["chain_verification"]["status"])' \
+    "$TMP/platform-missing.jsonl.score.json" 2>/dev/null || true)
+  if [[ "$missing_status" == "FAIL" ]]; then
+    pass "missing verifier records chain FAIL in the derived sidecar"
+  else
+    fail "missing verifier did not record chain FAIL (${missing_status:-no sidecar})"
+  fi
+fi
+
 echo "──"
 if [[ $FAIL -eq 0 ]]; then
   echo "✓ optimization smoke green ($PASS assertions)"
