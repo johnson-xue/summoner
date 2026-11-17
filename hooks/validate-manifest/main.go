@@ -29,6 +29,11 @@ type manifest struct {
 	CheckRegistry    []shared.CheckDef `json:"check_registry,omitempty"`
 	ToolScope        *toolScope        `json:"tool_scope,omitempty"`
 	SuggestedBudgets map[string]int    `json:"suggested_budgets,omitempty"`
+
+	// compatV1 marks a version-"1" document validated through the in-memory
+	// v2 translation (zero-touch upgrade, user ruling 2026-11-16). Unexported:
+	// it is not a manifest field, it is how THIS document was read.
+	compatV1 bool
 }
 
 type phase struct {
@@ -129,8 +134,12 @@ func run(args []string) int {
 	if skillsDir != "" {
 		check = "on dir=" + skillsDir
 	}
-	fmt.Printf("VALID path=%s version=2 project=%s phases=%d checks=%d skills_check=%s\n",
-		path, m.Project.Name, len(m.Phases), len(m.CheckRegistry), check)
+	compat := ""
+	if m.compatV1 {
+		compat = " (v1 compat, file untouched)"
+	}
+	fmt.Printf("VALID path=%s version=2%s project=%s phases=%d checks=%d skills_check=%s\n",
+		path, compat, m.Project.Name, len(m.Phases), len(m.CheckRegistry), check)
 	return 0
 }
 
@@ -154,7 +163,31 @@ func parseManifest(b []byte) (manifest, error) {
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return m, fmt.Errorf("parse_error: manifest must be an object")
 	}
-	value, err := yamlValue(doc.Content[0], "manifest")
+	root := doc.Content[0]
+	// Zero-touch upgrade (user ruling 2026-11-16): a version "1" document is
+	// translated to its v2 capability-map view IN MEMORY via the SAME
+	// translator the runtime loader uses, then validated by the unchanged v2
+	// rules. The on-disk file is never rewritten; only "1" translates.
+	var versionPeek struct {
+		Version string `yaml:"version"`
+	}
+	if err := root.Decode(&versionPeek); err != nil {
+		return m, fmt.Errorf("parse_error: %w", err)
+	}
+	// The version verdict comes before the topology walk so a wrong version
+	// reads as a version problem, not as the retired keys it happens to carry.
+	if v := versionPeek.Version; v != "1" && v != "2" {
+		return m, fmt.Errorf("invalid_version: expected string \"2\" (or \"1\" for zero-touch compat); migrate to v2 phases capability map (references/manifest-spec.md)")
+	}
+	if versionPeek.Version == "1" {
+		translated, err := shared.TranslateV1Manifest(root)
+		if err != nil {
+			return m, err
+		}
+		root = translated
+		m.compatV1 = true
+	}
+	value, err := yamlValue(root, "manifest")
 	if err != nil {
 		return m, err
 	}

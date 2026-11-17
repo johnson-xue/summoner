@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
@@ -16,10 +17,68 @@ import (
 func main() {
 	sessionID := parseSessionID(os.Stdin)
 	shared.EmitOutput("SessionStart", renderContext(shared.PluginRoot(), shared.ProjectDir()))
+	emitCompatView()
 	emitPendingPostGame()
 	if sessionID != "" {
 		scanDanglingIntents(sessionID)
 	}
+}
+
+// emitCompatView discloses v1 zero-touch compat (user ruling 2026-11-16): a
+// version "1" summoner.yaml is translated in memory by every runtime hook;
+// the model still needs the v2 capability view to route, so SessionStart
+// renders it once here. A manifest the runtime REJECTS is disclosed on
+// stderr — the session must know runs are blocked, but must still start.
+func emitCompatView() {
+	view, err := renderCompatView()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "summoner session-start: summoner.yaml rejected by the runtime — Summoner runs are blocked until it is fixed: %v\n", err)
+		return
+	}
+	if view != "" {
+		shared.EmitOutput("SessionStart", view)
+	}
+}
+
+// renderCompatView renders the compat disclosure for a v1 manifest: the
+// translated framework-route bindings plus the surviving project capability
+// keys. Empty string for no-manifest and native-v2 flows; an error for a
+// manifest the runtime fails to load.
+func renderCompatView() (string, error) {
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil {
+		return "", err
+	}
+	if m == nil || !m.CompatV1 {
+		return "", nil
+	}
+	routes := []string{"diagnosis", "implement", "fix", "reproduce", "verify", "regression", "plan", "ops"}
+	var b strings.Builder
+	b.WriteString("Summoner v1 manifest: zero-touch compat ACTIVE (summoner.yaml translated in memory; file untouched). Route phases by this v2 view:")
+	routeSet := make(map[string]bool, len(routes))
+	for _, id := range routes {
+		routeSet[id] = true
+		b.WriteString("\n  " + id + ": ")
+		if bind, ok := m.Phases[id]; ok {
+			b.WriteString(bind.Default)
+			if len(bind.Alternate) > 0 {
+				b.WriteString(" (alt: " + strings.Join(bind.Alternate, ", ") + ")")
+			}
+		} else {
+			b.WriteString("(built-in default)")
+		}
+	}
+	var projectKeys []string
+	for id, bind := range m.Phases {
+		if !routeSet[id] && id != "review" && bind.Default != "" {
+			projectKeys = append(projectKeys, id)
+		}
+	}
+	if len(projectKeys) > 0 {
+		sort.Strings(projectKeys)
+		b.WriteString("\n  project capability keys (select inline at checkpoints): " + strings.Join(projectKeys, ", "))
+	}
+	return b.String(), nil
 }
 
 // parseSessionID reads the SessionStart payload for its session_id — the only

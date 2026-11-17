@@ -48,6 +48,9 @@ straight there; pure Q&A → answer directly.
    defaults, and you say so ("未配置项目专属能力"); `skill: none` never
    authorizes skipping diagnosis or auto-advancing. Work happens in THIS
    session; delegate only typed `reviewer`/`worker` Agents.
+   A `version: "1"` manifest needs NO migration: hooks translate it in
+   memory — route by the v2 view SessionStart prints (debug→diagnosis,
+   rpc/subsystem/gmt/migrate→implement; manifest-spec §v1 compat).
 3. **Submit** — when a phase's work is done, submit via
    `Skill(summoner:phase-submit, args=<phase-result JSON>)` — the ONLY
    submission channel (`skills/phase-submit/SKILL.md` defines the payload).

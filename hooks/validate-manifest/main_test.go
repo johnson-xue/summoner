@@ -87,14 +87,17 @@ func TestV2GoldenManifests(t *testing.T) {
 func TestV2RejectsLegacyWithMigrationHint(t *testing.T) {
 	base := readFile(t, fixture(t, "valid-minimal.yaml"))
 	for _, tc := range []struct{ name, yaml, replacement string }{
-		{"version", strings.Replace(base, `version: "2"`, `version: "1"`, 1), "phases"},
+		// NOTE: version "1" is NOT in this table — the zero-touch upgrade
+		// ruling (2026-11-16) translates v1 documents in memory instead of
+		// rejecting them (TestV1CompatValidates). Retired topology keys in a
+		// version-"2" document are still hard errors.
+		{"version-3", strings.Replace(base, `version: "2"`, `version: "3"`, 1), "invalid_version"},
 		{"chain", base + "workflows:\n  fix:\n    chain: [diagnosis]\n", "phases"},
 		{"fan_out", base + "fan_out: [{persona: reviewer}]\n", "verification_spec"},
 		{"graph", base + "graph: {nodes: []}\n", "phases"},
 		{"checkpoints", base + "checkpoints: none\n", "checkpoint"},
 		{"routing_rules", base + "routing_rules: {}\n", "phases"},
 		{"nested", strings.Replace(base, "skill: none", "skill: none\n    graph: {}", 1), "phases"},
-		{"legacy-fixture", readFile(t, fixture(t, "legacy-rejected.yaml")), "phases"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "summoner.yaml")
@@ -104,6 +107,63 @@ func TestV2RejectsLegacyWithMigrationHint(t *testing.T) {
 				t.Fatalf("legacy manifest must fail with v2 migration hint (%s): rc=%d %s", tc.replacement, rc, out)
 			}
 		})
+	}
+}
+
+func TestV1CompatValidates(t *testing.T) {
+	// Zero-touch upgrade ruling (2026-11-16): a version "1" document
+	// validates through the in-memory v2 translation and the on-disk file is
+	// never rewritten. Only "1" translates; compat never lowers validation.
+	v1 := `version: "1"
+project:
+  name: sample-project
+phases:
+  debug:
+    skill: skill-code-debug
+    triggers: [config]
+  diagnose:
+    skill: skill-infra-debug
+  config:
+    skill: skill-config
+  rpc:
+    skill: skill-api
+  subsystem:
+    skill: skill-newsystem
+  fix:
+    skill: skill-logic
+  review:
+    skill: skill-docwriter
+routing_rules:
+  route_by_diagnosis:
+    input_field: routing_tag
+    map: {logic: logic}
+workflows:
+  bugfix:
+    chain: [debug, reproduce, fix, verify, review]
+    checkpoints: after_each
+`
+	path := filepath.Join(t.TempDir(), "summoner.yaml")
+	writeFile(t, path, v1)
+	rc, out := runOutput(t, path)
+	if rc != 0 || !strings.Contains(out, "VALID") || !strings.Contains(out, "v1 compat") {
+		t.Fatalf("v1 manifest must validate through compat translation: rc=%d %s", rc, out)
+	}
+	if readFile(t, path) != v1 {
+		t.Fatal("compat validation must never rewrite the on-disk file")
+	}
+	// The shipped historical fixture validates the same way.
+	if rc, out := runOutput(t, fixture(t, "v1-compat-translates.yaml")); rc != 0 || !strings.Contains(out, "v1 compat") {
+		t.Fatalf("v1 fixture must validate through compat: rc=%d %s", rc, out)
+	}
+	// Only "1" translates.
+	writeFile(t, path, strings.Replace(v1, `version: "1"`, `version: "3"`, 1))
+	if rc, out := runOutput(t, path); rc != 1 || !strings.Contains(out, "invalid_version") {
+		t.Fatalf("version \"3\" must fail closed: rc=%d %s", rc, out)
+	}
+	// A malformed v1 document still fails: compat lifts the version wall only.
+	writeFile(t, path, strings.Replace(v1, "name: sample-project", "name: ../escape", 1))
+	if rc, out := runOutput(t, path); rc != 1 || !strings.Contains(out, "invalid_project") {
+		t.Fatalf("compat must not lower validation: rc=%d %s", rc, out)
 	}
 }
 
@@ -336,7 +396,7 @@ func TestShellValidatorFailsClosedWithoutBinary(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "validate-manifest.sh")
 	writeFile(t, script, readFile(t, filepath.Join(repoRoot(t), "scripts", "validate-manifest.sh")))
-	cmd := exec.Command("bash", script, fixture(t, "legacy-rejected.yaml"))
+	cmd := exec.Command("bash", script, fixture(t, "v1-compat-translates.yaml"))
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("missing v2 binary must not fall back to a legacy grep validator: %s", out)
 	}

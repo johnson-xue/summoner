@@ -103,6 +103,68 @@ func TestRenderContextDottedNamePreserved(t *testing.T) {
 	}
 }
 
+func TestRenderCompatViewV1(t *testing.T) {
+	dir := t.TempDir()
+	v1 := `version: "1"
+project:
+  name: sample-project
+phases:
+  debug:
+    skill: skill-code-debug
+  diagnose:
+    skill: skill-infra-debug
+  rpc:
+    skill: skill-api
+  config:
+    skill: skill-config
+  fix:
+    skill: skill-logic
+`
+	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte(v1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := setenvS(t, "CLAUDE_PROJECT_DIR", dir)
+	defer restore()
+	got, err := renderCompatView()
+	if err != nil {
+		t.Fatalf("v1 manifest must render a compat view: %v", err)
+	}
+	for _, want := range []string{
+		"zero-touch compat",
+		"file untouched",
+		"diagnosis: skill-code-debug (alt: skill-infra-debug)",
+		"implement: skill-api",
+		"config", // project capability keys stay visible
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("compat view missing %q in:\n%s", want, got)
+		}
+	}
+	// A native v2 manifest renders nothing (no compat disclosure).
+	v2 := `version: "2"
+project:
+  name: sample-project
+phases:
+  fix:
+    skill: skill-logic
+`
+	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte(v2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = renderCompatView(); err != nil || got != "" {
+		t.Fatalf("v2 manifest must not render a compat view: %q %v", got, err)
+	}
+	// A manifest the runtime rejects surfaces as an error (fail-closed
+	// disclosure — the model must know runs are blocked, not guess).
+	bad := "version: \"2\"\nphases:\n  fix:\n    skill: x\nworkflows: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = renderCompatView(); err == nil {
+		t.Fatal("a manifest rejected by the runtime must surface its error")
+	}
+}
+
 func TestCountPhasesInlineValues(t *testing.T) {
 	dir := t.TempDir()
 	yaml := "version: \"1\"\nproject:\n  name: inline\nphases:\n  debug: none\n  ops: my-ops\n"

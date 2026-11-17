@@ -1,5 +1,26 @@
 # Summoner Changelog
 
+## [0.5.0] - 2026-11-17
+
+Single-mode rewrite + zero-threshold upgrade. **A project updates the plugin and nothing else** — a `version: "1"` summoner.yaml keeps working as-is.
+
+### ✨ Features
+- **zero-touch v1 manifest compat**: the runtime loader and validate-manifest translate a `version: "1"` summoner.yaml to its v2 capability-map view IN MEMORY (debug+diagnose→`diagnosis`, rpc/subsystem/gmt/migrate→`implement`, retired topology keys dropped with every capability preserved); the on-disk file is never rewritten; `validate-manifest` reports `VALID … (v1 compat, file untouched)`; SessionStart renders the v2 route view for the model. Only "1" translates — anything else still fails closed.
+- **single-mode rewrite**: walker binary, graph mode and job personas deleted; one main-session loop driven by a Go hook reducer. Checkpoints, authorization, evidence and budgets live in one place (`hooks/shared/reducer.go`).
+- **manifest v2 capability map**: `phases` bind default/alternate skills per capability; `phases.review.verification_spec` (rubric + criteria); `check_registry` with recomputed digests; retired v1 topology keys rejected in v2 documents.
+- **read-only tool surface in the gate**: LSP navigation is admitted as first-party read-only; a project declares its read-only workflow tools (e.g. MCP code-search) in `tool_scope.allowed_tools` and the gate admits exactly those, pre-effect; every other unmodeled tool stays denied, and a broken manifest narrows admission back to deny (fail-closed). Modeled mutation tools never consult the declaration, so it cannot smuggle write access.
+- **recovery machinery (adjudicated rounds)**: wedged RUNNING-review recovery via strict review-submit + same-envelope rotation; retired-attempt archival (a late-stopped child never concludes the successor); crash-window OUTCOME_UNKNOWN scan at SessionStart/Stop with frozen pre-effect declarations; named recall over real visit history with stale invalidation; budget ladder + run-start accounting; four-question post-game; terminal-⑤ UNREVIEWED debt.
+- **contract-first testing**: real-binary e2e contract suite (build before test), 227-assertion / 38-fixture trace matrix, paired scorer selftests, install-smoke in CI.
+
+### 🐛 Bug Fixes
+- fix wave F1–F8: named-recall page reachability, archival-A classification, canonical fixture chains, stop-at-retry settlement, normalized mutation target (relative/absolute equivalence), run-bound recovery form, re-acceptance audit for repeated criterion drops, gofmt/comment joins.
+- C1–C4/I1–I6 closure per the adjudication record (`final-residual-adjudication.md`): freeze/mint/evidence/ownership, bash write-barrier, display binding, post-game scoring, terminal debt, pre-phase accounting, scorer integrity.
+
+### 📚 Documentation / Tests / Chores
+- references: manifest-spec v2 + capability-map authority table + checkpoint/review/composition protocols.
+- CI: go 1.16 + `make build` first, scorer matrix, shellcheck, repo validation, install-smoke. Release workflow: tag → 3-platform cross-build → GitHub Release + SHA256SUMS.
+- All 9 hook binaries rebuilt for this release.
+
 ## [0.3.0] - 2026-09-18
 
 ### ✨ Features

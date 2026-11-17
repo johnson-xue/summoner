@@ -254,8 +254,39 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	case "Read", "Grep", "Glob", "ToolSearch":
 		return allow(nil)
 	default:
-		return deny(fmt.Sprintf("Summoner gate: unmodeled tool %q has no supported read-only or mutation/probe declaration — denied before effects (MCP is not presumed read-only).", in.ToolName))
+		// Zero-touch tool surface (user ruling 2026-11-16): two admissions
+		// past the model list, both READ-ONLY, both before any effect.
+		// (1) LSP — first-party navigation (definition/references/symbols);
+		//     presumed read-only exactly like Read/Grep, no declaration owed.
+		// (2) A tool the project's OWN manifest names in
+		//     tool_scope.allowed_tools — the project declaring its read-only
+		//     workflow tools (e.g. an MCP code-search server). The
+		//     declaration is the project taking responsibility; the gate
+		//     still fails closed when the manifest cannot load.
+		// Modeled mutation tools never consult this list: their admission
+		// branches above run first, so a declaration cannot smuggle write
+		// access past Bash/Edit/Write/Agent/AskUserQuestion semantics.
+		if in.ToolName == "LSP" || manifestDeclaresReadOnlyTool(in.ToolName) {
+			return allow(nil)
+		}
+		return deny(fmt.Sprintf("Summoner gate: unmodeled tool %q has no supported read-only or mutation/probe declaration — denied before effects (declare read-only workflow tools in summoner.yaml tool_scope.allowed_tools; MCP is not presumed read-only).", in.ToolName))
 	}
+}
+
+// manifestDeclaresReadOnlyTool reports whether the project's summoner.yaml
+// names the tool in tool_scope.allowed_tools. Fail-closed: an unloadable
+// manifest declares nothing.
+func manifestDeclaresReadOnlyTool(name string) bool {
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil || m == nil {
+		return false
+	}
+	for _, declared := range m.ReadOnlyTools {
+		if declared == name {
+			return true
+		}
+	}
+	return false
 }
 
 // declFileCap bounds the preimage read: a target whose declared bytes exceed

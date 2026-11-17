@@ -1391,6 +1391,56 @@ func TestGateMalformedKnownToolPayloads(t *testing.T) {
 	}
 }
 
+// TestGateReadOnlyToolAdmission pins the zero-touch tool surface (user ruling
+// 2026-11-16): LSP navigation is first-party read-only and admitted like
+// Read/Grep; a tool the project's manifest declares in
+// tool_scope.allowed_tools is admitted as a read; everything else unmodeled
+// stays denied — including an undeclared MCP tool, and including a DECLARED
+// tool once the manifest breaks (fail-closed: a broken manifest never
+// broadens admission).
+func TestGateReadOnlyToolAdmission(t *testing.T) {
+	useGateEnv(t)
+	writeGateManifest(t, `version: "2"
+project:
+  name: gate-project
+phases:
+  fix:
+    skill: none
+tool_scope:
+  allowed_tools: ["mcp__graph__search_code"]
+`)
+	r := startFixRun(t, shared.BudgetLimits{})
+	acceptPhase(t, r, "context")
+
+	code, stderr := callGate(t, toolPayload(t, "LSP", map[string]interface{}{"operation": "workspaceSymbol", "query": "Example"}))
+	if code != 0 {
+		t.Fatalf("LSP navigation is read-only and must be admitted: exit %d stderr %q", code, stderr)
+	}
+	code, stderr = callGate(t, toolPayload(t, "mcp__graph__search_code", map[string]interface{}{"query": "Example"}))
+	if code != 0 {
+		t.Fatalf("manifest-declared read-only tool must be admitted: exit %d stderr %q", code, stderr)
+	}
+	code, _ = callGate(t, toolPayload(t, "mcp__graph__write_file", map[string]interface{}{"path": "/tmp/x", "content": "y"}))
+	if code != 2 {
+		t.Fatalf("undeclared MCP tool must stay denied: exit %d", code)
+	}
+	// A broken manifest never broadens admission: the declared tool reverts
+	// to default-deny the moment the manifest fails to load.
+	writeGateManifest(t, "version: \"2\"\nphases:\n  fix:\n    skill: none\nworkflows: {}\n")
+	code, _ = callGate(t, toolPayloadID(t, "mcp__graph__search_code", "tu-retry", map[string]interface{}{"query": "Example"}))
+	if code != 2 {
+		t.Fatalf("declared tool under a BROKEN manifest must fail closed: exit %d", code)
+	}
+}
+
+// writeGateManifest plants summoner.yaml in the current gate project dir.
+func writeGateManifest(t *testing.T, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(shared.ProjectDir(), "summoner.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // --- review round 1: M2 — shape and workflow coverage ---------------------------
 
 func TestNotebookEditGate(t *testing.T) {

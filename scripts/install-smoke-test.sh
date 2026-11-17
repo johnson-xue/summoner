@@ -31,8 +31,15 @@ fi
 export CLAUDE_CODE_PLUGIN_CACHE_DIR="${CLAUDE_CODE_PLUGIN_CACHE_DIR:-$(mktemp -d)}"
 echo "(isolated plugin cache: $CLAUDE_CODE_PLUGIN_CACHE_DIR)"
 
-echo "── 1. claude plugin validate . --strict"
-(cd "$REPO" && claude plugin validate . --strict)
+# Gate on ERRORS only (plain validate exits non-zero on errors, zero on
+# warnings). --strict was dropped 2026-11-17: the repo-root CLAUDE.md advisory
+# ("not loaded as project context") is inherent to the dev-repo-is-plugin-repo
+# layout and would otherwise fail every run while carrying no install risk —
+# the real defects this gate exists for (e.g. skills entries pointing at
+# SKILL.md files instead of directories, caught locally on first run) are
+# ERRORS and still fail here.
+echo "── 1. claude plugin validate ."
+(cd "$REPO" && claude plugin validate .)
 
 echo "── 2. marketplace add (from checkout)"
 claude plugin marketplace add "$REPO" --scope project

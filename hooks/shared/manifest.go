@@ -32,6 +32,17 @@ type RuntimeManifest struct {
 	// ReviewCriteriaIDs are the phases.review.verification_spec.criteria ids —
 	// additions to DefaultReviewCriteriaIDs, never replacements.
 	ReviewCriteriaIDs []string
+	// CompatV1 marks a manifest whose on-disk document is version "1": it was
+	// translated to the v2 capability-map view IN MEMORY (zero-touch upgrade —
+	// the file is never rewritten) and callers may disclose compat mode.
+	CompatV1 bool
+	// ReadOnlyTools is tool_scope.allowed_tools — tool names the PROJECT
+	// declares read-only for its workflows (e.g. LSP-first codebases naming
+	// their MCP search tools). The pretooluse gate admits an otherwise
+	// unmodeled tool named here as an observed read; modeled mutation tools
+	// (Bash/Edit/Write/Agent/...) never consult this list — their admission
+	// branches run first, so a declaration cannot smuggle write access.
+	ReadOnlyTools []string
 	// ReviewCriteria is the same set with COMPLETE meaning (goal/method/
 	// check_id, required by default) — the staging path merges these as
 	// manifest additions (final-fix wave C1), so a manifest-declared criterion
@@ -166,6 +177,16 @@ type runtimeManifestDoc struct {
 	Phases           map[string]yamlPhase   `yaml:"phases"`
 	CheckRegistry    []yamlCheckDef         `yaml:"check_registry"`
 	SuggestedBudgets *yamlSuggestedBudgets  `yaml:"suggested_budgets"`
+	ToolScope        *yamlToolScope         `yaml:"tool_scope"`
+}
+
+// yamlToolScope mirrors the documented tool_scope shape. Only allowed_tools
+// is consumed (the ReadOnlyTools projection); readable/writable are
+// declarations the runtime does not act on.
+type yamlToolScope struct {
+	AllowedTools []string `yaml:"allowed_tools"`
+	Readable     []string `yaml:"readable"`
+	Writable     []string `yaml:"writable"`
 }
 
 // yamlSuggestedBudgets mirrors the documented suggested_budgets shape: five
@@ -239,6 +260,26 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 			return nil, fmt.Errorf("parse summoner.yaml: top-level keys must be strings (line %d)", key.Line)
 		}
 	}
+	// v1 zero-touch compat (user ruling 2026-11-16: the upgrade must cost a
+	// project nothing). Peek the version BEFORE retired-key validation: a
+	// version "1" document is translated to its v2 capability-map view in
+	// memory and proceeds through the SAME v2 pipeline — the on-disk file is
+	// never rewritten. Only "1" translates; any other version still fails
+	// closed below.
+	var versionPeek struct {
+		Version string `yaml:"version"`
+	}
+	if err := root.Decode(&versionPeek); err != nil {
+		return nil, fmt.Errorf("parse summoner.yaml: %w", err)
+	}
+	compatV1 := versionPeek.Version == "1"
+	if compatV1 {
+		translated, err := TranslateV1Manifest(root)
+		if err != nil {
+			return nil, err
+		}
+		root = translated
+	}
 	if err := validateManifestNode(root, "manifest"); err != nil {
 		return nil, err
 	}
@@ -257,7 +298,20 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 	if len(mdoc.Phases) == 0 {
 		return nil, errors.New("parse summoner.yaml: missing_field: phases must be a non-empty capability map")
 	}
-	m := &RuntimeManifest{Phases: map[string]SkillBinding{}}
+	m := &RuntimeManifest{Phases: map[string]SkillBinding{}, CompatV1: compatV1}
+	if ts := mdoc.ToolScope; ts != nil && len(ts.AllowedTools) > 0 {
+		seen := make(map[string]bool, len(ts.AllowedTools))
+		for _, name := range ts.AllowedTools {
+			// The gate consumes this list as admission authority for read-only
+			// unmodeled tools — a duplicate or empty entry is a broken
+			// declaration, not a tolerated divergence.
+			if name == "" || seen[name] {
+				return nil, fmt.Errorf("parse summoner.yaml: tool_scope.allowed_tools entries must be unique non-empty strings (got %q)", name)
+			}
+			seen[name] = true
+			m.ReadOnlyTools = append(m.ReadOnlyTools, name)
+		}
+	}
 	for id, p := range mdoc.Phases {
 		if p.Skill != nil {
 			m.Phases[id] = SkillBinding{Default: p.Skill.Default, Alternate: p.Skill.Alternate}
@@ -329,6 +383,197 @@ func LoadRuntimeManifest() (*RuntimeManifest, error) {
 		}
 	}
 	return m, nil
+}
+
+// --- v1 zero-touch compat translation ----------------------------------------------
+//
+// TranslateV1Manifest rewrites a parsed version-"1" document into its v2
+// capability-map view, in memory. The upgrade contract (user ruling
+// 2026-11-16): a project updates the plugin and NOTHING else — its v1
+// summoner.yaml keeps working. Deterministic rules, no judgment calls:
+//
+//   - version "1" → "2"
+//   - top-level `workflows`/`routing_rules` (retired topology) are dropped;
+//     every phase entry survives, so every capability stays reachable
+//   - per-phase `triggers` (retired auto-transitions) are stripped; the
+//     triggered phases remain capability keys selected at checkpoints
+//   - `debug` + `diagnose` merge into the framework route id `diagnosis`
+//     (debug's skill is the default, diagnose's the alternate)
+//   - `rpc`/`subsystem`/`gmt`/`migrate` merge into the framework route id
+//     `implement` (first present in that priority order is the default)
+//   - a `review` entry carrying only a skill binding is dropped (review
+//     evidence is the verification_spec, never a skill)
+//   - entries already using v2 route ids win — a partially-migrated file is
+//     never overridden
+//
+// The output runs through the SAME v2 validation as a native document: a
+// genuinely malformed v1 file still fails closed; compat never lowers the
+// bar, it only lifts the version wall.
+
+// v1DiagnosisSources merge into `diagnosis` (first = default, rest = alternates).
+var v1DiagnosisSources = []string{"debug", "diagnose"}
+
+// v1ImplementSources merge into `implement` (first present = default).
+var v1ImplementSources = []string{"rpc", "subsystem", "gmt", "migrate"}
+
+func TranslateV1Manifest(root *yaml.Node) (*yaml.Node, error) {
+	out := &yaml.Node{Kind: yaml.MappingNode, Line: root.Line, Column: root.Column}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key, val := root.Content[i], root.Content[i+1]
+		switch key.Value {
+		case "version":
+			out.Content = append(out.Content, key, v1ScalarStr("2", val.Line))
+		case "workflows", "routing_rules":
+			// Retired topology keys: the framework owns phase order; the
+			// phases they routed between all survive below.
+		case "phases":
+			phases, err := translateV1Phases(val)
+			if err != nil {
+				return nil, err
+			}
+			out.Content = append(out.Content, key, phases)
+		default:
+			out.Content = append(out.Content, key, val)
+		}
+	}
+	return out, nil
+}
+
+// translateV1Phases strips retired per-phase keys, drops the retired
+// review→skill binding and synthesizes the framework route ids a v1 file
+// spells differently. Original key order is preserved; synthesized entries
+// append in a fixed order so the translated view is deterministic.
+func translateV1Phases(phases *yaml.Node) (*yaml.Node, error) {
+	if phases.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("parse summoner.yaml: v1 phases must be a mapping (line %d)", phases.Line)
+	}
+	entries := make(map[string]*yaml.Node, len(phases.Content)/2)
+	original := make(map[string]bool, len(entries))
+	out := &yaml.Node{Kind: yaml.MappingNode, Line: phases.Line, Column: phases.Column}
+	for i := 0; i+1 < len(phases.Content); i += 2 {
+		key, val := phases.Content[i], phases.Content[i+1]
+		if key.Kind != yaml.ScalarNode || val.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("parse summoner.yaml: v1 phases entries must be mappings (line %d)", key.Line)
+		}
+		entry := &yaml.Node{Kind: yaml.MappingNode, Line: val.Line, Column: val.Column}
+		for j := 0; j+1 < len(val.Content); j += 2 {
+			if val.Content[j].Value == "triggers" {
+				continue // retired: checkpoint-side selection replaces auto-trigger
+			}
+			entry.Content = append(entry.Content, val.Content[j], val.Content[j+1])
+		}
+		entries[key.Value] = entry
+		original[key.Value] = true
+	}
+	// The v1 review→skill binding is retired; drop the entry when skill is
+	// all it carried (a verification_spec-bearing entry is already v2-shaped).
+	if rv := entries["review"]; rv != nil && len(rv.Content) == 2 && rv.Content[0].Value == "skill" {
+		delete(entries, "review")
+	}
+	// Synthesize framework route ids the v1 file spells differently; an
+	// existing entry always wins (partially-migrated files are not overridden).
+	if _, ok := entries["diagnosis"]; !ok {
+		if def, alts, line, ok := v1MergeSources(entries, v1DiagnosisSources); ok {
+			entries["diagnosis"] = v1BindingEntry(def, alts, line)
+		}
+	}
+	if _, ok := entries["implement"]; !ok {
+		if def, alts, line, ok := v1MergeSources(entries, v1ImplementSources); ok {
+			entries["implement"] = v1BindingEntry(def, alts, line)
+		}
+	}
+	// Rebuild in original key order, then the synthesized ids in fixed order.
+	for i := 0; i+1 < len(phases.Content); i += 2 {
+		key := phases.Content[i]
+		if entry, ok := entries[key.Value]; ok {
+			out.Content = append(out.Content, key, entry)
+		}
+	}
+	for _, id := range []string{"diagnosis", "implement"} {
+		if entry, ok := entries[id]; ok && !original[id] {
+			out.Content = append(out.Content, v1ScalarStr(id, phases.Line), entry)
+		}
+	}
+	return out, nil
+}
+
+// v1MergeSources walks the source phase ids in priority order: the first with
+// a skill default becomes the merged default (its own alternates prepend);
+// every later source's default appends as an alternate. Sources without a
+// skill binding are skipped. Duplicates of the chosen default never append.
+func v1MergeSources(entries map[string]*yaml.Node, sources []string) (def string, alts []string, line int, ok bool) {
+	for _, id := range sources {
+		entryDef, entryAlts := v1SkillOf(entries[id])
+		if entryDef == "" || entryDef == "none" {
+			continue
+		}
+		if !ok {
+			def, line, ok = entryDef, entries[id].Line, true
+			for _, a := range entryAlts {
+				if a != def && a != "" {
+					alts = append(alts, a)
+				}
+			}
+			continue
+		}
+		if entryDef != def {
+			alts = append(alts, entryDef)
+		}
+	}
+	return def, alts, line, ok
+}
+
+// v1SkillOf extracts a phase entry's skill binding in either form: the string
+// form yields (name, nil); the mapping form yields (default, alternate).
+func v1SkillOf(entry *yaml.Node) (def string, alts []string) {
+	if entry == nil {
+		return "", nil
+	}
+	for j := 0; j+1 < len(entry.Content); j += 2 {
+		if entry.Content[j].Value != "skill" {
+			continue
+		}
+		s := entry.Content[j+1]
+		switch s.Kind {
+		case yaml.ScalarNode:
+			def = s.Value
+		case yaml.MappingNode:
+			for k := 0; k+1 < len(s.Content); k += 2 {
+				switch s.Content[k].Value {
+				case "default":
+					def = s.Content[k+1].Value
+				case "alternate":
+					for _, e := range s.Content[k+1].Content {
+						if e.Kind == yaml.ScalarNode {
+							alts = append(alts, e.Value)
+						}
+					}
+				}
+			}
+		}
+	}
+	return def, alts
+}
+
+// v1BindingEntry builds a phase entry node carrying the expanded skill form
+// {default, alternate} — the same shape a native v2 document uses.
+func v1BindingEntry(def string, alts []string, line int) *yaml.Node {
+	skill := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Line: line, Column: 1}
+	skill.Content = append(skill.Content, v1ScalarStr("default", line), v1ScalarStr(def, line))
+	if len(alts) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Line: line, Column: 1}
+		for _, a := range alts {
+			seq.Content = append(seq.Content, v1ScalarStr(a, line))
+		}
+		skill.Content = append(skill.Content, v1ScalarStr("alternate", line), seq)
+	}
+	entry := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Line: line, Column: 1}
+	entry.Content = append(entry.Content, v1ScalarStr("skill", line), skill)
+	return entry
+}
+
+func v1ScalarStr(v string, line int) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v, Line: line, Column: 1}
 }
 
 // validateSuggestedBudgets enforces the validator's exact shape on the

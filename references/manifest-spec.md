@@ -21,11 +21,11 @@ selection, registry references and recomputed check-definition digests.
 
 | Field | Required | Meaning |
 |---|:---:|---|
-| `version` | yes | The **string** `"2"`; other versions are rejected, not adapted. |
+| `version` | yes | The **string** `"2"`. `"1"` loads through zero-touch compat (below); anything else is rejected. |
 | `project.name` | yes | Portable memory namespace: starts with a letter/digit, then letters/digits/dot/underscore/hyphen; no `..`. |
 | `phases` | yes | Non-empty map of phase id to capability. |
 | `check_registry` | no | Array of registered mechanical check definitions. |
-| `tool_scope` | no | Requested tool/read/write bounds, not a permission grant. |
+| `tool_scope` | no | Declared read-only tool bounds; `allowed_tools` names tools the gate admits as reads (below). |
 | `suggested_budgets` | no | Positive-integer suggestions presented at the first checkpoint for user confirmation. |
 
 Unknown fields are errors at every level. YAML must be one JSON-compatible
@@ -277,12 +277,45 @@ submission's own artifacts must not include `summoner.yaml` — a check
 definition inside the artifacts under review carries no mechanical authority.
 Only `fail` ticks the failed-check budget; BLOCKED never does.
 
+## v1 zero-touch compatibility
+
+A `version: "1"` document is **translated to its v2 capability-map view in
+memory** by the runtime loader and by `validate-manifest` — the upgrade costs
+a project nothing: update the plugin, keep the file. The on-disk
+summoner.yaml is never rewritten; `validate-manifest` prints
+`VALID … (v1 compat, file untouched)`; SessionStart renders the translated
+route view so the model routes by it.
+
+Deterministic translation rules (no judgment calls):
+
+| v1 | v2 view |
+|---|---|
+| `phases.debug` + `phases.diagnose` | `phases.diagnosis` (debug's skill = default, diagnose's = alternate) |
+| `phases.rpc`/`subsystem`/`gmt`/`migrate` | `phases.implement` (first present in that order = default, rest = alternates) |
+| `phases.<id>.triggers` | dropped — the triggered phases stay capability keys, selected at checkpoints |
+| top-level `workflows`/`routing_rules` | dropped — every phase capability survives under its own key |
+| `phases.review` carrying only `skill` | dropped — review evidence is the `verification_spec`, never a skill |
+| an entry already using a v2 route id | wins — a partially-migrated file is never overridden |
+
+Compat lifts the version wall only: the translated document runs through the
+SAME v2 validation, so a malformed v1 file still fails closed. `"1"` is the
+only translated version — `"3"` and anything else are rejected.
+
 ## Tool scope and suggested budgets
 
 `tool_scope` accepts optional `allowed_tools`, `readable`, `writable` arrays of
-unique non-empty strings. These describe requested bounds. They do not bypass
-phase gates, a reviewer's actual tool allow-list, native permissions or sandbox
-restrictions. The validator checks declarations, not effective runtime access.
+unique non-empty strings. `allowed_tools` names the project's read-only
+workflow tools (e.g. an MCP code-search server, `mcp__server__tool` by exact
+name): during an active run the pretooluse gate admits exactly those tools as
+observed reads, before any effect — the project's declaration is it taking
+responsibility for their read-only behavior. LSP navigation is admitted as
+first-party read-only without a declaration. The declaration never widens
+anything else: modeled tools (Bash, Edit/Write, Agent, AskUserQuestion, …)
+route through their own admission branches and never consult the list, phase
+gates and the write matrix are untouched, and a manifest that fails to load
+narrows admission back to deny (fail-closed). `readable`/`writable` remain
+declarations the runtime does not act on; native permissions and sandbox
+restrictions are never bypassed.
 
 `suggested_budgets` accepts optional positive integers for `phase_tool_calls`,
 `failed_checks`, `run_rework`, `delegations`, `check_timeout_seconds`. These are

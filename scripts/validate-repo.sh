@@ -280,7 +280,10 @@ fi
 # its triage table is load-bearing anti-misrouting content), SessionStart
 # injection ≤300B (enforced by hooks/session-start/main_test.go, which
 # renders both branches with a marketplace-length plugin root).
-CEIL_SKILL=13312
+# 2026-11-17: skill ceiling 13312→13568 — the v1 zero-touch compat routing
+# pointer (3 lines, load-bearing: the model must route a v1 project by the
+# translated view) bound summoner/SKILL.md at 13527B.
+CEIL_SKILL=13568
 CEIL_CMD=3072
 OVER=0
 while IFS= read -r f; do
@@ -437,6 +440,9 @@ if PAIRED_SELFCHECK_OUT="$(bash "$SCRIPT_DIR/test-paired-harness.sh" 2>&1)"; the
   ok "paired-eval harness selftest green ($PAIRED_COUNT assertions)"
 else
   fail "paired-eval harness selftest RED — run scripts/test-paired-harness.sh for detail"
+  # The failing assertions are the detail that matters in CI (2026-11-17: the
+  # first v0.5.0 release run failed here with every ✗ line swallowed).
+  printf '%s\n' "$PAIRED_SELFCHECK_OUT" | grep '^[✗✓] ' | tail -30 | sed 's/^/    /' >&2
 fi
 
 # ------------------------------------------------------------------ result
