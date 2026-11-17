@@ -238,6 +238,26 @@ else:
         problems.append("linux x86_64 resolver picked %s" % pe.plugin_binary(pd, "session-start"))
     pe.platform.machine = real_machine
 
+# launch-suppression aggregation (2026-11-17 CI RED): a platform-unavailable
+# BLOCKED (P9 sealed tier on linux) is a DISCLOSURE, not an isolation failure
+# — the launch must still run and p9_status still reads BLOCKED downstream,
+# while genuine FAIL and operational BLOCKED still suppress the launch (7).
+pr = {"preflight_phase": {"P4": {"status": "PASS"}, "P5": {"status": "PASS"}},
+      "run_phase": {"P7": {"status": "PASS"},
+                    "P9": {"status": "BLOCKED", "platform_unavailable": True,
+                           "detail": "sealed tier unavailable on this platform"}}}
+if pe.launch_suppressing_probes(pr) != []:
+    problems.append("platform-unavailable BLOCKED must not suppress (got %s)"
+                    % pe.launch_suppressing_probes(pr))
+pr["run_phase"]["P6"] = {"status": "FAIL"}
+if pe.launch_suppressing_probes(pr) != ["P6"]:
+    problems.append("genuine FAIL must still suppress (got %s)"
+                    % pe.launch_suppressing_probes(pr))
+pr["run_phase"]["P9"] = {"status": "BLOCKED", "detail": "operational block"}
+if pe.launch_suppressing_probes(pr) != ["P6", "P9"]:
+    problems.append("operational BLOCKED without the flag must still suppress (got %s)"
+                    % pe.launch_suppressing_probes(pr))
+
 print("OK" if not problems else "; ".join(problems))
 UNITPY
 
@@ -620,8 +640,16 @@ fi
 OUT=$(RUN run g4-a worker --run-id g4-a.worker.selftest --results-dir "$RESULTS" --tmp "$TMPROOT" \
       --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
 expect_exit 0 "$RC" "stub run g4-a/worker with P9-tier probes"
+# P9 (sealed sandbox tier) ships darwin-only: darwin must see a real denial
+# PASS; linux sees an honest platform-unavailable BLOCKED that DISCLOSES in
+# probes.json without suppressing the launch (exit 0 above).
+if [ "$(uname)" = "Darwin" ]; then
+    P9_WANT="PASS"; P9_WHY="bash-child corpus read denied + sandbox-probe wrapper observed"
+else
+    P9_WANT="BLOCKED"; P9_WHY="sealed tier unavailable on this platform — disclosed, launch not suppressed"
+fi
 P9=$(PATH="$STUBBED_PATH" python3 -c "import json;print(json.load(open('$RESULTS/g4-a.worker.selftest/probes.json'))['run_phase'].get('P9',{}).get('status',''))")
-[ "$P9" = "PASS" ] && pass "P9 bash-child corpus read denied + sandbox-probe wrapper observed" || fail "P9 status=$P9"
+[ "$P9" = "$P9_WANT" ] && pass "P9 status=$P9 ($P9_WHY)" || fail "P9 status=$P9 (want $P9_WANT)"
 OUT=$(RUN judge g4-a.worker.selftest --results-dir "$RESULTS" --tolerances "$SANDBOX/tolerances.yaml" --budget "$SANDBOX/budget.md" 2>&1); RC=$?
 expect_exit 0 "$RC" "judge g4-a/worker"
 K1=$(PATH="$STUBBED_PATH" python3 -c "

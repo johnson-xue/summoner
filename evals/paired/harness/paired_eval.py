@@ -1992,6 +1992,22 @@ def evaluate_probe_transcript(probe, transcript_path):
     return {"status": "FAIL", "detail": "unknown probe kind %s" % kind}
 
 
+def launch_suppressing_probes(probe_results):
+    """Probe ids that must suppress the main launch (exit 7).
+
+    Genuine FAILs and operational BLOCKEDs suppress — the environment is
+    known-leaky or unverifiable where it was supposed to be verifiable. A
+    platform_unavailable BLOCKED (the P9 sealed tier, which ships darwin-only)
+    is a disclosure, not an isolation failure: probes.json and judge metrics
+    still carry status=BLOCKED, but a platform that cannot offer the tier
+    must not become unrunnable.
+    """
+    return sorted({pid for phase in ("preflight_phase", "run_phase")
+                   for pid, rec in (probe_results.get(phase) or {}).items()
+                   if rec.get("status") in ("FAIL", "BLOCKED")
+                   and not rec.get("platform_unavailable")})
+
+
 def cmd_run(args):
     case = get_case(args.case)
     arm = PRODUCER_ARM if args.arm == "producer" else \
@@ -2058,7 +2074,9 @@ def cmd_run(args):
         if probe["phase"] != "run" or probe["id"] == "P7":
             continue
         if probe.get("non_darwin"):
-            probe_results["run_phase"][probe["id"]] = {"status": "BLOCKED", "detail": probe["non_darwin"]}
+            probe_results["run_phase"][probe["id"]] = {
+                "status": "BLOCKED", "platform_unavailable": True,
+                "detail": probe["non_darwin"]}
             continue
         extra = ""
         if probe["id"] == "P8":
@@ -2073,9 +2091,7 @@ def cmd_run(args):
         probe_results["run_phase"][probe["id"]] = evaluate_probe_transcript(probe, probe_transcript)
 
     write_json(os.path.join(control, "probes.json"), probe_results)
-    failed = sorted({pid for phase in ("preflight_phase", "run_phase")
-                     for pid, rec in (probe_results.get(phase) or {}).items()
-                     if rec.get("status") in ("FAIL", "BLOCKED")})
+    failed = launch_suppressing_probes(probe_results)
     mode = "headless" if args.headless else "attended"
 
     if failed:
