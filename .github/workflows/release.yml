@@ -101,7 +101,10 @@ jobs:
 
   build-cli-darwin:
     name: summoner-ctx (darwin amd64/arm64, cgo)
-    runs-on: macos-14
+    # macos-14 was retired on 2026-11-02; its unsupported configuration
+    # cancels the job before any step runs. Keep an explicit supported image
+    # (macos-15 is arm64); the build below still emits both Darwin arches.
+    runs-on: macos-15
     needs: verify
     steps:
       - uses: actions/checkout@v4
