@@ -258,6 +258,36 @@ if pe.launch_suppressing_probes(pr) != ["P6", "P9"]:
     problems.append("operational BLOCKED without the flag must still suppress (got %s)"
                     % pe.launch_suppressing_probes(pr))
 
+# native-validator resolution (2026-11-17 CI RED): v0.3.0's launcher script
+# hardcodes the unsuffixed hooks/bin/validate-manifest (a Mach-O file at that
+# tag) — "bash script" dies with Exec format error on linux. The validation
+# surface is the Go BINARY: native_validator must resolve it platform-
+# suffixed (plugin_binary semantics) and fail closed to None when no binary
+# copy exists at all.
+nv = os.path.join(td, "nvplug")
+os.makedirs(os.path.join(nv, "hooks", "bin"), exist_ok=True)
+os.makedirs(os.path.join(nv, "scripts"), exist_ok=True)
+open(os.path.join(nv, "scripts", "validate-manifest.sh"), "w").close()
+open(os.path.join(nv, "hooks", "bin", "validate-manifest"), "w").close()
+open(os.path.join(nv, "hooks", "bin", "validate-manifest-linux-amd64"), "w").close()
+real_is_darwin, real_sys_platform, real_machine2 = pe.IS_DARWIN, pe.sys.platform, pe.platform.machine
+pe.IS_DARWIN = False
+pe.sys.platform = "linux"
+pe.platform.machine = lambda: "x86_64"
+got_nv = pe.native_validator(nv)
+if not (isinstance(got_nv, list) and got_nv[0].endswith("validate-manifest-linux-amd64")):
+    problems.append("native_validator must pick the suffixed binary (got %s)" % got_nv)
+pe.IS_DARWIN, pe.sys.platform, pe.platform.machine = real_is_darwin, real_sys_platform, real_machine2
+got_nv = pe.native_validator(nv)
+if pe.IS_DARWIN and not (isinstance(got_nv, list) and got_nv[0].endswith(os.sep + "validate-manifest")):
+    problems.append("darwin host without its variant must fall back to unsuffixed (got %s)" % got_nv)
+empty_plug = os.path.join(td, "nvempty")
+os.makedirs(os.path.join(empty_plug, "scripts"), exist_ok=True)
+open(os.path.join(empty_plug, "scripts", "validate-manifest.sh"), "w").close()
+if pe.native_validator(empty_plug) is not None:
+    problems.append("script-only plugin (no binary copy) -> None (fail-closed), got %s"
+                    % pe.native_validator(empty_plug))
+
 print("OK" if not problems else "; ".join(problems))
 UNITPY
 
@@ -520,9 +550,12 @@ RUN prepare g1-a candidate --run-id g1-a.candidate.selftest1 --results-dir "$RES
 section "7. preflight green + expected-delta table"
 OUT=$(RUN preflight g1-a --results-dir "$RESULTS" --tmp "$TMPROOT" 2>&1); RC=$?
 expect_exit 0 "$RC" "preflight g1-a green (both arms)"
-case "$OUT" in *native-validator*g1-a/baseline*PASS*) pass "baseline native validator passes on the frozen v1 manifest";; *) fail "baseline native validator";; esac
-case "$OUT" in *candidate-validator-on-v2*PASS*) pass "candidate validator passes on the v2 golden";; *) fail "candidate validator on v2";; esac
-case "$OUT" in *capability-expected-deltas*PASS*) pass "expected-delta table matches the pinned allowlist";; *) fail "expected-delta check";; esac
+# anchored per-line: a `case "$OUT" in *…*PASS*` glob matches ACROSS newlines
+# (run 4's false pass masked the v0.3.0 launcher BLOCKED for three CI rounds)
+check_line() { printf '%s\n' "$OUT" | grep -q "^PASS  *$1"; }
+check_line 'native-validator(g1-a/baseline)' && pass "baseline native validator passes on the frozen v1 manifest" || fail "baseline native validator"
+check_line 'candidate-validator-on-v2' && pass "candidate validator passes on the v2 golden" || fail "candidate validator on v2"
+check_line 'capability-expected-deltas' && pass "expected-delta table matches the pinned allowlist" || fail "expected-delta check"
 OUT=$(RUN preflight g4-a 2>&1); RC=$?
 expect_exit 0 "$RC" "preflight g4-a green (manifest-less probe disclosed)"
 case "$OUT" in *g4-manifest-less-probe*) pass "g4 manifest-less probe recorded";; *) fail "g4 probe missing";; esac

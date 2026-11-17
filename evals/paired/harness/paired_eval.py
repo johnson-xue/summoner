@@ -1711,8 +1711,14 @@ def cmd_prepare(args):
 
 
 def native_validator(plugin_dir):
-    wrapper = os.path.join(plugin_dir, "scripts", "validate-manifest.sh")
-    return ["bash", wrapper] if os.path.isfile(wrapper) else None
+    """The plugin's own validator, platform-correct. The launcher scripts
+    (v0.3.0's) hardcode the unsuffixed hooks/bin/validate-manifest — a
+    Mach-O file on a linux host, Exec format error — so resolve the binary
+    the way plugin_binary() does (suffixed variant first, unsuffixed
+    fallback); the script is only a launcher, the validation surface is
+    the Go binary itself. No binary copy at all -> None (fail closed)."""
+    candidate = plugin_binary(plugin_dir, "validate-manifest")
+    return [candidate] if os.path.isfile(candidate) else None
 
 
 def cmd_preflight(args):
@@ -1759,7 +1765,7 @@ def cmd_preflight(args):
         repo_manifest = os.path.join(repo_dir, "summoner.yaml")
         if validator is None:
             check("native-validator(%s)" % arm_label, False,
-                  "staged plugin ships no scripts/validate-manifest.sh")
+                  "staged plugin ships no validate-manifest binary copy")
         elif not os.path.isfile(repo_manifest):
             if manifest_record.get("action") == "manifest-less":
                 check("native-validator(%s)" % arm_label, True,
