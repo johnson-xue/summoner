@@ -209,6 +209,35 @@ else:
     os.environ["PAIRED_EVAL_CLAUDE_CMD"] = old_stub
 os.environ.pop("PAIRED_EVAL_PROJECTS_DIR", None)
 
+# platform-suffix binary resolution (2026-11-17 CI RED): the unsuffixed tree
+# binary is whatever OS cut the release (v0.3.0 shipped darwin-x86_64), so a
+# linux runner cannot exec it — the resolver must prefer this platform's
+# suffixed variant and only then fall back to the unsuffixed copy.
+pd = os.path.join(td, "plug")
+os.makedirs(os.path.join(pd, "hooks", "bin"), exist_ok=True)
+bdir = os.path.join(pd, "hooks", "bin")
+open(os.path.join(bdir, "session-start"), "w").close()
+open(os.path.join(bdir, "session-start-linux-amd64"), "w").close()
+open(os.path.join(bdir, "userpromptsubmit-darwin-arm64"), "w").close()
+if pe.plugin_binary(pd, "session-start") != os.path.join(bdir, "session-start-linux-amd64") \
+        and pe.IS_DARWIN is False and pe.sys.platform.startswith("linux"):
+    problems.append("linux runner must prefer the -linux-amd64 variant")
+if pe.IS_DARWIN:
+    if pe.plugin_binary(pd, "userpromptsubmit") != os.path.join(bdir, "userpromptsubmit-darwin-arm64") \
+            and pe.platform.machine() == "arm64":
+        problems.append("darwin-arm64 host must prefer its variant")
+    if pe.plugin_binary(pd, "stop") != os.path.join(bdir, "stop"):
+        problems.append("no variant present -> unsuffixed fallback")
+else:
+    if pe.plugin_binary(pd, "stop") != os.path.join(bdir, "stop"):
+        problems.append("no variant present -> unsuffixed fallback")
+    # cross-check the suffix the resolver computes for a faked linux host
+    real_machine = pe.platform.machine
+    pe.platform.machine = lambda: "x86_64"
+    if pe.plugin_binary(pd, "session-start") != os.path.join(bdir, "session-start-linux-amd64"):
+        problems.append("linux x86_64 resolver picked %s" % pe.plugin_binary(pd, "session-start"))
+    pe.platform.machine = real_machine
+
 print("OK" if not problems else "; ".join(problems))
 UNITPY
 

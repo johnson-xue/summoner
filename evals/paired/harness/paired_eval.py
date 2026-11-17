@@ -39,6 +39,7 @@ import hashlib
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import stat
@@ -215,6 +216,25 @@ IS_DARWIN = sys.platform == "darwin"
 # ---------------------------------------------------------------------------
 # Small utilities
 # ---------------------------------------------------------------------------
+
+
+def plugin_binary(plugin_dir, name):
+    """Resolve a staged plugin's hook binary for THIS host. The unsuffixed
+    tree copy is whatever OS cut the release (v0.3.0 shipped darwin-x86_64 —
+    the 2026-11-17 v0.5.0 release run died on a linux runner exec'ing it), so
+    prefer this platform's suffixed variant when the staged plugin ships one
+    and only then fall back to the unsuffixed copy. Never invents a path."""
+    suffix = None
+    machine = platform.machine()
+    if IS_DARWIN:
+        suffix = "darwin-arm64" if machine == "arm64" else "darwin-amd64"
+    elif sys.platform.startswith("linux"):
+        suffix = "linux-arm64" if machine in ("aarch64", "arm64") else "linux-amd64"
+    if suffix:
+        candidate = os.path.join(plugin_dir, "hooks", "bin", "%s-%s" % (name, suffix))
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(plugin_dir, "hooks", "bin", name)
 
 
 def die(msg, code=2):
@@ -687,7 +707,7 @@ def g4_manifest_probe(plugin_dir):
     workdir = tempfile.mkdtemp(prefix="g4-manifest-probe.")
     results, tolerated = [], True
     for binary in ("session-start", "stop"):
-        bpath = os.path.join(plugin_dir, "hooks", "bin", binary)
+        bpath = plugin_binary(plugin_dir, binary)
         if not os.path.isfile(bpath):
             results.append({"binary": binary, "error": "missing in staged plugin"})
             tolerated = False
@@ -1076,7 +1096,7 @@ def run_host_probes(case, arm, run_dir, control_dir, tier, plugin_dir, template_
             env[ENV_STATE] = state_s
             env[ENV_TRACE] = state_t
             env[ENV_MEMORY] = os.path.join(run_dir, "state", "m")
-            ups = os.path.join(plugin_dir, "hooks", "bin", "userpromptsubmit")
+            ups = plugin_binary(plugin_dir, "userpromptsubmit")
             payload = json.dumps({"session_id": "p5-probe", "cwd": repo,
                                   "hook_event_name": "UserPromptSubmit",
                                   "prompt": "/summoner:fix probe"})
