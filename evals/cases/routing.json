@@ -1,0 +1,197 @@
+[
+ {
+  "id": "fix-01",
+  "prompt": "线上报错 SC_ErrInnerLogic，帮我排查这个 bug 并修好",
+  "expected": "fix",
+  "kind": "positive",
+  "note": "排查+修复期望 → repair-bias 规则"
+ },
+ {
+  "id": "fix-02",
+  "prompt": "帮我排查这个 bug",
+  "expected": "fix",
+  "kind": "positive",
+  "note": "歧义短语的默认裁决：未说明只要原因 → fix（SKILL.md 裁决规则）",
+  "borderline": true
+ },
+ {
+  "id": "fix-03",
+  "prompt": "登录失败了，修一下",
+  "expected": "fix",
+  "kind": "positive"
+ },
+ {
+  "id": "fix-04",
+  "prompt": "这个 panic 在任务模块里崩了，帮我修",
+  "expected": "fix",
+  "kind": "positive"
+ },
+ {
+  "id": "fix-05",
+  "prompt": "fix this nil pointer crash in the dealer loop",
+  "expected": "fix",
+  "kind": "positive"
+ },
+ {
+  "id": "fix-06",
+  "prompt": "有个 bug：道具会消失，定位然后解决掉",
+  "expected": "fix",
+  "kind": "positive",
+  "note": "定位+解决 → 修复期望"
+ },
+ {
+  "id": "debug-01",
+  "prompt": "帮我看下这个报错是什么原因，先别改代码",
+  "expected": "debug",
+  "kind": "positive",
+  "note": "明确不要改码"
+ },
+ {
+  "id": "debug-02",
+  "prompt": "这个 nil pointer 哪里来的？只想知道原因",
+  "expected": "debug",
+  "kind": "positive"
+ },
+ {
+  "id": "debug-03",
+  "prompt": "why is this happening? don't change anything yet",
+  "expected": "debug",
+  "kind": "positive"
+ },
+ {
+  "id": "debug-04",
+  "prompt": "线上这个错误的根因是什么，我自己来修",
+  "expected": "debug",
+  "kind": "positive",
+  "note": "用户自己修 → 只要诊断"
+ },
+ {
+  "id": "debug-05",
+  "prompt": "解释一下这个堆栈，先诊断不要动代码",
+  "expected": "debug",
+  "kind": "positive"
+ },
+ {
+  "id": "new-01",
+  "prompt": "新增一个排行榜功能",
+  "expected": "new",
+  "kind": "positive"
+ },
+ {
+  "id": "new-02",
+  "prompt": "add a knight mode subsystem",
+  "expected": "new",
+  "kind": "positive"
+ },
+ {
+  "id": "new-03",
+  "prompt": "加一个对外 RPC 接口，查询玩家战绩",
+  "expected": "new",
+  "kind": "positive"
+ },
+ {
+  "id": "new-04",
+  "prompt": "给 GMT 后台加一个踢人下线的接口",
+  "expected": "new",
+  "kind": "positive"
+ },
+ {
+  "id": "ship-01",
+  "prompt": "准备发版，先全面审查一遍",
+  "expected": "ship",
+  "kind": "positive",
+  "note": "发版前审查语境 → ship 而非 release"
+ },
+ {
+  "id": "ship-02",
+  "prompt": "review before merge to master",
+  "expected": "ship",
+  "kind": "positive",
+  "borderline": true
+ },
+ {
+  "id": "ship-03",
+  "prompt": "上线前检查，跑一遍完整审查",
+  "expected": "ship",
+  "kind": "positive"
+ },
+ {
+  "id": "release-01",
+  "prompt": "发一个 0.1.9 版本",
+  "expected": "release",
+  "kind": "positive"
+ },
+ {
+  "id": "release-02",
+  "prompt": "publish a new patch version with changelog",
+  "expected": "release",
+  "kind": "positive"
+ },
+ {
+  "id": "release-03",
+  "prompt": "release 0.2.0，生成 changelog 打 tag",
+  "expected": "release",
+  "kind": "positive"
+ },
+ {
+  "id": "ops-01",
+  "prompt": "重启服务",
+  "expected": "ops",
+  "kind": "positive"
+ },
+ {
+  "id": "ops-02",
+  "prompt": "看下服务器状态和磁盘",
+  "expected": "ops",
+  "kind": "positive"
+ },
+ {
+  "id": "ops-03",
+  "prompt": "把 docker 里的 mysql 重新拉起来",
+  "expected": "ops",
+  "kind": "positive"
+ },
+ {
+  "id": "review-01",
+  "prompt": "review 一下这个 diff，只看不改",
+  "expected": "review",
+  "kind": "positive"
+ },
+ {
+  "id": "review-02",
+  "prompt": "帮我看看这段代码有什么问题",
+  "expected": "review",
+  "kind": "positive",
+  "note": "代码质量审视语境（非故障）→ review"
+ },
+ {
+  "id": "review-03",
+  "prompt": "code review this PR before I push",
+  "expected": "review",
+  "kind": "positive"
+ },
+ {
+  "id": "neg-fix-to-debug",
+  "prompt": "为什么配置改了没生效？先分析原因",
+  "expected": "debug",
+  "kind": "negative",
+  "owner": "debug",
+  "note": "曾可能误路由 fix：无修复动词"
+ },
+ {
+  "id": "neg-ship-to-release",
+  "prompt": "直接发版，不用审查",
+  "expected": "release",
+  "kind": "negative",
+  "owner": "release",
+  "note": "明确跳过审查 → release 而非 ship"
+ },
+ {
+  "id": "neg-new-to-review",
+  "prompt": "这个新功能的实现代码写完了，帮我审一下",
+  "expected": "review",
+  "kind": "negative",
+  "owner": "review",
+  "note": "「新功能」字面命中 new，但工作已完成 → review"
+ }
+]

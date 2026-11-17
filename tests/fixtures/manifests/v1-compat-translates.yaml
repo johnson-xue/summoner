@@ -1,0 +1,19 @@
+# Historical v1 input: the zero-touch upgrade ruling (2026-11-16) translates
+# it to the v2 capability-map view in memory — workflows/fan_out topology is
+# dropped, every phase capability survives, and the file is never rewritten.
+version: "1"
+project:
+  name: fixture-project
+phases:
+  debug:
+    skill: none
+workflows:
+  fix:
+    chain: [debug, reproduce, fix, verify, review]
+    checkpoints: after_each
+  ship:
+    fan_out:
+      - persona: code-reviewer
+      - persona: test-engineer
+    merge: review
+    checkpoints: after_merge

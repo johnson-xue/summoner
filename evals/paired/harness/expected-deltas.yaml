@@ -1,0 +1,25 @@
+# expected-deltas.yaml — the pinned capability expected-delta ALLOWLIST for the
+# paired eval fairness preflight (adjudication 2026-11-11).
+#
+# The resolved-capability tables of BOTH arms are logged per arm in each run
+# manifest; preflight compares the computed delta rows against THIS table
+# EXACTLY. Any delta outside the allowlist — and any pinned row that no longer
+# materializes — is preflight BLOCKED for user adjudication. Both directions
+# are drift: update this file only after the user re-adjudicates.
+#
+# These three rows are the adjudicated review-architecture deltas of the
+# single-mode rewrite. They are derived mechanically from each arm's staged
+# skills/roster.yaml (v1 `defaults:`/`workflows:` vs v2 `phases:`), so a
+# re-introduced persona fan-out or a re-added per-node review chain trips the
+# pin, and so does an unexpected new delta anywhere else in the topology.
+
+expected_deltas:
+  review.provider:
+    baseline: skill:superpowers:requesting-code-review
+    candidate: verification_spec:rubric=plugin:agents/reviewer.md
+  ship.review_topology:
+    baseline: fan_out[code-reviewer,test-engineer]+merge
+    candidate: single_rubric_reviewer
+  fix.review_placement:
+    baseline: per_node_review(chain,checkpoints=after_each)
+    candidate: terminal_single_review

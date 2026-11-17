@@ -1,280 +1,178 @@
 #!/bin/bash
-# test-summoner-optimizations.sh — Comprehensive test suite for Summoner optimizations
-# Tests all features added in PR #8
+# test-summoner-optimizations.sh — portable deterministic v2 smoke test.
+#
+# The pre-single-mode version hardcoded a /Users root, wrote into a fixed
+# /tmp path, synthesized a v1 trace and asserted deleted v1 scorers, the
+# deleted v1 stability runner and stale documentation names. This rewrite
+# asserts the CURRENT survivor surface and exercises the real v2 scorer +
+# derived sidecar on an isolated COPY of a fixture:
+#   1. every survivor script / v2 scorer / hook binary / fixture exists
+#   2. score-trace.sh scores a copied fixture PASS, writes the sidecar NEXT
+#      TO the copy, never touches the authoritative fixture bytes and never
+#      writes a sidecar into the repo fixtures dir
+#   3. a hostile fixture (rubber-stamp review) scores overall FAIL
+# Deterministic only — no model, no network, no cd into the checkout; all
+# generated files live under a mktemp dir removed on exit.
 
-set -o pipefail
+set -u
 
-# Colors
-GREEN='\033[32m'
-RED='\033[31m'
-YELLOW='\033[33m'
-CYAN='\033[36m'
-BOLD='\033[1m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Counters
-PASS_COUNT=0
-FAIL_COUNT=0
-SKIP_COUNT=0
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/summoner-opt-smoke.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
 
-# Helper functions
-test_start() {
-    printf "\n${CYAN}${BOLD}=== $1 ===${NC}\n\n"
+PASS=0
+FAIL=0
+pass() { PASS=$((PASS + 1)); printf '✓ %s\n' "$1"; }
+fail() { FAIL=$((FAIL + 1)); printf '✗ %s\n' "$1"; }
+
+assert_exec() { # $1 = path — must exist and be executable
+  if [[ -f "$1" && -x "$1" ]]; then
+    pass "executable: $1"
+  else
+    fail "missing or not executable: $1"
+  fi
+}
+assert_file() { # $1 = path — must exist
+  if [[ -f "$1" ]]; then
+    pass "present: $1"
+  else
+    fail "missing: $1"
+  fi
 }
 
-test_pass() {
-    PASS_COUNT=$((PASS_COUNT + 1))
-    printf "${GREEN}✓${NC} $1\n"
-}
-
-test_fail() {
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    printf "${RED}✗${NC} $1\n"
-}
-
-test_skip() {
-    SKIP_COUNT=$((SKIP_COUNT + 1))
-    printf "${YELLOW}⊘${NC} $1\n"
-}
-
-# Setup
-SUMMONER_ROOT="/Users/admin/summoner"
-TEST_DIR="/tmp/summoner-test-$$"
-mkdir -p "$TEST_DIR"
-cd "$TEST_DIR"
-
-printf "${BOLD}Summoner Optimization Test Suite${NC}\n"
-printf "==================================\n"
-printf "Test Directory: $TEST_DIR\n"
-printf "Summoner Root: $SUMMONER_ROOT\n\n"
-
-# Test 1: Check if all scripts exist
-test_start "Test 1: Script Availability"
-
-if [ -x "$SUMMONER_ROOT/scripts/summoner-setup.sh" ]; then
-    test_pass "summoner-setup.sh exists and is executable"
-else
-    test_fail "summoner-setup.sh missing or not executable"
-fi
-
-if [ -x "$SUMMONER_ROOT/scripts/score-trace.sh" ]; then
-    test_pass "score-trace.sh exists and is executable"
-else
-    test_fail "score-trace.sh missing or not executable"
-fi
-
-if [ -x "$SUMMONER_ROOT/scripts/create-baseline.sh" ]; then
-    test_pass "create-baseline.sh exists and is executable"
-else
-    test_fail "create-baseline.sh missing or not executable"
-fi
-
-if [ -x "$SUMMONER_ROOT/scripts/regression-test.sh" ]; then
-    test_pass "regression-test.sh exists and is executable"
-else
-    test_fail "regression-test.sh missing or not executable"
-fi
-
-if [ -x "$SUMMONER_ROOT/scripts/stability-test.sh" ]; then
-    test_pass "stability-test.sh exists and is executable"
-else
-    test_fail "stability-test.sh missing or not executable"
-fi
-
-# Test 2: Deterministic Scorers
-test_start "Test 2: Deterministic Scorers"
-
-for scorer in iron-law-check build-check test-pass-rate lint-check; do
-    if [ -x "$SUMMONER_ROOT/scorers/deterministic/${scorer}.sh" ]; then
-        test_pass "${scorer}.sh exists and is executable"
-    else
-        test_fail "${scorer}.sh missing or not executable"
-    fi
+echo "── 1. survivor scripts"
+for s in \
+  cleanup-traces.sh create-baseline.sh init-memory-db.sh install-smoke-test.sh \
+  regression-test.sh run-routing-evals.sh run-trace-fixtures.sh score-trace.sh \
+  summoner-bp.sh summoner-init.sh summoner-setup.sh validate-manifest.sh \
+  validate-repo.sh verify-release.sh; do
+  assert_exec "$PLUGIN_ROOT/scripts/$s"
 done
 
-# Test 3: Documentation
-test_start "Test 3: Documentation"
-
-docs=(
-    "trace-protocol.md"
-    "scoring-system.md"
-    "PROPOSAL-trace-and-scoring.md"
-    "CODE_REVIEW_PR8.md"
-    "BASELINE_REGRESSION_GUIDE.md"
-    "INIT_OPTIMIZATION_PROPOSAL.md"
-)
-
-for doc in "${docs[@]}"; do
-    if [ -f "$SUMMONER_ROOT/docs/$doc" ] || [ -f "$SUMMONER_ROOT/references/$doc" ]; then
-        test_pass "$doc exists"
-    else
-        test_fail "$doc missing"
-    fi
+echo "── 2. v2 contract scorers (scorers/deterministic/)"
+for s in schema-check review-evidence-check user-gate-check recovery-check post-game-check; do
+  assert_exec "$PLUGIN_ROOT/scorers/deterministic/$s.sh"
 done
 
-# Test 4: Trace Format Validation
-test_start "Test 4: Trace Format Validation"
+echo "── 3. hook binaries (the hooks/Makefile HOOKS list)"
+for b in session-start pretooluse-gate stop validate-manifest posttooluse \
+  subagentstop userpromptsubmit summoner-status summoner-sandbox-probe; do
+  assert_exec "$PLUGIN_ROOT/hooks/bin/$b"
+done
 
-cat > test-trace.jsonl << 'EOF'
-{"type":"session_start","timestamp":"2026-06-24T10:00:00Z","workflow":"fix","session_id":"test-001","project":"test-project","model":"claude-opus-4-8"}
-{"type":"phase_start","timestamp":"2026-06-24T10:00:05Z","phase":1,"name":"diagnose","skill":"debug"}
-{"type":"tool_call","timestamp":"2026-06-24T10:00:10Z","tool":"Read","args":{"file_path":"test.go"},"result":"success","duration_ms":100}
-{"type":"phase_end","timestamp":"2026-06-24T10:00:20Z","phase":1,"status":"completed","artifacts":["root_cause"]}
-{"type":"session_end","timestamp":"2026-06-24T10:01:00Z","status":"completed","total_duration_ms":60000}
-EOF
+echo "── 4. v2 fixtures (post-T12/T13 survivor baseline)"
+assert_file "$PLUGIN_ROOT/tests/fixtures/traces/valid-full-run.jsonl"
+assert_file "$PLUGIN_ROOT/tests/fixtures/traces/invalid-review-rubber-stamp.jsonl"
 
-if [ -f test-trace.jsonl ]; then
-    # Validate JSON format
-    if python3 -c "import json; [json.loads(line) for line in open('test-trace.jsonl')]" 2>/dev/null; then
-        test_pass "Test trace file is valid JSONL"
-    else
-        test_fail "Test trace file has invalid JSON"
-    fi
-
-    # Check required fields
-    if grep -q '"type":"session_start"' test-trace.jsonl && \
-       grep -q '"project":"test-project"' test-trace.jsonl; then
-        test_pass "Test trace has required fields"
-    else
-        test_fail "Test trace missing required fields"
-    fi
+echo "── 5. scorer + derived sidecar on an isolated copy"
+FIXTURE="$PLUGIN_ROOT/tests/fixtures/traces/valid-full-run.jsonl"
+cp "$FIXTURE" "$TMP/run.jsonl"
+sha_before="$(shasum -a 256 "$FIXTURE" | cut -d' ' -f1)"
+if bash "$PLUGIN_ROOT/scripts/score-trace.sh" --trace "$TMP/run.jsonl" >/dev/null 2>&1; then
+  pass "score-trace.sh scores the positive fixture copy PASS"
 else
-    test_fail "Failed to create test trace file"
+  fail "score-trace.sh did not pass the positive fixture copy"
 fi
-
-# Test 5: Scoring System
-test_start "Test 5: Scoring System"
-
-if [ -f test-trace.jsonl ]; then
-    output=$("$SUMMONER_ROOT/scripts/score-trace.sh" --trace test-trace.jsonl --priority P0 2>&1)
-
-    if echo "$output" | grep -q "📊 Scoring Trace"; then
-        test_pass "Scoring script executes successfully"
-    else
-        test_fail "Scoring script failed to execute"
-    fi
-
-    if echo "$output" | grep -q "iron-law-check"; then
-        test_pass "Iron law check runs"
-    else
-        test_fail "Iron law check not executed"
-    fi
-
-    if echo "$output" | grep -q "Total:"; then
-        test_pass "Score calculation completes"
-    else
-        test_fail "Score calculation failed"
-    fi
-
-    if echo "$output" | grep -q "PASS\|FAIL"; then
-        test_pass "Pass/fail determination works"
-    else
-        test_fail "Pass/fail determination missing"
-    fi
+if [[ -f "$TMP/run.jsonl.score.json" ]]; then
+  pass "sidecar written next to the copied trace"
 else
-    test_skip "Scoring test (no trace file)"
+  fail "sidecar not written next to the copied trace"
 fi
-
-# Test 6: Skills Registration
-test_start "Test 6: Skills Registration"
-
-if [ -f "$SUMMONER_ROOT/plugin.json" ]; then
-    if grep -q '"name": "summoner-setup"' "$SUMMONER_ROOT/plugin.json"; then
-        test_pass "summoner-setup skill registered"
-    else
-        test_fail "summoner-setup skill not registered"
-    fi
-
-    if [ -f "$SUMMONER_ROOT/skills/summoner-setup/SKILL.md" ]; then
-        test_pass "summoner-setup skill file exists"
-    else
-        test_fail "summoner-setup skill file missing"
-    fi
-
-    if [ -f "$SUMMONER_ROOT/skills/auto-setup-summoner/SKILL.md" ]; then
-        test_pass "auto-setup-summoner skill file exists"
-    else
-        test_fail "auto-setup-summoner skill file missing"
-    fi
+if [[ ! -e "$FIXTURE.score.json" ]]; then
+  pass "no sidecar leaked into the repo fixtures dir"
 else
-    test_fail "plugin.json not found"
+  fail "sidecar leaked into the repo fixtures dir"
 fi
-
-# Test 7: Hooks
-test_start "Test 7: Hooks Enhancement"
-
-if [ -f "$SUMMONER_ROOT/hooks/bin/session-start" ]; then
-    test_pass "session-start hook binary exists"
-
-    if [ -x "$SUMMONER_ROOT/hooks/bin/session-start" ]; then
-        test_pass "session-start hook is executable"
-    else
-        test_fail "session-start hook not executable"
-    fi
+overall="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["overall"]["status"])' "$TMP/run.jsonl.score.json" 2>/dev/null || true)"
+if [[ "$overall" == "PASS" ]]; then
+  pass "sidecar overall status = PASS"
 else
-    test_fail "session-start hook binary missing"
+  fail "sidecar overall status = ${overall:-<none>} (want PASS)"
 fi
-
-if [ -f "$SUMMONER_ROOT/hooks/session-start/main.go" ]; then
-    if grep -q "setup summoner" "$SUMMONER_ROOT/hooks/session-start/main.go"; then
-        test_pass "Hook contains friendly setup message"
-    else
-        test_fail "Hook missing friendly setup message"
-    fi
-fi
-
-# Test 8: Test Fixtures
-test_start "Test 8: Test Fixtures"
-
-if [ -f "$SUMMONER_ROOT/tests/fixtures/traces/valid-fix-workflow.jsonl" ]; then
-    test_pass "valid-fix-workflow.jsonl fixture exists"
+sha_after="$(shasum -a 256 "$FIXTURE" | cut -d' ' -f1)"
+if [[ "$sha_before" == "$sha_after" ]]; then
+  pass "authoritative fixture bytes untouched"
 else
-    test_fail "valid-fix-workflow.jsonl fixture missing"
+  fail "authoritative fixture bytes changed"
 fi
 
-if [ -f "$SUMMONER_ROOT/tests/fixtures/traces/invalid-missing-phase1.jsonl" ]; then
-    test_pass "invalid-missing-phase1.jsonl fixture exists"
+echo "── 6. a hostile fixture fails overall"
+cp "$PLUGIN_ROOT/tests/fixtures/traces/invalid-review-rubber-stamp.jsonl" "$TMP/bad.jsonl"
+if bash "$PLUGIN_ROOT/scripts/score-trace.sh" --trace "$TMP/bad.jsonl" >/dev/null 2>&1; then
+  fail "rubber-stamp fixture scored overall PASS (must FAIL)"
 else
-    test_fail "invalid-missing-phase1.jsonl fixture missing"
+  pass "rubber-stamp fixture fails overall"
 fi
 
-# Test 9: README Update
-test_start "Test 9: README Update"
-
-if [ -f "$SUMMONER_ROOT/README.md" ]; then
-    if grep -q "summoner-setup.sh" "$SUMMONER_ROOT/README.md"; then
-        test_pass "README mentions summoner-setup.sh"
-    else
-        test_fail "README missing summoner-setup.sh reference"
-    fi
-
-    if ! grep -q "线上报错" "$SUMMONER_ROOT/README.md"; then
-        test_pass "README has no mixed language (Chinese/English)"
-    else
-        test_fail "README still has mixed language"
-    fi
+echo "── 7. scorer selects the host-platform verifier (real canonical verification)"
+PLATFORM_PLUGIN="$TMP/platform-plugin"
+mkdir -p "$PLATFORM_PLUGIN/scripts" "$PLATFORM_PLUGIN/hooks/bin" "$TMP/platform-path"
+cp "$PLUGIN_ROOT/scripts/score-trace.sh" "$PLATFORM_PLUGIN/scripts/score-trace.sh"
+cp -R "$PLUGIN_ROOT/scorers" "$PLATFORM_PLUGIN/scorers"
+# Select a REAL verifier for this host, then place it under each platform's
+# literal fixture filename. Only uname is faked; hashing/scoring stay real.
+case "$(uname -s)-$(uname -m)" in
+  Darwin-x86_64) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status-darwin-amd64" ;;
+  Darwin-arm64) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status-darwin-arm64" ;;
+  Linux-x86_64) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status-linux-amd64" ;;
+  *) NATIVE_VERIFIER="$PLUGIN_ROOT/hooks/bin/summoner-status" ;;
+esac
+cat > "$TMP/platform-path/uname" <<'UNAME'
+#!/bin/bash
+case "$1" in
+  -s) printf '%s\n' "$TEST_UNAME_SYSTEM" ;;
+  -m) printf '%s\n' "$TEST_UNAME_MACHINE" ;;
+  *) exit 1 ;;
+esac
+UNAME
+chmod +x "$TMP/platform-path/uname"
+# A deliberately unusable unsuffixed copy proves the suffixed one was used:
+# a scorer that still selects the tree binary FAILs on every platform case.
+printf '%s\n' '#!/bin/bash' 'printf "wrong unsuffixed verifier selected\n" >&2' \
+  'exit 71' > "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+chmod +x "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+for platform in Darwin:x86_64:darwin-amd64 Darwin:arm64:darwin-arm64 Linux:x86_64:linux-amd64; do
+  IFS=: read -r test_system test_machine test_suffix <<< "$platform"
+  cp "$NATIVE_VERIFIER" "$PLATFORM_PLUGIN/hooks/bin/summoner-status-$test_suffix"
+  cp "$FIXTURE" "$TMP/platform-$test_suffix.jsonl"
+  if PATH="$TMP/platform-path:$PATH" TEST_UNAME_SYSTEM="$test_system" TEST_UNAME_MACHINE="$test_machine" \
+      bash "$PLATFORM_PLUGIN/scripts/score-trace.sh" --trace "$TMP/platform-$test_suffix.jsonl" >/dev/null 2>&1; then
+    pass "scorer uses $test_suffix verifier instead of unusable unsuffixed copy"
+  else
+    fail "scorer failed with $test_suffix verifier available"
+  fi
+done
+# Unknown hosts retain the native unsuffixed fallback; missing verifiers
+# remain FAIL rather than certifying a trace without canonical verification.
+cp "$NATIVE_VERIFIER" "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+cp "$FIXTURE" "$TMP/platform-fallback.jsonl"
+if PATH="$TMP/platform-path:$PATH" TEST_UNAME_SYSTEM=Unknown TEST_UNAME_MACHINE=unknown \
+    bash "$PLATFORM_PLUGIN/scripts/score-trace.sh" --trace "$TMP/platform-fallback.jsonl" >/dev/null 2>&1; then
+  pass "scorer keeps unsuffixed fallback when no host variant exists"
 else
-    test_fail "README.md not found"
+  fail "scorer lost the unsuffixed fallback"
 fi
-
-# Summary
-printf "\n${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-printf "${BOLD}Test Results${NC}\n"
-printf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-printf "${GREEN}✓ Passed:${NC}  %d\n" "$PASS_COUNT"
-printf "${RED}✗ Failed:${NC}  %d\n" "$FAIL_COUNT"
-printf "${YELLOW}⊘ Skipped:${NC} %d\n" "$SKIP_COUNT"
-printf "\nTotal: %d tests\n" "$((PASS_COUNT + FAIL_COUNT + SKIP_COUNT))"
-
-# Cleanup
-cd /
-rm -rf "$TEST_DIR"
-
-# Exit code
-if [ "$FAIL_COUNT" -gt 0 ]; then
-    printf "\n${RED}${BOLD}Some tests failed!${NC}\n"
-    exit 1
+rm "$PLATFORM_PLUGIN/hooks/bin/summoner-status"
+cp "$FIXTURE" "$TMP/platform-missing.jsonl"
+if PATH="$TMP/platform-path:$PATH" TEST_UNAME_SYSTEM=Unknown TEST_UNAME_MACHINE=unknown \
+    bash "$PLATFORM_PLUGIN/scripts/score-trace.sh" --trace "$TMP/platform-missing.jsonl" >/dev/null 2>&1; then
+  fail "missing verifier certified a trace"
 else
-    printf "\n${GREEN}${BOLD}All tests passed!${NC}\n"
-    exit 0
+  missing_status=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["chain_verification"]["status"])' \
+    "$TMP/platform-missing.jsonl.score.json" 2>/dev/null || true)
+  if [[ "$missing_status" == "FAIL" ]]; then
+    pass "missing verifier records chain FAIL in the derived sidecar"
+  else
+    fail "missing verifier did not record chain FAIL (${missing_status:-no sidecar})"
+  fi
 fi
+
+echo "──"
+if [[ $FAIL -eq 0 ]]; then
+  echo "✓ optimization smoke green ($PASS assertions)"
+  exit 0
+fi
+echo "✗ optimization smoke RED: $FAIL failed assertion(s), $PASS passed"
+exit 1

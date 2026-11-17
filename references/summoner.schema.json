@@ -1,110 +1,179 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Summoner Manifest",
-  "description": "Schema for summoner.yaml — project AI capability manifest",
+  "title": "Summoner Manifest v2",
+  "description": "Project capabilities for the single-loop reducer. Commands own phase order; this manifest never defines execution topology or grants permissions.",
   "type": "object",
+  "additionalProperties": false,
   "required": ["version", "project", "phases"],
   "properties": {
-    "version": {
-      "type": "string",
-      "enum": ["1"]
-    },
+    "version": { "type": "string", "enum": ["2"] },
     "project": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["name"],
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1,
-          "description": "Project namespace for memory isolation"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "not": { "pattern": "\\.\\." },
+          "description": "Portable memory namespace; no path separators, quotes or '..'."
         }
       }
     },
     "phases": {
       "type": "object",
       "minProperties": 1,
-      "patternProperties": {
-        "^[a-z_-]+$": {
-          "type": "object",
-          "required": ["skill"],
-          "properties": {
-            "skill": {
-              "type": "string",
-              "minLength": 1
-            },
-            "triggers": {
-              "type": "array",
-              "items": { "type": "string" }
-            }
-          }
-        }
-      }
+      "description": "Phase id to capability, not a phase route. Unlisted capabilities use disclosed built-in defaults.",
+      "propertyNames": {
+        "allOf": [
+          { "$ref": "#/definitions/id" },
+          { "not": { "enum": ["workflows", "chain", "fan_out", "graph", "checkpoints", "routing_rules", "triggers", "mode"] } }
+        ]
+      },
+      "properties": { "review": { "$ref": "#/definitions/review_phase" } },
+      "additionalProperties": { "$ref": "#/definitions/skill_phase" }
     },
-    "workflows": {
+    "check_registry": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/check_def" },
+      "description": "Unique check_id entries serialized exactly as shared.CheckDef. The CLI also recomputes each digest and validates references. Trust is a declaration, never execution authorization."
+    },
+    "tool_scope": { "$ref": "#/definitions/tool_scope" },
+    "suggested_budgets": {
       "type": "object",
-      "patternProperties": {
-        "^[a-z_-]+$": {
+      "additionalProperties": false,
+      "description": "SUGGESTIONS ONLY: surface at the first checkpoint for user confirmation. These are not active limits or pre-authorization; runtime consumption is wired separately. Omit to make no suggestion.",
+      "properties": {
+        "phase_tool_calls": { "type": "integer", "minimum": 1 },
+        "failed_checks": { "type": "integer", "minimum": 1 },
+        "run_rework": { "type": "integer", "minimum": 1 },
+        "delegations": { "type": "integer", "minimum": 1 },
+        "check_timeout_seconds": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "definitions": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "nonempty_string": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "string_set": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/nonempty_string" }
+    },
+    "skill_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(:[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+    },
+    "skill_binding": {
+      "description": "A scalar names the single default provider (none = explicit no-capability). Expanded bindings name one default and optional alternate providers; alternates never execute in sequence or automatically replace a missing default.",
+      "oneOf": [
+        { "$ref": "#/definitions/skill_name" },
+        {
           "type": "object",
-          "required": ["checkpoints"],
-          "oneOf": [
-            { "required": ["chain"] },
-            { "required": ["fan_out"] },
-            { "required": ["graph"] }
-          ],
+          "additionalProperties": false,
+          "required": ["default"],
           "properties": {
-            "chain": {
+            "default": { "$ref": "#/definitions/skill_name" },
+            "alternate": {
               "type": "array",
-              "items": { "type": "string" },
-              "minItems": 1
-            },
-            "fan_out": {
-              "type": "array",
+              "uniqueItems": true,
               "items": {
-                "type": "object",
-                "required": ["persona"],
-                "properties": {
-                  "persona": { "type": "string" }
-                }
-              },
-              "minItems": 1
-            },
-            "graph": {
-              "type": "object",
-              "description": "Plan-time graph definition (spec §2.6); manifest accepts the shape, walker/parse.go validates internals",
-              "properties": {
-                "nodes": { "type": "array", "items": { "type": "object" } },
-                "edges": { "type": "array" },
-                "conditional_edges": { "type": "array" },
-                "back_edges": { "type": "array" },
-                "budget": { "type": "object" }
+                "allOf": [
+                  { "$ref": "#/definitions/skill_name" },
+                  { "not": { "const": "none" } }
+                ]
               }
-            },
-            "merge": { "type": "string" },
-            "checkpoints": {
-              "type": "string",
-              "enum": ["after_each", "after_merge", "after_node", "none"]
             }
-          }
+          },
+          "if": { "properties": { "default": { "const": "none" } } },
+          "then": { "properties": { "alternate": { "maxItems": 0 } } }
         }
+      ]
+    },
+    "skill_phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill"],
+      "properties": { "skill": { "$ref": "#/definitions/skill_binding" } }
+    },
+    "review_phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verification_spec"],
+      "properties": { "verification_spec": { "$ref": "#/definitions/verification_spec" } }
+    },
+    "verification_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rubric"],
+      "description": "Project defines what to verify: additive criteria, registered check ids, extra readable scope and a rubric pointer. An independent reviewer chooses how; this never replaces the frozen acceptance set.",
+      "properties": {
+        "criteria": { "type": "array", "items": { "$ref": "#/definitions/criterion" } },
+        "check_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/id" },
+          "description": "Bare ids from check_registry. When building an envelope, freeze each referenced definition as check_id@digest in verification_scope.check_ids."
+        },
+        "readable": { "$ref": "#/definitions/string_set" },
+        "rubric": { "$ref": "#/definitions/nonempty_string" }
       }
     },
-    "routing_rules": {
+    "criterion": {
       "type": "object",
-      "description": "Top-level routing rules mapping a shared input field to node-id per workflow (spec §2.6.1)",
-      "patternProperties": {
-        "^[a-z_-]+$": {
-          "type": "object",
-          "required": ["input_field", "map"],
-          "properties": {
-            "input_field": { "type": "string" },
-            "map": {
-              "type": "object",
-              "patternProperties": {
-                "^[a-z_-]+$": { "type": "string" }
-              }
-            }
-          }
-        }
+      "additionalProperties": false,
+      "required": ["id", "goal", "scope", "method", "expected"],
+      "properties": {
+        "id": { "$ref": "#/definitions/id" },
+        "goal": { "$ref": "#/definitions/nonempty_string" },
+        "scope": { "$ref": "#/definitions/nonempty_string" },
+        "method": { "type": "string", "enum": ["mechanical", "judgment"] },
+        "expected": { "$ref": "#/definitions/nonempty_string" },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set true explicitly for a blocking criterion; follows the shared.Criterion wire default."
+        },
+        "check_id": { "type": "string" },
+        "rubric": { "type": "string", "description": "Judgment rubric override; absent or empty inherits verification_spec.rubric." }
+      },
+      "if": { "properties": { "method": { "const": "mechanical" } } },
+      "then": {
+        "required": ["check_id"],
+        "properties": { "check_id": { "$ref": "#/definitions/id" } }
+      },
+      "else": { "properties": { "check_id": { "const": "" } } }
+    },
+    "check_def": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "command", "digest", "trust"],
+      "properties": {
+        "check_id": { "$ref": "#/definitions/id" },
+        "command": { "$ref": "#/definitions/nonempty_string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env_allow": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "shared.CheckDefDigest: SHA-256 of the Go struct's canonical JSON with digest omitted, including trust and all other non-empty content fields. The CLI rejects missing or stale digests."
+        },
+        "trust": { "type": "string", "enum": ["framework", "project"] }
+      }
+    },
+    "tool_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Requested scope for project work, not a grant. Hook gates, reviewer allow-lists and the sandbox remain authoritative.",
+      "properties": {
+        "allowed_tools": { "$ref": "#/definitions/string_set" },
+        "readable": { "$ref": "#/definitions/string_set" },
+        "writable": { "$ref": "#/definitions/string_set" }
       }
     }
   }

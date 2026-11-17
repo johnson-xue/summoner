@@ -2,27 +2,72 @@
 
 ## Purpose
 
-Every Summoner workflow session ends with a post-game review. The questionnaire adapts based on how the session ended. Review responses are written to `journal/{date}-{workflow}.md`.
+Every Summoner workflow session ends with a post-game review — there is NO
+skip path. `done` and emergency `stop` BOTH leave the run POST_GAME_PENDING;
+the run becomes CLOSED only after the questionnaire answers AND the journal
+entry persist (the reducer's `CompletePostGame` is the sole CLOSED writer).
+The journal lives at the FIXED path `.summoner/journal/<run_id>.md` — never
+a date-keyed filename.
+
+## Runtime closure contract (single-loop v2)
+
+- **Entry** — `done:` lands POST_GAME_PENDING with kind `normal`; an
+  emergency `stop:` lands POST_GAME_PENDING with kind `emergency_minimal`
+  AND a minimal exit journal (`kind: emergency_minimal` frontmatter) written
+  hook-side IMMEDIATELY — the questionnaire is owed as 补答 debt, never
+  skipped. No timer ever closes, skips, or auto-answers a post-game: a
+  5-minute idle does nothing.
+- **The questionnaire is ONE AskUserQuestion call** — the platform caps 4
+  questions and 4 options per question, so exactly FOUR questions ride one
+  call: the selected type's questions 1-4. Each question text MUST carry the
+  run id AND its marker token `[pg:q1]`…`[pg:q4]` — that pairing is what the
+  PostToolUse hook observes. A question without the run id observes nothing
+  (it is not this run's questionnaire). An afk/timeout-resolved dialog
+  observes NOTHING: markers require actual non-timeout platform answers.
+- **Journal** — write the journal at `.summoner/journal/<run_id>.md` (Write
+  or Edit; the path is budget-exempt at POST_GAME_PENDING — any other write
+  still waits). The observation digest is read from the file AFTER the
+  platform executed the tool; the LATEST observed version governs closure
+  (rewrite freely before closing; a closed run's journal is final).
+- **Closure** — when all four markers are answered AND a journal observation
+  matches the file on disk, the hook closes the run: CLOSED, one
+  `post_game.completed` and one `workflow.ended` — exactly once. CLOSED
+  never reopens; later edits of a closed run's journal observe nothing.
+- **Cross-session** — closure happens in the OWNING session (run state is
+  keyed by session); a fresh session's SessionStart hook points at the owed
+  runs. `/summoner:status` shows the owed markers and the journal path.
 
 ## Trigger Rules
 
-Post-game review triggers when:
-- Workflow completes all phases (user says "done" or reaches end)
-- User says "stop" — SKIP review (emergency stop = no time for questions)
-- Framework detects no user input for 5+ minutes after checkpoint — SKIP (user is away)
+Post-game review triggers when the run reaches POST_GAME_PENDING:
+- Workflow completes: the user decides `done:` at a checkpoint — kind
+  `normal`.
+- Emergency stop: the user decides `stop:` at a checkpoint — kind
+  `emergency_minimal`, minimal journal written at once, questionnaire
+  owed at next resume (补答). A free-text stop signal is NOT a post-game
+  trigger (ruling 70): it ends the turn with run state kept — resumable
+  via `/summoner:status` — and never advances the run into POST_GAME_PENDING.
 
-### Multi-Type Collision
+Both kinds are mandatory. There is no idle-skip, no auto-close, and no
+"stop means skip" rule — that older behavior is retired.
+
+## Multi-Type Collision
 
 A session can trigger multiple review types (e.g., user skipped AND injected knowledge). Priority order:
 
 **Type 1 > Type 5 > Type 3 > Type 2 > Type 4**
 
-When multiple types are triggered, pick the **highest-priority type only** and present a single questionnaire. Do NOT merge or chain multiple questionnaires — that defeats the brevity goal.
+When multiple types are triggered, pick the **highest-priority type only** and present a single questionnaire. Do NOT merge or chain multiple questionnaires — that defeats the brevity goal (and the platform caps one call at 4 questions).
 
 **Common collision rules:**
 - User says "skip, 我知道怎么修" → both Type 2 and Type 3 trigger → show Type 3 (higher priority)
 - User said "别废话" AND made a correction → both Type 5 and Type 1 → show Type 1
 - Session completed cleanly but user was verbose about it → Type 4 only (no Type 5 unless explicit complaint)
+
+**Marker binding**: whatever type is selected, its questions 1-4 carry the
+markers `[pg:q1]`…`[pg:q4]` (plus the run id) in their question texts — the
+pinned observation set is type-independent. The trailing 备注 question is
+optional and carries no marker; fold its content into the journal prose.
 
 ## Type 1: Direction Correction
 
@@ -141,23 +186,31 @@ When multiple types are triggered, pick the **highest-priority type only** and p
 
 ## Journal Entry Format
 
-Each review writes to `journal/{date}-{workflow}-{short-slug}.md`:
+The journal is written to the FIXED path `.summoner/journal/<run_id>.md`
+(one file per run; the run id makes it unambiguous even when several runs
+share a date):
 
 ```markdown
 ---
+run_id: {run id}
 date: {ISO date}
-workflow: {fix|new|ship|debug|ops|review}
+workflow: {fix|new|ship|debug|ops|review|release}
+kind: {normal|emergency_minimal}
 review_type: {1|2|3|4|5}
 project: {from summoner.yaml project.name}
 ---
 
-# {workflow} — {date}
+# {workflow} — {date} — {run id}
 
 {review answers in prose / key-value format}
 
 ## Agent Summary
 {AI self-reflection: what could have been done better?}
 ```
+
+An emergency stop may rewrite the hook-written minimal journal in place
+(same fixed path) with the full entry — the reducer closes on the LATEST
+observed version. After CLOSED the journal is final.
 
 ## Insights Pipeline
 

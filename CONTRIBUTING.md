@@ -18,8 +18,8 @@ Thanks for your interest in contributing! Summoner is a Claude Code plugin that 
 ```
 hooks/       Go lifecycle hooks (SessionStart, PreToolUse, Stop)
 skills/      Meta-skill routing hub (SKILL.md)
-commands/    Slash command definitions (6 entries)
-agents/      Reusable persona definitions
+commands/    Slash command definitions (8 entries)
+agents/      Reviewer contract (reviewer.md; worker.md pending eval gate)
 references/  Protocol specifications + JSON Schema
 scripts/     Shell utilities (Bash)
 ```

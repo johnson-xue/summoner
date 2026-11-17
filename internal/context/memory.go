@@ -36,10 +36,8 @@ func NewMemory(projectName string) (*Memory, error) {
 	projectHash := hashProjectName(projectName)
 
 	// Get database path (with env override support)
-	dbPath, err := getDatabasePath(projectHash)
-	if err != nil {
-		return nil, fmt.Errorf("database path: %w", err)
-	}
+	dbPath := getDatabasePath(projectHash)
+	migrateLegacyDatabase(dbPath, projectHash)
 
 	// Open database
 	db, err := database.Open(dbPath)
@@ -72,12 +70,9 @@ func (m *Memory) GetDB() *database.DB {
 	return m.db
 }
 
-// getDatabasePath returns the database file path.
-// Security: validates SUMMONER_DB_PATH to prevent path traversal attacks.
-// Returns an error (never log.Fatalf) so the caller — a library function —
-// can surface it as a normal error. Fatalf killed the whole process on a
-// missing HOME, taking down any test or embedded caller with it.
-func getDatabasePath(projectHash string) (string, error) {
+// getDatabasePath returns the database file path
+// Security: validates SUMMONER_DB_PATH to prevent path traversal attacks
+func getDatabasePath(projectHash string) string {
 	// Check environment variable override
 	if basePath := os.Getenv("SUMMONER_DB_PATH"); basePath != "" {
 		// Validate path to prevent path traversal
@@ -85,22 +80,62 @@ func getDatabasePath(projectHash string) (string, error) {
 			log.Printf("Warning: invalid SUMMONER_DB_PATH (%v), using default", err)
 			return getDefaultDatabasePath(projectHash)
 		}
-		return filepath.Join(basePath, projectHash+".db"), nil
+		return filepath.Join(basePath, projectHash+".db")
 	}
 
 	return getDefaultDatabasePath(projectHash)
 }
 
-// getDefaultDatabasePath returns the default database path
-func getDefaultDatabasePath(projectHash string) (string, error) {
+// getDefaultDatabasePath returns the default database path.
+//
+// 2026-09: the default moved to ~/.summoner/memory/ — a VERSION-INDEPENDENT
+// root. The old default (~/.claude/plugins/summoner/memory/) sits in a
+// directory that changes (or gets abandoned) on every plugin upgrade, which
+// orphaned context DBs on each version bump. Existing DBs migrate on first
+// open (copy-if-missing, non-destructive).
+func getDefaultDatabasePath(projectHash string) string {
+	if base := os.Getenv("SUMMONER_MEMORY_DIR"); base != "" {
+		return filepath.Join(base, projectHash+".db")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// Security: fail with an error instead of using current directory;
-		// do NOT log.Fatalf — that aborts the process from a library.
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
+		// Security: fail fast instead of using current directory
+		log.Fatalf("Fatal: cannot determine home directory: %v", err)
 	}
+	return filepath.Join(home, ".summoner", "memory", projectHash+".db")
+}
 
-	return filepath.Join(home, ".claude", "plugins", "summoner", "memory", projectHash+".db"), nil
+// migrateLegacyDatabase copies a pre-2026-09 DB (old default root) to its new
+// location if the new one doesn't exist yet. Copy, not move: the legacy file
+// stays as a rollback fossil; the copy is idempotent.
+func migrateLegacyDatabase(newPath, projectHash string) {
+	if _, err := os.Stat(newPath); err == nil {
+		return // already migrated (or brand new)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	legacy := filepath.Join(home, ".claude", "plugins", "summoner", "memory", projectHash+".db")
+	if _, err := os.Stat(legacy); err != nil {
+		return // nothing to migrate
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+		return
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		src := legacy + suffix
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(newPath+suffix, data, 0644); err == nil {
+			log.Printf("Summoner: migrated legacy context DB %s -> %s", src, newPath+suffix)
+		}
+	}
 }
 
 // validateDatabaseBasePath validates the base path for security

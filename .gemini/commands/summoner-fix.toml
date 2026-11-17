@@ -1,18 +1,18 @@
 description = "Bug fix pipeline — diagnose root cause, reproduce, fix, verify, review"
 
 prompt = """
-Invoke the summoner skill with workflow 'fix'.
+Invoke the Summoner workflow 'fix'.
 
-Follow the Summoner workflow:
-1. Phase 0: Memory Retrieval — check for relevant past patterns
-2. Phase 1: Diagnose root cause (MANDATORY — iron law, cannot skip)
-3. Phase 2: Reproduce — write failing test (optional per auto-skip)
-4. Phase 3: Fix — apply the fix (freeform)
-5. Phase 4: Verify — run test suite (optional)
-6. Phase 5: Review — code review (optional)
+This command is a POINTER, not a copy — do NOT rely on any paraphrased workflow
+description. Read and execute the canonical definition from the installed
+Summoner plugin (locate the plugin dir: the one containing both scripts/ and
+memory/, e.g. ~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/):
 
-After each phase, output SUMMONER CHECKPOINT and wait for user input.
-User options: continue / skip / done / recall / stop.
+  1. <plugin-root>/skills/summoner/SKILL.md  — routing hub + checkpoint contract
+  2. <plugin-root>/commands/fix.md          — this workflow's specific rules
+  3. References the SKILL.md pointers name (workflow-reference, checkpoint-protocol,
+     memory-chain, ...) are loaded on demand — follow them.
 
-At workflow end, trigger Post-Game Review questionnaire.
+Phase 0 memory retrieval, checkpoint pauses (enter/skip/done/recall/stop) and the
+post-game review all follow the canonical files, never a local restatement.
 """

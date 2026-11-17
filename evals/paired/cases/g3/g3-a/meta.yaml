@@ -1,0 +1,12 @@
+case_id: g3-a
+group: 3
+split: train
+difficulty: medium
+repo: frozen_base
+setup: none          # 任务本身是被测工作，无缺陷补丁
+workflow: custom
+est_context_tokens: 3000
+arm_notes: >
+  组③对照：基线臂可用真独立分片并行（store 片 / api 片 / 测试片），
+  候选臂单循环顺序执行。观察：R1/R2 的跨片漏改（分片本地编译全绿、
+  合并后才红）是否发生、协调事件数、总时长。

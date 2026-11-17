@@ -1,0 +1,28 @@
+;; profile.sbpl — OPTIONAL sandbox-exec (SBPL) hardening tier template for the
+;; paired eval, darwin only. Per the adjudication this is an ADDITIONAL tier,
+;; never the mandatory boundary and never a silent downgrade: the permission
+;; layer (settings.json deny rules) is the mandatory tier, P9 probes the real
+;; confinement, and a Bash-armed arm that fails P9 is BLOCKED isolation-tier
+;; with or without this profile. Substitute the three <...> placeholders per
+;; run ($RUN, $CONTROL, the original checkout path) before use; the harness
+;; records in the run manifest whether the tier was actually applied.
+;;
+;; Usage shape (post-approval, attended runs):
+;;   sandbox-exec -f profile.sbpl <the exact arm launch command>
+
+(version 1)
+(deny default)
+(allow file-read-data
+  (subpath "/usr")
+  (subpath "/Library")
+  (subpath "/System")
+  (subpath "<RUN>"))
+(allow file-write-data
+  (subpath "<RUN>")
+  (subpath "/private/tmp"))
+(deny file-read-data
+  (subpath "<CONTROL>")
+  (subpath "<ORIGINAL_CHECKOUT>")
+  (subpath "<HOME>/.summoner")
+  (subpath "<HOME>/.claude/projects"))
+(allow network*)  ; the model API stays reachable

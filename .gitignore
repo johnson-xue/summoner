@@ -8,8 +8,14 @@ memory/_index.json
 hooks/bin/*
 !hooks/bin/.gitkeep
 !hooks/bin/session-start
-!hooks/bin/pretooluse-skill
+!hooks/bin/pretooluse-gate
 !hooks/bin/stop
+!hooks/bin/validate-manifest
+!hooks/bin/posttooluse
+!hooks/bin/subagentstop
+!hooks/bin/userpromptsubmit
+!hooks/bin/summoner-status
+!hooks/bin/summoner-sandbox-probe
 !hooks/bin/*-darwin-arm64
 !hooks/bin/*-darwin-amd64
 !hooks/bin/*-linux-amd64
@@ -23,5 +29,12 @@ hooks/bin/*
 *~
 .idea/
 
+# Python bytecode caches (paired-eval harness selftest imports)
+__pycache__/
+
 # Claude local config (contains project-local credentials — never commit)
 .claude/settings.json
+
+# Paired-eval outputs (run artifacts — output-only, never committed)
+evals/paired/results/*
+!evals/paired/results/.gitkeep

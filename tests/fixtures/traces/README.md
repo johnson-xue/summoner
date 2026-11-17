@@ -1,49 +1,98 @@
-# Trace Fixtures
+# Trace Fixtures (v2)
 
-Contract-scorer trace fixtures for the graph + node-contract upgrade
-(spec: `docs/superpowers/specs/2026-07-27-graph-node-contract-design.md`).
-Each `.jsonl` file is one JSON event per line, following the trace-protocol.
+Static JSONL fixtures for the five v2 contract scorers (spec
+`docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md` §7; the
+v1/graph-era fixture set was deleted with the single-mode switch). Each line
+is one v2 trace event in the shared writer's canonical field order
+(`schema_version, run_id, session_id, project_root_hash, type, seq,
+timestamp, source?, tool_use_id?, payload?, prev_hash, hash`). Hash values
+are well-formed but are NOT verified by the scorers — crypto verification of
+the chain is Go-owned (`hooks/shared/trace.go` `VerifyChain`); the scorers
+audit event-set, ordering, binding and completeness semantics only.
+
+## The five scorers (`scorers/deterministic/`)
+
+| Scorer | Owns (spec) |
+|---|---|
+| `schema-check.sh` | v2 event-set membership (the 38-type allow-list mirrored from `hooks/shared/trace.go`), schema_version/seq/run-id shape, `workflow.started` first, terminal discipline (`post_game.completed` / `workflow.ended` exactly once each — T18) |
+| `review-evidence-check.sh` | §3 证据与 verdict: reviewer identity (non-fork reviewer delegation), running-review evidence (伪造 verdict), dangling verdicts (悬空 review), rubber-stamp PASS (盖章审查), evidence-id joins (mirror of `shared.ReconcileEvidence`), per-criterion completeness, 同 digest 复用 legitimacy |
+| `user-gate-check.sh` | §1.3/1.4/§4: 展示绑定 (displayed before decided), 决策绑定 (decisions only from AskUserQuestion tool_use ids — 注入 answers), nonce presence/equality, 幂等 (one decision per checkpoint, one decision per platform call), stale 渲染 (no `change.delta_applied` between display and decision), ride-along binding (`criterion.dropped` / `budget.confirmed` / `budget.extended` bind the answering AskUserQuestion id) |
+| `recovery-check.sh` | §3 崩溃恢复 / §4 recall / §5 OUTCOME_UNKNOWN: probe-bound one-shot resolutions (`accepted/failed/indeterminate`), bad outcomes route to a displayed recovery checkpoint, review re-dispatch never re-runs the producer, recall targets real history and opens a new visit |
+| `post-game-check.sh` | §0 裁决 4 / §5 post-game 不豁免: `workflow.ended` only after `post_game.completed`, emergency stop stays POST_GAME_PENDING (no instant close without questionnaire evidence), started-kind shape |
+
+Exit codes, strictly distinguished: **0** PASS · **1** FAIL · **2** NA
+(justified N/A — the surface does not exist in this trace, grounded in trace
+content) · **3** MISSING (the surface was claimed/begun but its evidence is
+absent). N/A is never scored as PASS (skip ≠ 满分).
 
 ## Catalog
 
-| Fixture | Scenario | Expected scorer outcome |
-|---|---|---|
-| `example-C2-clean-graph-pass.jsonl` | **C2** — clean full-graph pass: every ⑤ returns PASS on the first attempt, no retries / back-edges / rejects. The happy path. | PASS all 3 scorers |
-| `example-C3-verify-fail-backedge.jsonl` | **C3** — verify ③ FAIL → retry to `max_inner_turns` → `node_test_loop exhausted:true` → cross-node `handoff_reject` (verify→fix) with `skip:[reproduce]`; fix re-runs without re-diagnosing, then verify passes. | PASS all 3 scorers |
-| `example-C4-new-graph-review-agent-catches.jsonl` | **C4 (NEW)** — ⑤ on fix independently greps all deref sites, finds the 2nd caller at `task.go:187` the producer missed; same-node `node_review_retry` back-edges to fix before any human checkpoint. | PASS all 3 scorers |
-| `example-C4-old-chain-lets-defect-through.jsonl` | **C4 (OLD)** — pre-graph baseline: no ⑤, the 2nd-caller defect ships to the human. The OLD half of the C4 old-vs-new pair. | (baseline — not scorer-asserted) |
-| `example-C5-review-isolation-violation.jsonl` | **C5** — ADVERSARIAL: rubber-stamp `review_verdict` (empty `evidence_tool_calls`) AND producer-reasoning leak (`stripped` omits `producer_reasoning_trace` + `producer_verdict_self_report`) on h-002. | **FAIL `review-isolation-check.sh`** (exit 1) — this is the fixture's purpose |
-| `example-C9-three-times-same-finding.jsonl` | **C9** — cross-node ⑤ returns NEEDS-FIX with the SAME finding (`player/task/task.go:187`, the `findingKey` dedup key, walk.go:210-214) 3×. The 1st and 2nd NEEDS-FIX emit cross-node `handoff_reject` #1/#2 (`FindingsSeen[key]`=1 then 2, both <3); the 3rd makes `FindingsSeen[key]`=3 ≥3 → the walker returns `checkpoint` (walk.go:155-156) BEFORE the handoff_reject append (walk.go:164) → **NO 3rd `handoff_reject`** is emitted. So the trace has exactly 2 `handoff_reject` + 1 escalation `checkpoint`; the 4th back-edge never fires. Uses cross-node `handoff_reject` (from_node=verify), NOT same-node `node_review_retry` (same-node retries don't increment `FindingsSeen` / don't escalate). Verified empirically against the walker. | PASS all 3 scorers (well-formed trace showing the escalation pattern; the 3× same-finding escalation + `MaxBackEdgesTotal` halt are unit-tested in `internal/graph/walk_test.go` (`TestRecordReviewVerdict_3xEscalation_Checkpoint`, `TestRecordReviewVerdict_MaxBackEdgesHalt`)) |
-| `example-C10-cross-file-soft-⑤-catches.jsonl` | **C10 (NEW)** — cross-file SOFT scenario: ⑤ independently greps drop/clear call-sites across `cross_server/` + `inventory/`, finds `inventory.go:410 Clear()` the producer's fix missed; `node_review_retry` on fix. | PASS all 3 scorers |
-| `example-C10-old-chain-lets-defect-through.jsonl` | **C10 (OLD)** — pre-graph baseline: the `inventory.go:410` cross-file defect ships to the human. The OLD half of the C10 pair. | (baseline — not scorer-asserted) |
-| `invalid-missing-phase1.jsonl` | Negative fixture (pre-graph): missing Phase 1. | FAIL (contract violation) |
-| `valid-fix-workflow.jsonl` | Positive fixture (pre-graph): a well-formed chain-mode fix workflow. | (pre-graph baseline) |
+Naming: `valid-*` (positive), `invalid-*` (contract violation), `missing-*`
+(missing evidence, exit 3). The expected outcome of every fixture × scorer is
+asserted by `scripts/run-trace-fixtures.sh` — this table is the prose view;
+the script is the executable truth.
 
-## Scorers
+| Fixture | Scenario |
+|---|---|
+| `valid-full-run.jsonl` | Complete happy-path fix run: two phase checkpoints with budget.confirmed / criterion.dropped ride-alongs, a full ⑤ review (prepared → reviewer delegation → evidence tools → PASS verdict covering every criterion), review-result checkpoint decided (DONE), post-game normal closure. PASS on every applicable scorer. |
+| `valid-review-reuse.jsonl` | Same-version acceptance reuse: two reviews on the same artifact digest with the MATCHING content triple (digest + criteria + scope) — the legal ⑤ reuse. |
+| `valid-review-evidence-real.jsonl` | REAL-binary dump (T12 fix-back, regenerated for fix-back 2, generated by an ephemeral contract-suite driver, not hand-built): typed run start → two phase checkpoints (budget ride-along settled) → [v] → review-submit → reviewer delegation → the reviewer's own evidence Read observed inside the review window → subagentstop backfill with the evidence join → `review.verdict` carrying the RUNTIME's real payload shape (`review_id`, `run_status`, `verdict`, `evidence_tool_call_ids`, `envelope_digest`, `artifact_digest` — thin: criterion content stays in state/envelope by design). Pins that the scorers audit the payload the runtime actually emits, digest reuse included. Ends at the open review-result checkpoint (in flight → schema/post-game/recovery N/A). |
+| `valid-recall.jsonl` | `recall.applied` from `diagnose` back to `context` (real history), carrying stale propagation, followed by the NEW visit of the target phase. |
+| `valid-postgame-emergency.jsonl` | STOP decision → `post_game.started(kind=emergency_minimal)` → trace ends POST_GAME_PENDING (最小 journal + 补答 later). |
+| `valid-change-loop.jsonl` | T10 requirement-change loop (inherited, canonical AppendEvent trace): mid-phase `change.opened` → `change.delta_applied` → `checkpoint.displayed` → `checkpoint.decided` → `change.resumed`. Exercises the user-gate positional contract (below). |
+| `valid-crash-recovery.jsonl` | T19 OUTCOME_UNKNOWN episode (inherited, canonical): two dangling mutating intents → session-start marks → one read-class probe each → probe-submit resolves the batch (`accepted`). |
+| `valid-checks-ladder.jsonl` | T19 check trust ladder (inherited, canonical): L3 BLOCKED → L2 sandbox_unproven → paired-probe L2 pass → consumed-probe encore BLOCKED → fresh probe → L1 in-gate. Ends mid-turn right after `checkpoint.opened`, so user-gate records the render evidence as MISSING (the fixture ends before the Stop hook binds the display) — expected, asserted. |
+| `valid-release-probe-match.jsonl` | T13 release reconciliation branch 1 — exists+matches（已生效）: crashed publish `git tag` intent → session-start marks → ONE read-class probe observes the tag AND all three manifests at the new version → `accepted`, run restores (no recovery checkpoint). Generated through the canonical `shared.AppendEvent` chain. |
+| `valid-release-probe-mismatch.jsonl` | T13 release reconciliation branch 2 — exists+mismatch（不一致）: two dangling publish intents (version write + tag); probes observe the tag landed but root plugin.json still on the old version (the historical drift) → batch `failed` → recovery checkpoint displayed, trace ends WAIT_USER. Never a mutating fix, never silently passed. |
+| `valid-release-probe-absent.jsonl` | T13 release reconciliation branch 3 — missing（未生效）: the crashed version-write intent never landed (all three manifests still on the old version) → honest `failed` verdict → recovery checkpoint; re-running publish is the user's CONTINUE/RECALL/STOP decision, never an auto-replay. |
+| `missing-postgame-closure.jsonl` | `post_game.started(kind=normal)` with no terminal: closure evidence missing (schema + post-game exit 3). |
+| `missing-review-evidence.jsonl` | PASS verdict whose payload records NO `evidence_tool_call_ids` at all: the claim is unauditable from the trace (exit 3 — distinct from the rubber-stamp FAIL, which records an EMPTY list). |
+| `missing-recovery-resolution.jsonl` | `tool.outcome_unknown` never resolved by end of trace (exit 3). |
+| `invalid-schema-unknown-event.jsonl` | A v1 graph event type (`node_review_retry`) — not in the v2 allow-list. |
+| `invalid-schema-no-start.jsonl` | Events but no `workflow.started`. |
+| `invalid-schema-double-terminal.jsonl` | Two `workflow.ended` — the CLOSED writer emits it exactly once. |
+| `invalid-usergate-injected-answers.jsonl` | **注入 answers**: a decision bound to a Bash tool_use id — decisions come only from AskUserQuestion calls. |
+| `invalid-usergate-stale-render.jsonl` | **stale 渲染**: `change.delta_applied` between a checkpoint's display and its decision — the decision bound pre-change content. |
+| `invalid-usergate-undisplayed-decision.jsonl` | Decision on a checkpoint never displayed (生成文本 ≠ 已展示). |
+| `invalid-usergate-double-decision.jsonl` | A replayed decision recorded as a SECOND `checkpoint.decided` — idempotency violation. |
+| `invalid-usergate-nonce-mismatch.jsonl` | `checkpoint.opened` and `checkpoint.displayed` carry different nonces. |
+| `invalid-review-rubber-stamp.jsonl` | **盖章审查**: PASS verdict with an EMPTY `evidence_tool_call_ids` list. |
+| `invalid-review-forged-verdict.jsonl` | **伪造 verdict**: verdict with no reviewer delegation and no review activity between prepared and verdict. |
+| `invalid-review-dangling.jsonl` | **悬空 review**: verdict for a review id that was never prepared. |
+| `invalid-review-criterion-gap.jsonl` | Verdict concludes 2 of 3 prepared criteria — per-criterion completeness violation. |
+| `invalid-review-evidence-forged-id.jsonl` | Evidence id with no recorded tool call in the review window (mirror of `shared.ReconcileEvidence`). |
+| `invalid-review-reuse-mismatch.jsonl` | Same artifact digest re-reviewed with a DIFFERENT criteria set — reuse is legal only on the matching content triple. |
+| `invalid-recovery-no-checkpoint.jsonl` | `tool.resolved(failed)` followed by phase activity with no recovery checkpoint displayed. |
+| `invalid-recovery-forged-probe.jsonl` | `tool.resolved` citing a probe tool_use id that never ran. |
+| `invalid-recall-unknown-target.jsonl` | `recall.applied` targeting a phase that is not real history. |
+| `invalid-review-recovery-rerun.jsonl` | Review crash "recovered" by RE-RUNNING the producer phase between the two dispatches of the same envelope. |
+| `invalid-postgame-ended-without-completed.jsonl` | `workflow.ended` without a preceding `post_game.completed` (CLOSED bypass). |
+| `invalid-postgame-emergency-instant-close.jsonl` | Emergency stop closed instantly with no questionnaire evidence — POST_GAME_PENDING violation. |
 
-Run from the repo root (`bash scorers/deterministic/<check>.sh <trace.jsonl>`):
+## Positional contract (change-confirm / review-result / recovery checkpoints)
 
-- `handoff-contract-check.sh` — §2.2 + §2.2.1 typed-envelope contract (envelope_id correlation, no `passed` in `attempt_history`, `verdict_type` on every exit_criterion, no producer-reasoning leak fields). Exit 0=PASS, 1=FAIL, 2=SKIP.
-- `review-isolation-check.sh` — §2.7 #6 ⑤ independence: non-empty `evidence_tool_calls` (no rubber-stamp), correlated handoff `stripped` includes `producer_reasoning_trace` + `producer_verdict_self_report`, no `passed` in `attempt_history`. Exit 0=PASS, 1=FAIL, 2=SKIP.
-- `verifier-checklist-check.sh` — §2.4 + §2.5 B3 DECIDABLE/SOFT discipline: every DECIDABLE criterion a handoff claims satisfied is backed by a passed DECIDABLE `node_test_loop` on the same `from_node` (join on `node`+`verdict_type`+`passed`, not on a `criterion` name). Exit 0=PASS, 1=FAIL, 2=SKIP.
+Only the phase-submit path emits `checkpoint.opened`. The change-confirm
+checkpoint (T10), review-result checkpoints and recovery checkpoints emit NO
+`checkpoint.opened` — the change-confirm checkpoint is identified POSITIONALLY
+as the id `change.resumed` names; for all kinds, `checkpoint.displayed` is
+the trace-visible user-gate act. `user-gate-check.sh` requires an
+opened→displayed nonce pairing only when an `opened` exists, and requires
+displayed-before-decided always.
 
-## Harness wiring
+## Harness
 
-The harness scripts take arguments / glob (they do NOT list fixtures explicitly):
+- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (34
+  fixtures × 5 scorers), adversarial message assertions, and sidecar /
+  baseline self-checks. Run it in CI and after any scorer/fixture edit.
+- `scripts/score-trace.sh --trace <file>` — scores one trace and writes the
+  derived sidecar `<file>.score.json` NEXT TO it (never into the trace).
+- `scripts/create-baseline.sh` / `scripts/regression-test.sh` — baseline
+  pinning + regression against the sidecar; a required score that is missing
+  is a FAIL, never a silent skip.
+- See `references/scoring-system.md` (scoring) and `references/trace-protocol.md`
+  (event vocabulary) for the contracts these fixtures encode.
 
-- `scripts/regression-test.sh --baseline <old.json> --new-trace <new.jsonl>` — compares a baseline trace to a new trace. The Δ (old lets a defect through, new catches it) is the headline ⑤ feasibility proof. Documented invocations:
-  ```bash
-  # C4: old chain ships the 2nd-caller defect; NEW graph ⑤ catches it before any human checkpoint.
-  scripts/regression-test.sh \
-    --baseline tests/fixtures/traces/example-C4-old-chain-lets-defect-through.jsonl \
-    --new-trace tests/fixtures/traces/example-C4-new-graph-review-agent-catches.jsonl
-
-  # C10: old chain ships the cross-file inventory.go:410 defect; NEW graph ⑤ catches it.
-  scripts/regression-test.sh \
-    --baseline tests/fixtures/traces/example-C10-old-chain-lets-defect-through.jsonl \
-    --new-trace tests/fixtures/traces/example-C10-cross-file-soft-⑤-catches.jsonl
-  ```
-- `scripts/stability-test.sh` — globs `$TRACES_DIR/$PROJECT/*-${WORKFLOW}-*.jsonl`; no fixture list to edit.
-- `scripts/score-trace.sh` — runs the 3 contract scorers on a single trace (the contract-gates loop).
-
-The standalone new-graph fixtures (C2 / C3 / C5 / C9) are not old-vs-new pairs — they are verified directly with the 3 scorers per the table above (C2/C3/C9 PASS all 3; C5 FAILs `review-isolation-check.sh`).
+Adding a fixture: write the JSONL, add its expected row to the EXPECTED table
+in `scripts/run-trace-fixtures.sh` (and a MESSAGES row for adversarial
+fixtures), run the script — a fixture without assertions fails the suite by
+omission review, not mechanically, so keep the table exhaustive.

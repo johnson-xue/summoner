@@ -2,5 +2,5 @@ module github.com/johnson-xue/summoner/hooks
 
 go 1.16
 
-// Security: External dependency pinned to v0.2.0 and vendored to prevent supply chain attacks
-require github.com/johnson-xue/memory-validator v0.2.0
+// YAML parsing only; the v2 manifest contract is validated inline.
+require gopkg.in/yaml.v3 v3.0.1

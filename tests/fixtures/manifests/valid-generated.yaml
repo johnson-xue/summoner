@@ -1,0 +1,31 @@
+# summoner.yaml — project capabilities, not an execution topology
+version: "2"
+project:
+  name: "fixture-project"
+phases:
+  requirements:
+    skill: "superpowers:brainstorming"
+  plan:
+    skill: "superpowers:writing-plans"
+  implement:
+    skill: "superpowers:executing-plans"
+  test:
+    skill: "superpowers:test-driven-development"
+  diagnosis:
+    skill: "superpowers:systematic-debugging"
+  ops:
+    skill: "none"
+  fix:
+    skill: "superpowers:executing-plans"
+  reproduce:
+    skill: "superpowers:test-driven-development"
+  verify:
+    skill: "superpowers:verification-before-completion"
+  regression:
+    skill: "superpowers:verification-before-completion"
+  review:
+    verification_spec:
+      criteria: []
+      check_ids: []
+      readable: []
+      rubric: plugin:agents/reviewer.md

@@ -1,62 +1,51 @@
 # Summoner Changelog
 
-## [0.2.0] - 2026-08-18
+## [0.5.0] - 2026-11-17
+
+Single-mode rewrite + zero-threshold upgrade. **A project updates the plugin and nothing else** — a `version: "1"` summoner.yaml keeps working as-is.
 
 ### ✨ Features
-
-This release introduces **graph-mode** — a new orchestration topology where the walker traverses a declarative task graph (`summoner-task-graph` YAML) instead of a linear phase list, with per-node contract enforcement, an independent review/re-derivation step (⑤), and a human-facing explain/status surface.
-
-- **feat(graph): parse + validate `summoner-task-graph` YAML** (4adc2ab) — the graph-mode entry point; loads and validates the declarative task graph definition.
-- **feat(graph): walk-state machine + budget enforcement** (046ee90) — the walker core: a state machine advancing through nodes while enforcing budget/escalation limits.
-- **feat(graph): walker explain (M9 human-facing) + status (debug)** (1a5d731) — `explain` renders the route a finding took for humans; `status` exposes internal walker state.
-- **feat(walker): `cmd/summoner-walker` CLI** (6afdf6a) — standalone CLI (`next`/`record`/`explain`/`status`) to drive and inspect the walker outside the skill layer.
-- **feat(node-contract): node-snapshot.sh (⓪), review-agent (⑤), node-contract.md** (ea23ad6) — per-node contract machinery: a snapshot script, an independent review/re-derivation agent, and the contract spec.
-- **feat(scorers): handoff-contract-check, verifier-checklist-check, review-isolation-check** (04baa4a) — three new scorer gates enforcing handoff contracts, verifier checklists, and review-isolation (P0).
-- **feat(manifest): add `after_node` + graph `oneOf` + `routing_rules`** (16ea8db) — manifest schema gains graph-mode routing primitives; fixes a divergence between manual and `after_merge` paths (M1/C3).
-- **feat(orchestration): SKILL.md drives the walker; commands reference `route_*` rules; checkpoint M9 render** (59a27a2) — the meta-skill now drives the walker directly; commands reference routing rules; checkpoint M9 renders.
+- **zero-touch v1 manifest compat**: the runtime loader and validate-manifest translate a `version: "1"` summoner.yaml to its v2 capability-map view IN MEMORY (debug+diagnose→`diagnosis`, rpc/subsystem/gmt/migrate→`implement`, retired topology keys dropped with every capability preserved); the on-disk file is never rewritten; `validate-manifest` reports `VALID … (v1 compat, file untouched)`; SessionStart renders the v2 route view for the model. Only "1" translates — anything else still fails closed.
+- **single-mode rewrite**: walker binary, graph mode and job personas deleted; one main-session loop driven by a Go hook reducer. Checkpoints, authorization, evidence and budgets live in one place (`hooks/shared/reducer.go`).
+- **manifest v2 capability map**: `phases` bind default/alternate skills per capability; `phases.review.verification_spec` (rubric + criteria); `check_registry` with recomputed digests; retired v1 topology keys rejected in v2 documents.
+- **read-only tool surface in the gate**: LSP navigation is admitted as first-party read-only; a project declares its read-only workflow tools (e.g. MCP code-search) in `tool_scope.allowed_tools` and the gate admits exactly those, pre-effect; every other unmodeled tool stays denied, and a broken manifest narrows admission back to deny (fail-closed). Modeled mutation tools never consult the declaration, so it cannot smuggle write access.
+- **recovery machinery (adjudicated rounds)**: wedged RUNNING-review recovery via strict review-submit + same-envelope rotation; retired-attempt archival (a late-stopped child never concludes the successor); crash-window OUTCOME_UNKNOWN scan at SessionStart/Stop with frozen pre-effect declarations; named recall over real visit history with stale invalidation; budget ladder + run-start accounting; four-question post-game; terminal-⑤ UNREVIEWED debt.
+- **contract-first testing**: real-binary e2e contract suite (build before test), 227-assertion / 38-fixture trace matrix, paired scorer selftests, install-smoke in CI.
 
 ### 🐛 Bug Fixes
+- fix wave F1–F8: named-recall page reachability, archival-A classification, canonical fixture chains, stop-at-retry settlement, normalized mutation target (relative/absolute equivalence), run-bound recovery form, re-acceptance audit for repeated criterion drops, gofmt/comment joins.
+- C1–C4/I1–I6 closure per the adjudication record (`final-residual-adjudication.md`): freeze/mint/evidence/ownership, bash write-barrier, display binding, post-game scoring, terminal debt, pre-phase accounting, scorer integrity.
 
-A wave of adversarial-review-driven hardening across the walker, scorers, LLM, and context layers. Labels (A#/B#/I#/M#/C#) reference review-finding identifiers.
+### 📚 Documentation / Tests / Chores
+- references: manifest-spec v2 + capability-map authority table + checkpoint/review/composition protocols.
+- CI: go 1.16 + `make build` first, scorer matrix, shellcheck, repo validation, install-smoke. Release workflow: tag → 3-platform cross-build → GitHub Release + SHA256SUMS.
+- All 9 hook binaries rebuilt for this release.
 
-- **fix(s8-review): blocker + 2 majors + 2 minors from the adversarial review gate** (e297ab2) — the highest-priority review fixes.
-- **fix(scorers+walker): iron-law graph-mode + Save-on-escalation + B3 scope** (9529692) — the graph-mode iron law (root cause before fix) is now enforced; state saves on escalation; B3 scope corrected (I1/I3/I4).
-- **fix(walker): implement `alternating_finding_window` (I2) — per-node rotate escalation** (1dcdb9e) — per-node rotation logic for alternating-finding escalation.
-- **fix(walker): alternating window needs ≥2 distinct re-appearances** (a78e41f) — tightens the I2 window so a single re-appearance no longer triggers escalation.
-- **fix(walker): wire RouteMap write points — Explain shows a real route** (c0e0d44) — explain output now reflects an actual traversed route rather than an empty map (A5).
-- **fix(walker): error hygiene for `LoadState` nil-deref + trace/Save drops** (e305fba) — nil-pointer guard in `LoadState`; trace and Save errors no longer silently dropped (B10+B11).
-- **fix(walker): `findingKey` hashes the whole finding set + empty sentinel** (933ea4a) — finding key now hashes the complete set and emits an empty sentinel, preventing collisions (B12).
-- **fix(walker): `review_verdict` nil-deref + `ExitCriterion` json tags + CLI error hygiene** (aa3837e) — nil-deref guard, JSON tags so exit criteria serialize, CLI error handling.
-- **fix(llm): truncate on rune boundary, not byte** (6c0a86b) — truncation no longer splits a multi-byte rune (B5).
-- **fix(llm+cli): clamp `SummaryScore` to [0,5] + Fallback flag** (869b877) — scores clamped to the valid range; a Fallback flag marks degraded summaries (A2+B6).
-- **fix(context): return error, not `log.Fatalf`, from path helpers** (82f7299) — path helpers return errors instead of killing the process (B8).
-- **fix(a1)+test(b14): add `phases.updated_at` column + integration test scaffold** (1b344c4) — schema migration for phase timestamps plus an integration test scaffold.
-- **fix(graph): remove unused `strings` import + suppression line in `walk_test.go`** (f1a1db9) — build hygiene.
+## [0.3.0] - 2026-09-18
 
-### 🧪 Tests
+### ✨ Features
+- **content: single-source campaign — meta-skill split, canonical blocks, platform pointers** (2ba0ec7)
+- **infra: CI + mechanical lint + hardened hooks — dead assets now enforced** (fed606e)
+- orchestration: SKILL.md drives walker; commands reference route_* rules; checkpoint M9 render (59a27a2)
+- manifest: add after_node + graph oneOf + routing_rules; fix manual vs after_merge divergence (16ea8db)
+- scorers: handoff-contract-check, verifier-checklist-check, review-isolation-check (P0) (04baa4a)
+- node-contract: node-snapshot.sh (⓪), review-agent (⑤), node-contract.md (ea23ad6)
+- walker: cmd/summoner-walker CLI (next/record/explain/status) (6afdf6a)
+- graph: walker explain (M9 human-facing) + status (debug) (1a5d731)
+- graph: walk-state machine + budget enforcement (046ee90)
+- graph: parse + validate summoner-task-graph YAML (4adc2ab)
 
-- **test(fixtures): C2 clean pass, C3 verify-fail back-edge, C5 isolation violation, C9 3× escalation** (5a91f58) — four control fixtures covering the clean path, a verification-failure back-edge, an isolation violation, and a 3× escalation.
-- **test(examples): C4 old-vs-new trace fixtures proving ⑤ feasibility** (8d1d56c) — traces demonstrating the independent re-derivation step is feasible.
-- **test+docs: 3×-escalation & max-back-edges tests (I5); minor fixes (M1/M2/M3/M7)** (a399f32) — escalation/back-edge tests plus minor review fixes.
+### 🐛 Bug Fixes
+- scorers+walker: iron-law graph-mode + Save-on-escalation + B3 scope (9529692)
+- walker: alternating window needs ≥2 distinct reappearences (a78e41f)
+- walker: implement alternating_finding_window — per-node rotate escalation (1dcdb9e)
+- walker: review_verdict nil-deref + ExitCriterion json tags + CLI error hygiene (aa3837e)
+- graph: remove unused strings import + suppression line in walk_test.go (f1a1db9)
 
-### 📝 Documentation
-
-- docs(spec): graph & node-contract upgrade design (31dbc8e)
-- docs(spec): replace human quality-read with independent-context review agent ⑤ (c919c98)
-- docs(spec): apply adversarial-review fixes — real walker + ⑤ independent re-derivation (4a0d0a4)
-- docs(spec): second-round multi-perspective review fixes + C10 control fixture (668fb9b)
-- docs(plan): graph + node-contract implementation plan (10 TDD tasks) (2c41d7a)
-- docs(trace-protocol): add graph-mode event types — handoff, review_verdict, node_review_retry, handoff_reject, node_test_loop, node_turn (5b52290)
-- docs(workflow-ref): fix inverted review-isolation red-flag prose (755821b)
-
-### ♻️ Refactor
-
-- refactor(s0): migrate `io/ioutil` → `os/io` (deprecated since go1.16) (ff17206)
-
-### 🔧 Chores
-
-- chore(graph): apply review fixes — gofmt, drop dead `strings` import, move `io_ReadAll` to test (56aa2da)
-
+### 📚 Documentation / Tests / Chores
+- docs(workflow-ref): fix inverted review-isolation red-flag prose (755821b) + 6 条 graph/node-contract 规格与计划文档
+- test(fixtures): C2/C3/C5/C9 scorer 场景 (5a91f58) + C4 old-vs-new 对照 (8d1d56c) + 3x-escalation & max-back-edges 测试 (a399f32)
+- chore(graph): review fixes — gofmt, dead import cleanup (56aa2da)
 ## [0.1.8] - 2026-07-21
 
 ### 🐛 Bug Fixes

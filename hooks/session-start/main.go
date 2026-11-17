@@ -2,82 +2,221 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
 )
 
 func main() {
-	pluginRoot := shared.PluginRoot()
-	projectDir := shared.ProjectDir()
+	sessionID := parseSessionID(os.Stdin)
+	shared.EmitOutput("SessionStart", renderContext(shared.PluginRoot(), shared.ProjectDir()))
+	emitCompatView()
+	emitPendingPostGame()
+	if sessionID != "" {
+		scanDanglingIntents(sessionID)
+	}
+}
 
-	// --- Detect project state ---
-	var status []string
+// emitCompatView discloses v1 zero-touch compat (user ruling 2026-11-16): a
+// version "1" summoner.yaml is translated in memory by every runtime hook;
+// the model still needs the v2 capability view to route, so SessionStart
+// renders it once here. A manifest the runtime REJECTS is disclosed on
+// stderr — the session must know runs are blocked, but must still start.
+func emitCompatView() {
+	view, err := renderCompatView()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "summoner session-start: summoner.yaml rejected by the runtime — Summoner runs are blocked until it is fixed: %v\n", err)
+		return
+	}
+	if view != "" {
+		shared.EmitOutput("SessionStart", view)
+	}
+}
+
+// renderCompatView renders the compat disclosure for a v1 manifest: the
+// translated framework-route bindings plus the surviving project capability
+// keys. Empty string for no-manifest and native-v2 flows; an error for a
+// manifest the runtime fails to load.
+func renderCompatView() (string, error) {
+	m, err := shared.LoadRuntimeManifest()
+	if err != nil {
+		return "", err
+	}
+	if m == nil || !m.CompatV1 {
+		return "", nil
+	}
+	routes := []string{"diagnosis", "implement", "fix", "reproduce", "verify", "regression", "plan", "ops"}
+	var b strings.Builder
+	b.WriteString("Summoner v1 manifest: zero-touch compat ACTIVE (summoner.yaml translated in memory; file untouched). Route phases by this v2 view:")
+	routeSet := make(map[string]bool, len(routes))
+	for _, id := range routes {
+		routeSet[id] = true
+		b.WriteString("\n  " + id + ": ")
+		if bind, ok := m.Phases[id]; ok {
+			b.WriteString(bind.Default)
+			if len(bind.Alternate) > 0 {
+				b.WriteString(" (alt: " + strings.Join(bind.Alternate, ", ") + ")")
+			}
+		} else {
+			b.WriteString("(built-in default)")
+		}
+	}
+	var projectKeys []string
+	for id, bind := range m.Phases {
+		if !routeSet[id] && id != "review" && bind.Default != "" {
+			projectKeys = append(projectKeys, id)
+		}
+	}
+	if len(projectKeys) > 0 {
+		sort.Strings(projectKeys)
+		b.WriteString("\n  project capability keys (select inline at checkpoints): " + strings.Join(projectKeys, ", "))
+	}
+	return b.String(), nil
+}
+
+// parseSessionID reads the SessionStart payload for its session_id — the only
+// field this hook consumes, and tolerantly: a missing/invalid payload skips
+// the crash scan (the hook's other duties still run; SessionStart must never
+// brick a session over its own input).
+func parseSessionID(r io.Reader) string {
+	var raw struct {
+		SessionID string `json:"session_id"`
+	}
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(&raw); err != nil {
+		return ""
+	}
+	return raw.SessionID
+}
+
+// scanDanglingIntents is the SessionStart crash-window recovery scan (T19,
+// spec §5 OUTCOME_UNKNOWN 与副作用恢复): a restarted session inherits the
+// previous session's runs, and a MUTATING intent whose result never landed —
+// a write-class tool call with no tool.result/tool.failed, or a worker
+// delegation that never completed (the previous session's worker processes are
+// dead; their side effects are uncertain) — is an outcome-unknown side effect.
+// Each found id is marked OUTCOME_UNKNOWN (idempotently: already-marked ids
+// and terminal-state runs are skipped by the reducer) and its marking is
+// traced as tool.outcome_unknown with detected_by session-start. Read-only
+// calls, Ask/decision bookkeeping, Skill channels and reviewer delegations
+// (the §3 review lifecycle owns those) are never crash candidates.
+//
+// NEVER exits non-zero and never blocks the session: every failure is a stderr
+// warning — a session must always be able to start (the Stop hook re-runs this
+// scan's tool half, so a missed mark here is caught at the next turn end).
+func scanDanglingIntents(sessionID string) {
+	runs, err := shared.SessionRuns(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "summoner session-start: crash scan skipped — session run-state unreadable: %v\n", err)
+		return
+	}
+	for _, run := range runs {
+		if run.Status == shared.StatusClosed || run.Status == shared.StatusPostGamePending {
+			continue // terminal: nothing may be marked there
+		}
+		evs, err := shared.LoadRunEvents(run.RunID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "summoner session-start: crash scan skipped for run %s — trace unreadable: %v\n", run.RunID, err)
+			continue
+		}
+		before := len(run.OutcomeUnknowns)
+		for _, d := range shared.MutatingDanglingIntents(evs, true) {
+			// Recovery round I3: freeze the intent's pre-effect declaration.
+			run.MarkOutcomeUnknownWithDecl(d.ToolUseID, d.Decl)
+		}
+		if len(run.OutcomeUnknowns) == before {
+			continue
+		}
+		if err := run.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "summoner session-start: crash scan could not persist run %s (state unchanged, next Stop rescans): %v\n", run.RunID, err)
+			continue
+		}
+		for _, e := range run.OutcomeUnknowns[before:] {
+			if err := shared.AppendEvent(run.RunID, sessionID, shared.TraceEvent{
+				Type:      shared.EventToolOutcomeUnknown,
+				Source:    "session-start",
+				ToolUseID: e.ToolUseID,
+				Payload:   map[string]interface{}{"tool_use_id": e.ToolUseID, "detected_by": "session-start"},
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "summoner session-start: tool.outcome_unknown trace append failed for %s: %v\n", e.ToolUseID, err)
+			}
+		}
+	}
+}
+
+// emitPendingPostGame surfaces this project's owed post-games (T18): runs
+// stuck POST_GAME_PENDING in ANY session. Display-only — completion happens
+// in the OWNING session (its hooks observe the questionnaire answers and the
+// journal write); this pointer exists so a fresh session knows the debt
+// exists and names it. Errors stay silent: a state-read problem must never
+// break session start (the viewer path reports it properly).
+func emitPendingPostGame() {
+	runs, err := shared.PendingPostGameRuns()
+	if err != nil || len(runs) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(runs))
+	for _, r := range runs {
+		ids = append(ids, r.RunID)
+	}
+	shared.EmitOutput("SessionStart", fmt.Sprintf(
+		"Summoner post-game owed: run(s) %s are POST_GAME_PENDING (questionnaire q1..q4 + journal .summoner/journal/<run_id>.md) — resume the OWNING session to complete and CLOSE them.",
+		strings.Join(ids, ", ")))
+}
+
+// renderContext builds the SessionStart injection: project status + one
+// pointer. (M-C1) The old block carried a hand-maintained command catalog —
+// which went stale once: it said "Six" while seven commands existed — plus a
+// Rules section duplicating skills/summoner/SKILL.md: ~30 lines injected into
+// EVERY session, Summoner used or not. The host UI already lists plugin
+// commands; the hook's legitimate job is status + pointer. Budget: the whole
+// block stays ≤300 bytes even with marketplace-length plugin roots
+// (enforced by TestRenderContextByteBudget).
+func renderContext(pluginRoot, projectDir string) string {
 	manifest := filepath.Join(projectDir, "summoner.yaml")
 
 	if _, err := os.Stat(manifest); err == nil {
 		projectName := extractProjectName(manifest)
-		// Reject path traversal: project.name must be a plain name, not a path
-		if projectName != filepath.Base(projectName) || strings.ContainsAny(projectName, "/\\.") {
+		// Reject path-SHAPED names (traversal), not dotted names: "my.project"
+		// is a legal project name (found in review — the old guard mapped it
+		// to "unknown" and then reported the wrong DB state).
+		if projectName != filepath.Base(projectName) || projectName == "." || projectName == ".." ||
+			strings.ContainsAny(projectName, "/\\") {
 			projectName = "unknown"
 		}
-		status = append(status, fmt.Sprintf("✅ summoner.yaml found (project: %s)", projectName))
-
-		// Check memory DB
-		dbFile := filepath.Join(pluginRoot, "memory", projectName+".db")
-		if _, err := os.Stat(dbFile); err == nil {
-			count := countPatterns(dbFile)
-			status = append(status, fmt.Sprintf("✅ Memory DB ready (%s patterns)", count))
-		} else {
-			status = append(status, fmt.Sprintf(
-				"WARNING:  Memory DB not initialized. Run: %s/scripts/init-memory-db.sh %s",
-				pluginRoot, projectName,
-			))
+		// Display-only truncation keeps the 300B byte budget deterministic for
+		// long project names (the DB lookup below uses the full name).
+		display := projectName
+		if len(display) > 40 {
+			display = display[:37] + "…"
 		}
-
-		// Count configured phases
-		phaseCount := countPhases(manifest)
-		status = append(status, fmt.Sprintf("   %d phases configured", phaseCount))
-	} else {
-		status = append(status, "⚠️  No summoner.yaml found — Summoner not initialized for this project")
-		status = append(status, "")
-		status = append(status, "🔮 To get started, just say:")
-		status = append(status, "   \"setup summoner\"")
-		status = append(status, "")
-		status = append(status, "Or run manually:")
-		status = append(status, fmt.Sprintf(
-			"   %s/scripts/summoner-setup.sh", pluginRoot,
-		))
-		status = append(status, "")
-		status = append(status, "💡 This takes <10 seconds and sets up everything automatically.")
+		status := fmt.Sprintf("project: %s (%d phases, memory: ", display, countPhases(manifest))
+		dbFile := filepath.Join(shared.MemoryDir(), projectName+".db")
+		legacyFile := filepath.Join(pluginRoot, "memory", projectName+".db")
+		if _, err := os.Stat(dbFile); err == nil {
+			status += countPatterns(dbFile) + " patterns)"
+		} else if _, err := os.Stat(legacyFile); err == nil {
+			status += "legacy DB found — scripts/init-memory-db.sh migrates it)"
+		} else {
+			status += "DB not initialized — scripts/init-memory-db.sh)"
+		}
+		return fmt.Sprintf(`<SUMMONER-HOOK>
+Summoner %s. Workflows: read %s/skills/summoner/SKILL.md
+</SUMMONER-HOOK>`, status, pluginRoot)
 	}
 
-	// --- Build context ---
-	context := fmt.Sprintf(`<SUMMONER-HOOK>
-Summoner AI Agent Orchestration Framework is active. Six workflow commands are available:
-
-  /summoner:fix    Bug fix pipeline (diagnose→reproduce→fix→verify→review)
-  /summoner:new    New feature pipeline (define→plan→implement→test→review)
-  /summoner:ship   Pre-launch review (adaptive fan-out 1-3 personas→merge)
-  /summoner:debug  Diagnose only, no code changes
-  /summoner:ops    Server operations via project ops skill
-  /summoner:review Standalone code review
-
-Project status:
-%s
-
-Rules:
-- Every /summoner:* workflow has checkpoints between phases — pause and wait for user input.
-- Phase 1 is iron law for /summoner:fix and /summoner:debug — no code changes before root cause.
-- Post-game review is mandatory at workflow end.
-- Read %s/skills/summoner/SKILL.md for full workflow definitions.
-</SUMMONER-HOOK>`, strings.Join(status, "\n"), pluginRoot)
-
-	shared.EmitOutput("SessionStart", context)
+	// No project capabilities: built-in defaults still enter the SAME reducer.
+	// Setup is optional and explicit; the pointer does not start a second flow.
+	return fmt.Sprintf(`<SUMMONER-HOOK>
+Summoner not initialized (no summoner.yaml): 未配置项目专属能力. Built-in defaults use the same reducer. Setup: %s/scripts/summoner-setup.sh
+</SUMMONER-HOOK>`, pluginRoot)
 }
 
 // extractProjectName reads the project.name field from summoner.yaml.
@@ -147,10 +286,13 @@ func countPhases(manifest string) int {
 			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
 				break
 			}
-			// Count phase entries: 2-space indent, word, colon, possibly value
-			// Matches "  debug:" or "  debug:\n" but not "    skill: ..." (3+ spaces = sub-key)
+			// Count phase entries: 2-space indent, key, colon, optional inline
+			// value. Matches "  debug:", "  debug: none" (inline values are
+			// legal YAML — found in review: the space check undercounted them
+			// to "0 phases"), but not "    skill: ..." (3+ spaces = sub-key).
 			if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "  #") {
-				if strings.ContainsRune(trimmed, ':') && !strings.Contains(trimmed, " ") {
+				key := trimmed
+				if i := strings.Index(key, ":"); i > 0 && key[:i] != "" && !strings.ContainsAny(key[:i], " \t") {
 					count++
 				}
 			}

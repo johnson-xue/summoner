@@ -1,8 +1,8 @@
 ---
 name: summoner
-description: Routes user intent through summoner.yaml manifest to domain skills. Enforces checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow.
+description: Routes user intent through summoner.yaml manifest to domain skills. Enforces the single-loop checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow.
 when_to_use:
-  - User invokes /summoner:fix, /summoner:new, /summoner:ship, /summoner:debug, /summoner:ops, /summoner:review, or /summoner:release
+  - User invokes any /summoner:* command (fix/new/ship/debug/ops/review/release/status)
   - User says "帮我排查这个 bug" or "add a new feature" and needs structured workflow
   - User wants checkpoint-based review (stop/recall/skip at any phase)
 allowed-tools:
@@ -11,264 +11,235 @@ allowed-tools:
   - Write
   - Edit
   - Bash
+  - AskUserQuestion
   - Agent
-  - TaskCreate
-  - TaskUpdate
 ---
 
-# Summoner — AI Agent Orchestration Framework
+# Summoner — AI Agent Orchestration Framework (single-loop)
 
-## Overview
+## What Summoner is
 
-Summoner is the routing hub. It reads the project's `summoner.yaml` manifest, resolves phase names to domain skills, enforces checkpoint pauses between phases, and triggers post-game review at workflow end. It does NOT implement any domain logic itself — that lives in project skills.
+You are the single executor and orchestrator: understand intent, read the
+project's `summoner.yaml`, pick capabilities, do the work, run registered
+checks, produce results. The Go hook reducer owns run state, checkpoints,
+budgets, evidence and recall history — validating every transition,
+blocking illegal ones (exit 2). No second mode, no graph walker: one loop,
+fixed phase order, a checkpoint after every phase.
 
-## When to Use
+**fix vs debug disambiguation**（"排查" 类短语同时命中两者时）:
+- 意图包含修复期望或未说明只要原因 → `/summoner:fix`（repair-bias 默认）
+- 意图明确只要原因、不要改码 → `/summoner:debug`
+- 两可且用户明确犹豫 → 问一句再路由。此规则由 `evals/cases/routing.json` 固化。
 
-- User invokes `/summoner:fix`, `/summoner:new`, `/summoner:ship`, `/summoner:debug`, `/summoner:ops`, `/summoner:review`, or `/summoner:release`
-- User expresses intent that matches a Summoner workflow (e.g., "帮我排查这个线上 bug" → suggest `/summoner:fix`)
+**When NOT to use:** user names a specific domain skill directly → route
+straight there; pure Q&A → answer directly.
 
-**When NOT to use:**
-- User explicitly says "直接用 my-debug-skill" or names a specific domain skill → route directly, skip Summoner orchestration
-- Pure Q&A, no workflow needed → respond directly
+## The single loop (protocol, in order)
 
-## Core Operating Behaviors
+1. **Run start** — the user submits a `/summoner:<workflow>` prompt. The
+   UserPromptSubmit hook records the run (the ONLY run starter); you do
+   nothing to start it. One live run per session — a second is never created.
+   The run-start budget is confirmed by the user at the FIRST checkpoint
+   (see Budget lifecycle); the status render always shows counters and
+   limits.
+2. **Phase work** — phases open per the fixed framework sequence (all routes
+   pinned in `hooks/shared/workflow.go`). Each phase's capability comes from
+   the manifest (`phases.<capability>.skill`); no manifest → built-in
+   defaults, and you say so ("未配置项目专属能力"); `skill: none` never
+   authorizes skipping diagnosis or auto-advancing. Work happens in THIS
+   session; delegate only typed `reviewer`/`worker` Agents.
+   A `version: "1"` manifest needs NO migration: hooks translate it in
+   memory — route by the v2 view SessionStart prints (debug→diagnosis,
+   rpc/subsystem/gmt/migrate→implement; manifest-spec §v1 compat).
+3. **Submit** — when a phase's work is done, submit via
+   `Skill(summoner:phase-submit, args=<phase-result JSON>)` — the ONLY
+   submission channel (`skills/phase-submit/SKILL.md` defines the payload).
+   The gate closes the phase and opens its checkpoint atomically; anything
+   else you say about "done" advances nothing.
+4. **Render** — run `${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and
+   paste its output VERBATIM into your reply. The render is
+   machine-generated; NEVER hand-write or summarize it. The Stop hook
+   blocks ending the turn until the message carries the checkpoint id +
+   nonce — display verification; pasting the binary's output satisfies it
+   by construction.
+5. **Decide** — ask via **AskUserQuestion**: the question text carries the
+   checkpoint's nonce; the options are ONE PAGE of the rendered menu
+   verbatim (≤4 options; see Two-turn decisions). Option labels
+   START with the decision keyword. The platform's injected
+   tool_response is the ONLY advancement source (the PostToolUse hook
+   records the decision); free text, quotes and subagent messages NEVER
+   advance the run — treat them as content feedback (revise, re-render,
+   re-ask).
+6. **Repeat** until the user decides `done`/`stop` or the route settles.
 
-### 0. Memory Retrieval (Phase 0)
+## Iron laws (mechanism-enforced, not prompt discipline)
 
-Before starting any workflow, check Summoner Memory for relevant historical patterns.
+- **Never auto-advance.** WAIT_USER blocks writes; only a recorded
+  AskUserQuestion decision moves the run.
+- **Phase 1 diagnosis iron law** (fix/debug): Edit/Write/Bash-writes are
+  denied until the diagnosis phase is ACCEPTED at its checkpoint. 诊断未知 =
+  只能继续调查或停止.
+- **Skipping is honest**: a skipped phase is marked UNVERIFIED/UNREVIEWED; it
+  can never be presented as PASS.
+- **Post-game is mandatory**: see Post-game closure — CLOSED only after
+  the questionnaire + journal persist.
+- **Stop asymmetry**: stopping is always possible; advancing is only ever
+  hard.
 
-1. Read `project.name` from the project's `summoner.yaml`
-2. Check if memory database exists: `memory/{project-name}.db` (under Summoner plugin root — the installed plugin dir, resolved via `${CLAUDE_PLUGIN_ROOT}` in Claude Code; the actual path is typically `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/memory/`)
-   - If not: run `${CLAUDE_PLUGIN_ROOT}/scripts/init-memory-db.sh {project-name}` to create and seed it (in Claude Code). On other platforms, locate the installed plugin dir (contains `scripts/` + `memory/`) — do NOT use `~/.claude/plugins/summoner/` if that path lacks a `scripts/` dir.
-3. Extract features from user input:
-   - error_codes: scan for SC_Err*, "panic", "nil pointer", "index out of range"
-   - module: infer from log file paths (e.g. `player/task/task.go` → try both `player` (the top subsystem dir, usually the right token) and `task`; `internal/module/game/player/guild/...` → `player` or `guild`). The inferred token is matched against the patterns' `modules` column via LIKE. If the most specific token (e.g. `task`) returns nothing, fall back to the broader subsystem token (`player`) before concluding "no match".
-   - keywords: tokenize Chinese phrases and English words
-4. Query patterns table with each extracted feature:
-   ```
-   SELECT name, type, summary, hits, priority
-   FROM patterns
-   WHERE (error_codes LIKE '%' || ? || '%'
-          OR modules LIKE '%' || ? || '%'
-          OR keywords LIKE '%' || ? || '%')
-     AND priority != 'low'
-   ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-            hits DESC
-   LIMIT 5
-   ```
-5. If matches found, present to user:
+## [v] On-demand review (menu `review:`)
 
-```
-┌──────────────────────────────────────────────┐
-│  📚 Summoner Memory — 匹配到 {N} 条历史经验    │
-│                                              │
-│  {type_emoji} {name} (匹配: {star_rating})    │
-│     {summary}                                │
-│     [hits: {hits}]                           │
-│                                              │
-│  [enter] 加载经验继续  [no] 忽略              │
-└──────────────────────────────────────────────┘
-```
+Any phase checkpoint can commission ⑤ independent review of its artifacts: `review:` → REVIEW_PENDING under a review obligation; register via
+`Skill(summoner:review-submit, args=<identity-only JSON>)`, then ONE
+`reviewer` Agent with the EXACT capsule status serves (view:review); prose
+never binds. Rules: `skills/review-submit/SKILL.md` + `agents/reviewer.md`
+(mechanical criteria freeze `check_id@digest`; forged evidence fails the
+REVIEW, never the run; reusing a prior PASS needs it still valid).
+`drop:`/`keep:` ride-alongs record per-id drops. PASS leaves the
+run WAIT_USER; NEEDS-FIX feeds rework.
 
-   - Star rating: ★★★★★ (exact error_code + module match), ★★★★ (same module), ★★★ (keyword match)
-   - Type emoji: 🐛 correction, ⚡ skip, 💡 knowledge, 🎨 style
-6. If user selects "no" or no patterns match: skip, proceed to Phase 1 (zero token cost)
-7. If user selects "enter": loaded patterns inform the diagnosis and repair strategy
-8. Token budget (hard cap: 1500 tokens for Phase 0 output):
-   - Estimate token cost before each level: `estimated_tokens = pattern_count * avg_summary_length / 3`
-   - Normal (≤1200 tokens estimated): Top 5 patterns, full summaries
-     → Trigger: when estimated < 1000, safe to show all
-   - Level 1 (≤700 tokens estimated): Top 3 patterns, truncated summaries
-     → Trigger: when estimated ≥ 1000 OR total conversation context > 70% of model limit
-   - Level 2 (≤300 tokens estimated): Top 1 pattern, short summary
-     → Trigger: when estimated > 700 OR conversation context > 85% of model limit
-   - Skip (0 tokens): Phase 0 skipped entirely
-     → Trigger: when even Level 2 would push total context > 90% of model limit
-   - Degradation is automatic and silent — do not explain the choice, just apply it.
-   - When in doubt, degrade one level lower than you think. Erring on the side of less output is always correct.
-9. Platform compatibility:
-   - Claude Code: Memory DB path resolved via hook-injected context (`${CLAUDE_PLUGIN_ROOT}/memory/{project-name}.db`)
-   - Other platforms (Gemini, OpenCode, Aider, etc.): derive DB path manually — find the installed Summoner plugin dir (the one containing both `scripts/` and `memory/`, e.g. `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/`):
-     DB_FILE="${SUMMONER_PLUGIN_ROOT}/memory/${PROJECT_NAME}.db"
-     where PROJECT_NAME is read from summoner.yaml project.name field and SUMMONER_PLUGIN_ROOT is the installed plugin root. Avoid `~/.claude/plugins/summoner/` if it only has `.git/` + `memory/` but no `scripts/` (that's an abandoned manual clone, scripts live in the cache install).
-   - If DB file doesn't exist at the expected path: skip Phase 0, proceed to Phase 1
+## Recall (`recall:`)
 
-### 1. Skill Resolution
+Default target: the latest ACCEPTED prior phase (the status render names it).
+`recall to <label>` resolves only REAL history labels (phase ids with a
+visit in this run); ambiguity → list options and ask, never guess. A
+recall appends a fresh visit of the target phase (history kept) and marks
+downstream accepted criteria stale. A recall whose target IS the diagnosis
+phase revokes that version's write eligibility (fix/debug) until the redone
+diagnosis is re-accepted. It NEVER stash/reset/restores files.
 
-On receiving a command, read the project's `summoner.yaml`:
+## Stop, emergency stop, resume
 
-```
-1. Locate summoner.yaml at project root
-2. If found: resolve each phase in the workflow to its skill → proceed to Phase Execution
-3. If a phase has skill: "none": skip that phase (explicit no-capability)
-4. If a phase is not in the manifest: use superpowers default (define → brainstorming, plan → writing-plans, review → requesting-code-review)
-5. If NOT found: set MANIFEST_MISSING = true. Phase 0 is auto-skipped (cannot resolve project.name). Phases 1-2 use superpowers defaults. At Phase 3 of /summoner:new, present the No Manifest menu below. For /summoner:fix Phase 3 (freeform fix), skip the menu — use the standard freeform fix flow.
-```
+- `stop:` at a checkpoint is the emergency channel (ruling 70): post-game
+  closure — minimal journal, questionnaire owed.
+- Free-text stop ends the TURN only — state kept, never post-game.
+- Interruption/crash: run state and trace live on disk keyed by project +
+  session + run — resume via `/summoner:status`, never conversation
+  re-parsing. Unresolved side effects settle through the OUTCOME_UNKNOWN
+  recovery section below.
+- Escape hatch (un-brick only): `SUMMONER_HOOKS_DISABLE=1` — using it on a
+  live run is recorded as a contract violation.
 
-**No Manifest Handling (Hybrid A+B) — /summoner:new Phase 3 only:**
+## 需求变更闭环 (requirement-change loop)
 
-When `summoner.yaml` is not found, do NOT silently fall back to generic skills. Phase 0 (Memory Retrieval) is auto-skipped — it cannot resolve `project.name` to locate the memory DB. Phases 1-2 (define, plan) use superpowers defaults since they are always generic. At Phase 3 (implementation) start, present this interactive menu:
+实现/测试进行中可立刻进入需求调整，调整后增量恢复，不重跑流水线（spec §1 增补）。
+Channel contract（payload 形状、字段规则）：`skills/change/SKILL.md`。
 
-```
-┌────────────────────────────────────────┐
-│  WARNING:  No summoner.yaml found.            │
-│                                        │
-│  Phase 3 needs to know which project   │
-│  skill to use for implementation:      │
-│                                        │
-│  [1] Pause — let me create             │
-│      summoner.yaml first               │
-│      (Recommended — runs               │
-│       summoner-init.sh)                │
-│                                        │
-│  [2] Manually specify a skill name     │
-│      (e.g. antia-subsystem, my-rpc)    │
-│                                        │
-│  [3] Use generic skill                 │
-│      (no project conventions, no       │
-│       LSP, no codebase-memory)         │
-└────────────────────────────────────────┘
-```
+- **触发**：任意时刻自由文本提出需求调整——它是内容反馈，开启变更子环，
+  **不是推进通道**（自由文本永远不授予推进）；检查点期间也可显式进入
+  （supersede 当前检查点，确认后重渲染再询问）。
+- **runtime channel**：`Skill(summoner:change, args=<JSON>)`——`open` 冻结
+  开发位置（当前任务/测试进度/未决验证项）进入 CHANGE_OPEN（合法于 ACTIVE
+  与 WAIT_USER；WAIT_USER 下它是 gate 唯一放行的 Skill）；`apply` 提交
+  delta {note, changed[], affected[]} 并开单点确认检查点。CHANGE_OPEN 期间
+  phase-submit 被拒。影响评估方法由所选需求/计划 skill 承担，框架不另造。
+- **恢复**：确认「接受变更」（`ACCEPT_REQUIREMENT_CHANGE`）→ Requirements-
+  Version++、受影响 criterion/验证/审查结果标 **stale**、未受影响已接受结果
+  保持有效；原地恢复，不重走 P1-P2。变更触及公共接口时必要重规划不可省，
+  由影响评估结论决定并在确认点呈现。
+- **变更 vs recall**：recall = 方向错了回城重做；变更 = 基线移动增量处理——
+  边界表见 `references/workflow-reference.md`。
 
-- **Option 1:** Pause the workflow. Tell the user to open a separate terminal and run one of (locate the installed plugin dir — in Claude Code it's `${CLAUDE_PLUGIN_ROOT}`, typically `~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/`):
-  - **Quick (推荐):** `${CLAUDE_PLUGIN_ROOT}/scripts/summoner-init.sh 2` — generates `summoner.yaml` with all recommended defaults in 3 seconds, zero interaction.
-  - **BP 阵容选择:** `${CLAUDE_PLUGIN_ROOT}/scripts/summoner-init.sh 1` — interactive champion select: pick a skill for each phase from the curated roster (like LoL champion select).
-  - Also run `${CLAUDE_PLUGIN_ROOT}/scripts/init-memory-db.sh <project-name>` afterwards.
-  - Wait for user to confirm manifest is ready, then reload and resolve phases normally.
-- **Option 2:** Ask the user for the skill name (e.g. `antia-subsystem`, `my-rpc-skill`).
-  1. **Scan for available skills first:** Run `find .claude/skills skills ~/.claude/skills -name "SKILL.md" 2>/dev/null | head -20` and `grep '^name:'` on each to build a list of locally-installed skill names. Present these as suggestions before asking for input.
-  2. **Validate the entered name:** After the user provides a skill name, verify it exists:
-     - If the name is a local skill (found in the scan): use it directly.
-     - If the name contains a `:` (e.g. `superpowers:subagent-driven-development`): check if it's a known plugin skill by looking for it in `~/.claude/plugins/` or the session's available skills list.
-     - If the name is NOT found anywhere: warn the user: "Skill 'X' was not found. It may fail at invocation. Available skills: [list top 5]. Use it anyway? [y/N]"
-  3. Use the validated skill for this session only — remind the user that creating a `summoner.yaml` will make this permanent.
-- **Option 3:** Continue with generic `superpowers:subagent-driven-development` for implementation. Explicitly warn: "Proceeding without project conventions — no LSP, no codebase-memory, no project-specific toolchains." Continue with superpowers defaults for remaining phases.
+## Two-turn decisions (paged menus)
 
-**Iron Law:** Never silently fall back to generic execution when the manifest is missing. Always surface the choice to the user.
+Every checkpoint decision is **two-turn**: turn N pastes the render and
+ENDS the turn — the Stop hook binds the display
+(id + nonce + content digest; the sole `Displayed` setter); turn N+1 asks the
+decision question. A nonce-carrying ask in the render turn is denied; a
+same-turn answer is always `decision_rejected`. One nudge turn per
+checkpoint, deliberate.
 
-### 2. Checkpoint Enforcement
+AskUserQuestion caps 4 options per question, so each checkpoint PERSISTS a
+paged menu projection (`menu_pages`; full menus page in 2, anchor pages carry
+`continue`+`stop` plus kind actions). Offer ONE persisted page's labels
+verbatim — the gate rejects any other offered set. `more:`/`back:` are
+navigation, not decisions: nonce-free content feedback — re-ask with the
+other page. Exactly ONE nonce-carrying question per call; two or more fail
+closed. Canonical render + paging contract: `references/checkpoint-protocol.md`.
 
-Each phase has a **START block** (entering) and a **CHECKPOINT block** (end) — both defined in `references/checkpoint-protocol.md`.
+## Budget lifecycle (confirm → exhaust → extend)
 
-**Entering a phase:**
-1. Output the PHASE START block (lightweight 3-line plain-text: Workflow + Phase N/Total + 任务 + Skill) — gives the user continuous context of "which phase, doing what task"
+Canonical rules: `references/checkpoint-protocol.md` (T18). In brief —
+- **Run-start ask**: the FIRST checkpoint carries a budget ask (manifest
+  `suggested_budgets`, else framework-unlimited) with nonce-free pointer
+  options `budget: 按已显示预算` / `budget: 不设上限` riding the decision
+  call; a continue/skip without a same-call budget answer rejects the whole
+  callback (stop/done/recall/review exempt); offers are digest-bound,
+  applied limits are not.
+- **Exhaustion**: zero headroom denies all work except phase-submit, the
+  exact read-only status call, the checkpoint ask, `summoner:change`,
+  probe-submit and read-class OUTCOME_UNKNOWN probes. Never write around
+  it — present the checkpoint; only the user extends or replans.
+- **Extend ask**: a checkpoint opened while exhausted offers one extension
+  (delta = current limit per set axis): `extend: 追加已显示额度` /
+  `extend: 不追加`.
 
-**After each phase completes:**
-1. Output the SUMMONER CHECKPOINT block (exact format in `references/checkpoint-protocol.md`)
-2. Wait for user response
-3. Scan for interrupt signals (per `references/checkpoint-protocol.md` interrupt signal grammar)
-4. If the reply is content feedback (not a pure flow decision), handle the feedback first, then re-output the CHECKPOINT block — do NOT auto-advance
-5. Execute the selected action: continue / skip / done / recall / stop
+## Post-game closure (the sole CLOSED writer)
 
-**Iron Law:** Never auto-advance past a checkpoint. Never assume the user wants to continue. Never misread content feedback as CONTINUE.
+`done` and emergency `stop` land POST_GAME_PENDING; CLOSED needs BOTH, from
+executed calls only: the questionnaire (ONE call, 4 questions, each text
+carrying the run id + its `[pg:qN]` marker; afk/timeout observes nothing)
+and the journal at the FIXED path `.summoner/journal/<run_id>.md` (latest
+observed digest governs; emergency `stop` writes a minimal journal
+hook-side at once, questionnaire owed as 补答). Closure fires
+`post_game.completed` + `workflow.ended` once; CLOSED never reopens.
+Protocol: `references/post-game-review.md`.
 
-### 3. Phase Execution
+## Phase 0 memory (the `context` phase)
 
-For each phase in the workflow chain:
+Before first domain work in any workflow: read `project.name` from
+`summoner.yaml`; if the memory DB exists, follow `references/memory-chain.md`
+§Phase 0 retrieval (Top-5 SQL, 1500-token cap). No DB → say so and
+continue. The context phase closes at its checkpoint.
 
-**When manifest IS available (or user specified skill via Option 2):**
-1. Output PHASE START block (Workflow/Phase N/Total/任务/Skill)
-2. Read the phase's skill from manifest (or use the manually-specified skill for Phase 3)
-3. Invoke the skill via the Skill tool: `Skill(skill="<skill-name>", args="<user's original input>")`
-4. The skill runs its internal workflow and returns results
-5. Summoner extracts: what was accomplished, artifacts produced, issues found
-6. Output CHECKPOINT block (field spec + anti-examples in `references/checkpoint-protocol.md`)
+## Workflow quick reference
 
-**When manifest is NOT available — after No Manifest menu resolution:**
+All seven phase routes are framework-owned (`hooks/shared/workflow.go`):
+review = context→review; ship = prepare→review→merge→decide; ops =
+context→operate; release = planning→changelog→publish; status = read-only;
+fix/new/debug likewise. The manifest maps CAPABILITIES
+(`phases.<capability>`), never topology; per-workflow rules live in
+`commands/<name>.md`.
 
-Phase 1-2 always use superpowers defaults (define → `superpowers:brainstorming`, plan → `superpowers:writing-plans`). Phase 3 behavior depends on the user's menu choice:
-- Option 1 (pause): manifest created → reload → continue with normal Phase Execution
-- Option 2 (manual skill): use the specified skill for Phase 3, superpowers defaults for remaining
-- Option 3 (generic): use the superpowers chain below for all remaining phases:
-  1. Phase 3 (implement): invoke `superpowers:subagent-driven-development`
-     - WARNING: Remind user: no project conventions active (LSP, codebase-memory, project toolchains unavailable)
-  2. Phase 4 (test): invoke `superpowers:test-driven-development` or skip if no tests
-  3. Phase 5 (review): invoke `superpowers:requesting-code-review`
+## OUTCOME_UNKNOWN recovery + the check trust ladder
 
-**Phase 3 Routing (when manifest is available):**
+- **Crash scan** (hooks, spec §5): SessionStart after a restart marks
+  dangling MUTATING tool intents plus dead worker delegations; Stop at turn
+  end marks tools only (a live worker is not a crash). Writes are denied
+  while an episode is open; a crashed action is NEVER auto-replayed.
+- **Resolution**: each unknown's EXACT probe (status serves it) binds
+  once; the PostToolUse matcher computes every verdict — no outcome on
+  the wire (`skills/probe-submit/SKILL.md`). All `accepted` →
+  pre-episode status restores; any `failed`/`indeterminate` → RECOVERY
+  checkpoint.
+- **Check ladder** (spec §3; canonical rules: `references/manifest-spec.md`):
+  L1 `trust: framework` = shipped adapter ops, computed in-gate at
+  phase-submit. L2 `trust: project` = the EXACT registered line as a model
+  Bash call, admitted only after the in-band probe
+  `"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-sandbox-probe"` refused the
+  fresh HOME write (result tier is point-in-time). No/declined probe →
+  honest BLOCKED `sandbox_unproven`; network-class → BLOCKED
+  `l3_unsupported` — never "just run it". Cite as `check://<check_id>`; an
+  L2 citation needs the observed current-digest PASS. Only `fail` ticks the
+  failed-check budget; BLOCKED never does.
 
-At Phase 3 of `/summoner:new`, determine the implementation skill based on function type:
-- New subsystem / module → `phase.subsystem` skill
-- New RPC interface → `phase.rpc` skill
-- GM tool / admin command → `phase.gmt` skill
-- If the relevant phase is not in the manifest: ask user which skill to use (one-time), then apply for this session
-- If multiple match: ask user to clarify the primary function type
+## Capability → provider resolution
 
-For the `fix` phase (freeform — no skill mapping):
-1. Present the diagnosis from Phase 1
-2. Ask the user: "How would you like to fix this? I can implement the fix, or you can make changes yourself."
-3. If user implements: wait for them to confirm changes are done
-4. If agent implements: apply changes, show diff
-
-### Graph-Mode Phase Execution (when the plan carries a `summoner-task-graph` block)
-
-If the active plan artifact contains a fenced ` ```yaml summoner-task-graph ` block, drive the graph walker instead of the linear phase chain:
-
-1. `summoner-walker --graph <plan.md> --trace <trace.jsonl> --session <session_id> next` → read the printed JSON directive. (If `summoner-walker` is not on PATH, dev fallback: `go run ./cmd/summoner-walker ...`. Guard with `command -v summoner-walker` — like the `summoner-ctx` precedent. The walker is the router + bookkeeper — it does NOT execute agents and does NOT touch the working tree, M2.)
-2. If the directive `kind` is `RUN_NODE`:
-   - If the directive carries `snapshot` (mutating node): run `bash scripts/node-snapshot.sh save` BEFORE ②. (The walker signals intent via the flag; YOU execute the helper — single owner. The walker never touches the tree.)
-   - Run the node's ① Ingest+Validate → ⓪ (if not done) → ② Work → ③ Test → ④ Handoff. The node is a closed-loop agent; ③ FAIL self-retries bounded by the node's `max_inner_turns` (no checkpoint between retries).
-   - On ④, write the handoff envelope to a temp file and call `summoner-walker record --step handoff --envelope <env.json>` → walker prints a `RUN_REVIEW` directive.
-3. If the directive `kind` is `RUN_REVIEW`: spawn the `review-agent` persona (`agents/review-agent.md`) with the envelope's `envelope_id` — paths + exit_criteria ONLY, NO producer reasoning (review-isolation invariant). It returns a `review_verdict`. Write the verdict + findings + evidence to temp files and call `summoner-walker record --step review_verdict --envelope_id <id> --node <nodeID> --verdict <PASS|NEEDS-FIX> --findings <findings.json> --evidence <evidence.json>`. (Evidence must be non-empty — a rubber-stamp review FAILs review-isolation-check.)
-4. The walker's next directive routes the step:
-   - `RUN_NODE` (next node) → loop to step 2.
-   - `NODE_RETRY` (same-node ⑤ NEEDS-FIX, bounded by max_inner_turns, no checkpoint, no counter increment) → if `restore` is set, run `bash scripts/node-snapshot.sh restore` before re-running ②; loop to step 2 (no checkpoint).
-   - `BACK_EDGE` (cross-node, increments max_back_edges_total) → if `restore` is set, restore; run the target node's ②; loop to step 2 (the next forward CHECKPOINT reports the round-trip).
-   - `CHECKPOINT` → render `summoner-walker explain` into the checkpoint block; the human picks continue/recall/skip/done/stop (FLOW decision only — quality already gated by ⑤).
-   - `HALT` → budget exhausted (max_graph_turns / total_token_budget / max_back_edges_total); surface to the human.
-5. If the plan has NO `summoner-task-graph` block → chain fallback (today's linear behavior, §3 above). No existing workflow changes (backward compat, spec §2.6).
-
-### 4. Post-Game Review
-
-**Enforcement:** The PreToolUse hook automatically detects Summoner invocation and writes a state file. The Stop hook checks this file at session end and warns the user if they may have forgotten the review. You don't need to track state — the hooks handle it.
-
-At workflow end (user says "done" or all phases complete):
-1. Determine the review type based on session events (corrections, skips, injections, verbosity complaints)
-2. Present the appropriate questionnaire from `references/post-game-review.md`
-3. Collect answers and write journal entry
-4. Agent self-reflection: one paragraph on what could have been done better
-
-After collecting review answers:
-5. Write journal entry to SQLite: INSERT into journal table
-6. Classify pattern per `references/post-game-review.md` Memory Write Protocol
-7. If pattern meets persistence criteria:
-   - Extract features (error_codes, modules, keywords, summary)
-   - Check for existing pattern by name → UPDATE hits or INSERT new
-   - Report: "📝 Memory updated: {pattern_name} (hits: {N})"
-8. If pattern matches existing: "📝 Memory: {pattern_name} hits now {N}"
-9. Report new hit counts for any updated patterns
-
-## Workflow Quick Reference
-
-Full definitions: Read `references/workflow-reference.md` (workflow diagrams, auto-skip conditions, rationalizations, red flags, verification checklist). Read the specific command file (e.g., `commands/fix.md`) for workflow-specific rules.
-
-| Command | Phase Chain |
-|---------|------------|
-| `/summoner:fix` | debug(M) → reproduce → fix → verify → review |
-| `/summoner:new` | define → plan → implement → test → review |
-| `/summoner:ship` | fan-out(1-3 personas) → merge |
-| `/summoner:debug` | debug only, no code changes |
-| `/summoner:ops` | ops skill (delegated) |
-| `/summoner:review` | code review only |
-| `/summoner:release` | version-plan → changelog → release-execution (self-contained, no manifest routing) |
-
-(M) = Mandatory — iron law, cannot be skipped.
-
-## Available Personas (dispatch as subagents)
-
-| Persona | Use for |
-|---------|---------|
-| `summoner:code-reviewer` | Standalone code review, ship fan-out |
-| `summoner:security-auditor` | Security vulnerability audit, ship fan-out |
-| `summoner:test-engineer` | Test coverage analysis, Prove-It checks, ship fan-out |
-| `summoner:debug-agent` | Root cause analysis, stack trace diagnosis, error pattern matching |
+Authority: `references/capability-map.md` (four layers + precedence). An
+explicit manifest binding (`phases.<capability>.skill.default` or a
+user-chosen alternate) wins — a configured project provider is never
+displaced by a generic built-in. Only an UNBOUND capability walks the
+layers: built-in/bundled → superpowers → project skills → Summoner's
+disclosed defaults. An explicitly bound but missing skill stops the run —
+never a silent fallback. Summoner keeps ONLY control capabilities ready
+skills lack: checkpoints, requirement versions/change loop, pause-resume,
+acceptance evidence, budgets, recovery, post-game.
 
 ## References
 
-- `commands/<name>.md` — Workflow-specific rules and rationalizations
-- `references/workflow-reference.md` — Full workflow definitions, auto-skip, rationalizations, red flags, verification
-- `references/checkpoint-protocol.md` — Checkpoint output format and interrupt signal grammar
-- `references/post-game-review.md` — 5-type questionnaire, journal, and memory write protocol
-- `references/memory-chain.md` — Memory retrieval and write protocols
-- `references/manifest-spec.md` — summoner.yaml field specification
-- `references/persona-composition.md` — Persona composition rules and anti-patterns
+- `commands/<name>.md` — per-workflow rules
+- `references/capability-map.md` — capability→provider authority
+- `references/checkpoint-protocol.md` — canonical render + decision channel
+- `references/workflow-reference.md` — auto-skip table, red flags
+- `references/post-game-review.md` — questionnaire/journal protocol
+- `references/memory-chain.md` — memory protocols
+- `references/manifest-spec.md` — summoner.yaml fields

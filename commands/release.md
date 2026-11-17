@@ -1,62 +1,46 @@
 ---
-description: 版本发布全流程 — 版本规划 → changelog 生成 → 发布执行。确保 plugin.json 和 marketplace.json 版本同步。
-phase_checkpoints: after_each
-end_action: post_game_review
+description: 版本发布全流程 — planning → changelog → publish，三份版本清单同步（plugin.json / .claude-plugin/plugin.json / marketplace.json）；publish 是变更阶段，必须先声明只读对账探针（tag-已存在/版本-已一致）。
 ---
 
 # /summoner:release
 
-Version release workflow with checkpoint-based execution. Three phases — version planning, changelog generation, release execution — that guarantee `plugin.json` and `marketplace.json` stay synchronized, plus an automated changelog and git tag.
+Version release on the framework route **planning → changelog → publish**
+(fixed in `hooks/shared/workflow.go` — commands define topology; the manifest
+maps capabilities, never routes). User gates, trace, budgets and post-game
+run through the SAME single-loop reducer as every workflow: phase closes →
+checkpoint render → AskUserQuestion decision (`references/checkpoint-protocol.md`);
+never auto-advance. Red flags / auto-skip table: `references/workflow-reference.md`.
 
-This is a **framework-internal, self-contained workflow** — it does not route through the project's `summoner.yaml` manifest. The meta-skill delegates directly to the `summoner-release` skill for implementation.
+## Capability
 
-## Quick Reference
+`phases.release` in `summoner.yaml` may bind a project provider to replace
+the default framework implementation (`skills/summoner-release/SKILL.md` —
+version planning, changelog from conventional commits, publish with rollback;
+options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
+--skip-changelog`). No manifest → the default, disclosed「未配置项目专属能力」.
 
-```bash
-/summoner:release [OPTIONS]
+## Rules
 
-OPTIONS:
-  --major              Increment major version (X.0.0)
-  --minor              Increment minor version (0.X.0)
-  --patch              Increment patch version (0.0.X)
-  --version X.Y.Z      Specify exact version number
-  --dry-run            Preview mode, no git operations
-  --no-push            Local only (no remote push)
-  --skip-changelog     Skip changelog generation
-```
-
-## Workflow
-
-| Phase | Task | Checkpoint |
-|-------|------|------------|
-| 1/3 Version Planning | Detect current version, validate consistency, determine + validate new version | User confirms version |
-| 2/3 Changelog Generation | Analyze commits since last tag, classify by conventional-commit type | User reviews/edits changelog |
-| 3/3 Release Execution | Update manifests + CHANGELOG, commit + tag, push, optional GitHub Release | Success summary |
-
-**Safety:** automatic rollback (delete tag / reset commit on failure); pre-flight checks (git repo, `jq`, uncommitted-change warning); validation (semver, new > current, no tag conflict).
-
-## Implementation
-
-Full implementation lives in `skills/release/SKILL.md`. The AI executing this command should:
-
-1. **Delegate to the skill:** invoke the `summoner-release` skill for all three phases.
-2. **Follow checkpoint protocol:** use the exact format from `references/checkpoint-protocol.md` — output a PHASE START block on entry and a CHECKPOINT block at each phase end; never auto-advance.
-3. **Handle user feedback:** if a checkpoint reply is content feedback (not a pure flow decision), handle it first, then re-output the CHECKPOINT block.
+1. **对账探针是 publish 的准入条件** — publish mutates (version writes,
+   commit, tag, push), so the capability list must declare the read-only
+   reconciliation probe set (tag-已存在 / 版本-已一致) BEFORE the release
+   enters it: 无探针声明不得进变更阶段. Probes are read-only 对账 resolved
+   only via `summoner:probe-submit`; 不一致/未生效 route to the recovery
+   checkpoint (CONTINUE/RECALL/STOP) — never a mutating fix, never silently
+   passed (`skills/summoner-release/SKILL.md` §只读对账探针; fixtures
+   `tests/fixtures/traces/valid-release-probe-*.jsonl`).
+2. Safety lives in the skill: auto rollback (delete tag / reset commit),
+   pre-flight (git repo, `jq`, uncommitted-change warning), validation
+   (semver, new > current, tag-conflict).
 
 ## Requirements
 
-- Git repository
-- `jq` (JSON processor) — install with `brew install jq`
-- `gh` CLI (optional, for GitHub releases)
-
-## Integration
-
-With `/summoner:ship` (recommended for major releases — quality gate first, then release if GO):
-```bash
-/summoner:ship
-/summoner:release --minor
-```
+git 仓库、`jq`（`brew install jq`）、`gh` CLI（可选）。大版本建议先
+`/summoner:ship` 质量门禁，GO 后再 `/summoner:release --minor`。
 
 ## Post-Game Review
 
-After completion, triggers Type 4 (流程评价) review covering version planning clarity, changelog quality, checkpoint flow, and execution reliability.
+Mandatory — Type 4 (流程评价) per `references/post-game-review.md`: `done`
+lands POST_GAME_PENDING; CLOSED only after the `[pg:q1..q4]` questionnaire +
+`.summoner/journal/<run_id>.md` persist (CompletePostGame is the sole CLOSED
+writer). No release exemption.

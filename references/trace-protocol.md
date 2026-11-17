@@ -1,204 +1,120 @@
-# Summoner Trace Protocol
+# Summoner Trace Protocol (v2)
 
-> Based on AI Agent evaluation methodology — structured execution traces enable automated quality assessment and regression testing.
+The durable, append-only evidence record of a Summoner run. One
+self-contained JSONL file per run; every workflow (fix/new/debug/review/ship/
+ops/release) writes the same schema through the same writer. There is no mode
+field, no graph event set, and no fallback vocabulary — spec §7 (单一 trace
+schema) is the authority: `docs/superpowers/specs/2026-11-09-single-loop-checkpoint-design.md`.
 
-## Purpose
+## Where traces live
 
-Capture the complete execution trajectory of each Summoner workflow in a machine-readable format (JSONL) to enable:
-1. **Deterministic scoring** — automated quality checks via scripts
-2. **Regression testing** — detect capability degradation after model upgrades or prompt changes
-3. **Root cause analysis** — post-mortem debugging when workflows fail
-4. **Performance profiling** — token usage, latency, tool call patterns
+`$SUMMONER_TRACE_DIR` (or `~/.summoner/traces-v2`) / `{project_key}` /
+`{run_id}.jsonl` — resolved and written by the Go hooks
+(`hooks/shared/trace.go`), never by model-authored shell echoes. The model is
+not a trace writer: control events come only from platform observations
+(hook inputs carrying `tool_use_id`), and everything a model produces is a
+proposal the hooks validate before recording.
 
-## Trace File Format
+## Line shape
 
-Each workflow session generates a trace file: `$HOME/.claude/plugins/summoner/traces/{project-name}/{date}-{workflow}-{session-id}.jsonl`
-
-### JSONL Schema
-
-Every line is a JSON object with a `type` field:
+Every line is one JSON object in the canonical field order of the Go
+`TraceEvent` struct (write and verify share this one form):
 
 ```jsonl
-{"type":"session_start","timestamp":"2026-06-23T10:00:00Z","workflow":"fix","session_id":"abc123","project":"antia-server","model":"claude-opus-4-8"}
-{"type":"phase_start","timestamp":"2026-06-23T10:00:05Z","phase":0,"name":"memory","skill":null}
-{"type":"memory_query","timestamp":"2026-06-23T10:00:06Z","features":{"error_codes":["SC_ErrInnerLogic"],"modules":["task"],"keywords":["nil pointer"]},"matches":3}
-{"type":"memory_result","timestamp":"2026-06-23T10:00:07Z","patterns":[{"name":"config-chain-break","summary":"...","hits":5}]}
-{"type":"phase_end","timestamp":"2026-06-23T10:00:10Z","phase":0,"status":"completed","artifacts":["patterns: 3 matches"]}
-{"type":"checkpoint","timestamp":"2026-06-23T10:00:10Z","phase":0,"user_input":"continue"}
-{"type":"phase_start","timestamp":"2026-06-23T10:00:12Z","phase":1,"name":"diagnose","skill":"antia-debug"}
-{"type":"tool_call","timestamp":"2026-06-23T10:00:15Z","tool":"Read","args":{"file_path":"player/task/task.go"},"result":"success","duration_ms":120}
-{"type":"reasoning","timestamp":"2026-06-23T10:00:20Z","step":"root_cause_analysis","content":"发现 line 234 未检查 p.Data 是否为 nil","confidence":0.95}
-{"type":"tool_call","timestamp":"2026-06-23T10:00:25Z","tool":"Bash","args":{"command":"grep -n 'p.Data' task.go"},"result":"success","duration_ms":50}
-{"type":"conclusion","timestamp":"2026-06-23T10:00:30Z","phase":1,"root_cause":"nil pointer dereference at task.go:234","fix_approach":"add nil check before access"}
-{"type":"phase_end","timestamp":"2026-06-23T10:00:35Z","phase":1,"status":"completed","artifacts":["root_cause: task.go:234 nil pointer"]}
-{"type":"checkpoint","timestamp":"2026-06-23T10:00:35Z","phase":1,"user_input":"continue"}
-{"type":"phase_start","timestamp":"2026-06-23T10:00:40Z","phase":3,"name":"fix","skill":"freeform"}
-{"type":"tool_call","timestamp":"2026-06-23T10:00:45Z","tool":"Edit","args":{"file_path":"task.go","old_string":"...","new_string":"..."},"result":"success","duration_ms":80}
-{"type":"phase_end","timestamp":"2026-06-23T10:00:50Z","phase":3,"status":"completed","artifacts":["edited: task.go"]}
-{"type":"checkpoint","timestamp":"2026-06-23T10:00:50Z","phase":3,"user_input":"continue"}
-{"type":"phase_start","timestamp":"2026-06-23T10:00:55Z","phase":4,"name":"verify","skill":"antia-test"}
-{"type":"tool_call","timestamp":"2026-06-23T10:01:00Z","tool":"Bash","args":{"command":"go test ./..."},"result":"success","duration_ms":3500}
-{"type":"phase_end","timestamp":"2026-06-23T10:01:05Z","phase":4,"status":"completed","artifacts":["tests: all passed"]}
-{"type":"checkpoint","timestamp":"2026-06-23T10:01:05Z","phase":4,"user_input":"done"}
-{"type":"post_game_review","timestamp":"2026-06-23T10:01:10Z","review_type":4,"answers":{"q1":"5","q2":"diagnose","q3":"none","q4":"production-ready"}}
-{"type":"session_end","timestamp":"2026-06-23T10:01:15Z","status":"completed","total_duration_ms":75000,"total_phases":5,"skipped_phases":1}
+{"schema_version":"2","run_id":"run-x01","session_id":"sess-x01","project_root_hash":"1a2b3c4d5e6f0770","type":"checkpoint.decided","seq":10,"timestamp":"2026-11-11T00:00:00Z","source":"posttooluse","tool_use_id":"toolu_x01","payload":{"checkpoint_id":"cp-x01","tool_use_id":"toolu_x01"},"prev_hash":"…","hash":"…"}
 ```
 
-## Event Types
+| Field | Meaning |
+|---|---|
+| `schema_version` | always `"2"` |
+| `run_id` / `session_id` | run and session identity (one file = one run) |
+| `project_root_hash` | normalized project-root hash, so a line names its project even when copied out of the tree |
+| `type` | one of the allow-list below — unknown types are rejected at the door |
+| `seq` | 1..N, strictly increasing (line number) |
+| `timestamp` | RFC3339 UTC |
+| `source` | writing hook (`userpromptsubmit`, `pretooluse-gate`, `posttooluse`, `stop`, `session-start`, `subagentstop`) |
+| `prompt_id` / `tool_use_id` | platform correlation keys; `tool_use_id` is what binds decisions, evidence and delegations to real platform calls |
+| `payload` | per-type fields (table below) |
+| `prev_hash` / `hash` | the chain: `prev_hash` = sha256 of the previous line's canonical bytes (first line: sha256 of the empty string); `hash` = sha256 of this line's canonical bytes including `prev_hash` |
 
-| Type | When | Required Fields |
-|------|------|-----------------|
-| `session_start` | Workflow begins | `workflow`, `session_id`, `project`, `model` |
-| `session_end` | Workflow completes/stops | `status` (completed/stopped/failed), `total_duration_ms` |
-| `phase_start` | Phase begins | `phase` (0-5), `name`, `skill` |
-| `phase_end` | Phase completes | `phase`, `status`, `artifacts` |
-| `checkpoint` | User response at checkpoint | `phase`, `user_input` (continue/skip/done/recall/stop) |
-| `tool_call` | Any tool invoked | `tool`, `args`, `result`, `duration_ms` |
-| `reasoning` | AI reasoning step | `step`, `content`, `confidence` (optional) |
-| `conclusion` | Phase conclusion | `phase`, summary fields (varies by phase) |
-| `memory_query` | Memory DB queried | `features`, `matches` |
-| `memory_result` | Patterns retrieved | `patterns` |
-| `post_game_review` | Review completed | `review_type`, `answers` |
-| `error` | Any error occurs | `phase`, `message`, `recoverable` |
+**Who verifies what:** the Go layer (`VerifyChain`, hardened in T7) verifies
+the hash chain — strict decoding, seq equality, byte-identical canonical
+form — and rejects tampering. The shell scorers (`scorers/deterministic/`)
+do NOT recompute hashes: they audit the event-set, ordering, binding and
+completeness **semantics**. Both layers are required; neither substitutes
+for the other.
 
-## Graph-Mode Event Types
+## Event vocabulary (the 38-type allow-list)
 
-These events appear when a plan carries a `summoner-task-graph` block (§node-contract). They are emitted by the walker (`cmd/summoner-walker`) and SKILL.md; scorers join on `envelope_id`.
+The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
+(`allEventTypes`). A new event type is a spec §7 change, not a scorer edit.
 
-### `handoff`
-Typed envelope produced by a node's ④ step. Fields:
-- `envelope_id` (string, required) — e.g. `h-001`. Correlation key shared with the `review_verdict` that reviews it (§2.2.1). `h-000` is reserved for the bootstrap envelope.
-- `from_node` (string, required) — producer node id; `phase0` for the bootstrap.
-- `to_node` (string, required) — consumer node id.
-- `label` (string, required) — human-facing verb from the graph node (M9).
-- `artifacts` (array of strings, required, non-empty) — validated product paths / file:line refs.
-- `exit_criteria` (array, required) — each entry `{name, verdict_type: "DECIDABLE"|"SOFT", pin?, grep_pattern?}`. SOFT SHOULD carry `grep_pattern`.
-- `factual_claim` (string, required) — one line, fact only, NO producer reasoning.
-- `attempt_history` (array, required) — each entry `{node, attempts, verifier}` only; MUST NOT carry `passed`.
-- `budget_remaining` (object, required) — `{graph_turns_left, token_budget_left}`.
-- `stripped` (array, required) — intentionally-dropped fields; MUST include `producer_reasoning_trace` AND `producer_verdict_self_report`.
+| Type | Payload contract (audited fields in **bold**) |
+|---|---|
+| `workflow.started` | `{"workflow": "fix|new|debug|…"}` — first event of every run |
+| `workflow.ended` | `{"status":"closed"}` — emitted exactly once, by the CLOSED writer only, after `post_game.completed` |
+| `workflow.aborted` | abort terminal |
+| `phase.started` / `phase.closed` | `{"phase_id": …}` |
+| `phase_submitted.rejected` | `{"reason": …, "phase_id"?}` — a rejected submit records the rejection, never a phase result |
+| `checkpoint.opened` | `{"checkpoint_id", "phase_id", "nonce"}` — **phase-submit checkpoints only** (see positional contract) |
+| `checkpoint.displayed` | `{"checkpoint_id", "nonce"}` — the Stop hook binds the render; **nonce must equal the opened nonce** |
+| `checkpoint.decided` | `{"checkpoint_id", "tool_use_id"}` — **tool_use_id must be a recorded AskUserQuestion call** (decision binding) |
+| `checkpoint.decision_rejected` | `{"checkpoint_id", "reason"}` — a failed decision attempt; the answer is never recorded |
+| `criterion.dropped` | `{"checkpoint_id", "criterion_id"}` — per-id user drop; rides the same AskUserQuestion call as the decision |
+| `budget.confirmed` / `budget.extended` | `{"checkpoint_id", "limits"|"delta"}` — bind the answering `tool_use_id`; confirmed applies once per run |
+| `recall.applied` | `{"from_phase_id", "target_phase_id", "newly_stale"?}` — target must be real history; a new visit follows |
+| `change.opened` / `change.delta_applied` / `change.resumed` | change loop (§1): frozen position / `{"requirements_version", "newly_stale"?, "preserved"?}` / `{"checkpoint_id"}` |
+| `tool.started` | `{"tool_name", "read_class"?, "sandbox_probe"?, "l2_check"?}` — the pre-execution intent record |
+| `tool.result` / `tool.failed` | observed outcome (`{"tool_name","response_sha256"}` / failure fields) |
+| `tool.outcome_unknown` | `{"tool_use_id", "detected_by": "session-start|stop"}` — side effect happened, result never landed |
+| `tool.resolved` | `{"tool_use_id", "outcome": "accepted|failed|indeterminate", "probe_tool_use_id"}` — one-shot; the probe must be a recorded read-class call |
+| `check.result` | `{"check_id", "trust": "framework|project", "status": "pass|fail|blocked", "digest", "tier"?, "reason"?, "exit"?}` — BLOCKED is a refusal to claim, never a quality verdict |
+| `review.prepared` | `{"review_id"}` — the runtime emission is thin (the envelope itself lives in run state); `artifact_digest`/`criteria`/`scope` are scorer-recognized optional enrichments. Re-dispatch after a crash re-sends the SAME envelope |
+| `review.started` | `{"review_id"}` — reviewer dispatched |
+| `review.verdict` | `{"review_id", "run_status": "COMPLETED\|BLOCKED", "verdict"?, "evidence_tool_call_ids"?, "envelope_digest"?, "artifact_digest"?}` — the runtime emission; the reconciled evidence list is MIRRORED into the payload (T12 fix-back), so COMPLETED+PASS always carries a non-empty list (auditable non-rubber-stamp), while NEEDS-FIX/BLOCKED carry it only when the reviewer claimed ids. The record's digests mirror too (T12 fix-back 2): `envelope_digest` (registration identity, always present on a concluded record) and `artifact_digest` (the claimed artifact set, empty for a reason-code BLOCKED) — digests-in-trace, never content, same §7 precedent as `tool.result`'s `response_sha256`. `criterion_verdicts` is enrichment-only BY DESIGN, not a gap: criterion CONTENT lives in run state / the envelope, the reducer's envelope validation (both-directions rejection) is the enforcement authority, and the trace-side per-criterion audit fires only on traces that carry the enrichment — do not "fix" it into the payload |
+| `review.failed` / `review.blocked` / `review.superseded` | `{"review_id", "reason"?}` — protocol-error / honest-block / superseded conclusions |
+| `delegation.started` / `delegation.completed` / `delegation.failed` | started: `{"subagent_type", "review_id"?}` (canonical short form — the namespaced production spelling is normalized on admission; `review_id` rides reviewer dispatches); completed: `{"agent_type", "agent_id"?, "transcript_path"}`. Fork-ness is NEVER traced — the gate refuses fork/general-purpose delegation at admission, so no runtime trace can carry it; the scorer's fork rejection is therefore enforceable only against hand-crafted traces (a documented audit limit, not runtime coverage) |
+| `parallel.opened` / `parallel.joined` | approved batch boundaries |
+| `agent.telemetry` | `{"final_request_tokens"…}` — proxy metric only; V5 口径 declared, no total-token budget |
+| `post_game.started` | `{"kind": "normal|emergency_minimal"}` — emergency = minimal journal + POST_GAME_PENDING |
+| `post_game.completed` | `{"kind"}` — emitted exactly once, immediately before `workflow.ended`, by the CLOSED writer |
+| `hooks.disabled` | the `SUMMONER_HOOKS_DISABLE` escape hatch used on a live run — a recorded contract violation, never a silent bypass |
 
-Allow-list for `handoff` events: only the fields above. A `handoff` carrying `producer_reasoning_trace`, `handoff_note`, or `passed` = producer-reasoning leak (scorer FAIL). (`passed` is legitimate on `node_test_loop`, NOT on `handoff` — the filter is per-event-type.)
+### Positional contract
 
-### `review_verdict` (standalone event, §2.2.1)
-Emitted by the ⑤ Review-agent. Fields:
-- `envelope_id` (string, required) — joins to the `handoff` it reviews.
-- `node` (string, required) — the node whose ④ was reviewed.
-- `reviewer` (string, required) — e.g. `review-agent:fix`.
-- `verdict` (string, required) — `PASS` | `NEEDS-FIX`.
-- `findings` (array) — on NEEDS-FIX: each `{file, line?, issue, fix}`.
-- `evidence_tool_calls` (array of strings, required, NON-EMPTY) — the reviewer's OWN Read/grep/Bash invocations (invariant #6; empty = rubber-stamp = FAIL).
+Only the phase-submit path emits `checkpoint.opened`. The change-confirm
+checkpoint (its id is the one `change.resumed` names), review-result
+checkpoints and recovery checkpoints emit NO `checkpoint.opened` — for every
+kind, `checkpoint.displayed` is the trace-visible user-gate act, and
+`user-gate-check.sh` requires an opened→displayed nonce pairing only when an
+`opened` exists.
 
-### `node_test_loop`
-Node-internal ③ verifier result. Fields:
-- `node` (string, required), `verifier` (string, required) — the exit-criteria name/anchor tested (e.g. `build_clean`, `root_cause_pin:file:line`).
-- `verdict_type` (string, required) — DECIDABLE | SOFT (declared in the graph block, B3).
-- `passed` (boolean, required) — legitimate HERE (not on `handoff`).
-- `turns` (int) — inner-turns consumed on this node (§5).
-- `exhausted` (boolean) — `true` when `max_inner_turns` hit (§5).
-- `note` (string, optional).
+## 落盘边界 (write boundary)
 
-### `node_turn`
-Walker directive-to-trace echo. Fields:
-- `node` (string, required), `label` (string, required), `attempt` (int, required).
-- `step` (string, required) — e.g. `review-scheduled`.
-- `walker_directive` (string, required) — the raw directive, e.g. `RUN_NODE id=fix attempt=2 snapshot=before_②` or `RUN_REVIEW envelope_id=h-002`.
+The trace is authoritative evidence written only by the Go hooks. Scoring is
+a DERIVED view: `scripts/score-trace.sh` writes `<trace>.score.json` next to
+the trace and never appends into the trace itself. A scored run therefore
+differs from an unscored one by a sidecar file, not by trace content.
 
-### `node_review_retry` (same-node ⑤ NEEDS-FIX, §2.1 clarification)
-Emitted by the walker when ⑤ returns NEEDS-FIX and `from_node == to_node` (node-internal retry). Fields:
-- `envelope_id` (string, required), `from_node` (string, required), `reason` (string, required), `findings` (array), `executor` (string, required, `"walker"`).
-- Does NOT increment the global back-edge counter (bounded by `max_inner_turns`).
-
-### `handoff_reject` (cross-node reject)
-Emitted by the walker on a cross-node ⑤ NEEDS-FIX or ① Ingest reject. Fields:
-- `envelope_id` (string, required), `from_node` (string, required), `reason` (string, required), `findings` (array), `executor` (string, required, `"walker"`).
-- Increments the global `max_back_edges_total` counter; 3× same-finding escalates to checkpoint.
-
-## Implementation
-
-### In SKILL.md
-
-```markdown
-## Trace Output
-
-Every workflow execution MUST write a trace file. Use the shared trace writer:
+## Auditing a trace by hand
 
 ```bash
-TRACE_FILE="$HOME/.claude/plugins/summoner/traces/${PROJECT}/${DATE}-${WORKFLOW}-${SESSION_ID}.jsonl"
-mkdir -p "$(dirname "$TRACE_FILE")"
+# every checkpoint decision and the platform call it binds
+jq -c 'select(.type=="checkpoint.decided") | {seq, cp: .payload.checkpoint_id, tool: .tool_use_id}' \
+  ~/.summoner/traces-v2/<project>/<run>.jsonl
 
-# Helper function
-trace() {
-  local type="$1"
-  shift
-  echo "{\"type\":\"$type\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",${*}}" >> "$TRACE_FILE"
-}
-
-# Usage
-trace session_start "\"workflow\":\"fix\",\"session_id\":\"$SESSION_ID\",\"project\":\"$PROJECT\""
-trace phase_start "\"phase\":1,\"name\":\"diagnose\",\"skill\":\"antia-debug\""
-trace tool_call "\"tool\":\"Read\",\"args\":{\"file_path\":\"task.go\"},\"result\":\"success\",\"duration_ms\":120"
+# a verdict's claimed evidence, ready to join against tool.started ids
+jq -c 'select(.type=="review.verdict") | {seq, id: .payload.review_id, evidence: .payload.evidence_tool_call_ids}' \
+  ~/.summoner/traces-v2/<project>/<run>.jsonl
 ```
 
-Or use the Go hook helper (if available):
-
-```go
-trace.Event("session_start", map[string]interface{}{
-    "workflow": "fix",
-    "session_id": sessionID,
-    "project": projectName,
-})
-```
-```
-
-### Trace Activation
-
-Traces are always written by default. To disable for a session (e.g., privacy concerns):
-
-```bash
-export SUMMONER_NO_TRACE=1
-```
-
-## Trace Retention
-
-- **Local storage only** — traces never leave the user's machine
-- **Retention policy**: Last 30 days OR last 100 sessions per project (whichever is larger)
-- **Cleanup**: `~/.claude/plugins/summoner/scripts/cleanup-traces.sh` (cron-able)
-- **Privacy**: User can `rm -rf ~/.claude/plugins/summoner/traces/` anytime
-
-## Integration with Scoring System
-
-See `scoring-system.md` for how traces feed into automated quality checks.
-
-## Example: Extracting Tool Call Sequence
-
-```bash
-# Extract all tool calls from a trace
-jq -r 'select(.type == "tool_call") | "\(.tool) → \(.result) (\(.duration_ms)ms)"' trace.jsonl
-
-# Output:
-# Read → success (120ms)
-# Bash → success (50ms)
-# Edit → success (80ms)
-# Bash → success (3500ms)
-```
-
-## Example: Checking for Red Flags
-
-```bash
-# Check if Phase 1 (diagnose) was skipped
-if ! grep -q '"phase":1,"status":"completed"' trace.jsonl; then
-  echo "⚠️  Phase 1 (diagnose) was skipped — violates iron law"
-fi
-
-# Check if tests passed in Phase 4
-if grep -q '"phase":4' trace.jsonl && ! grep -q '"tests: all passed"' trace.jsonl; then
-  echo "⚠️  Phase 4 (verify) did not confirm test passage"
-fi
-```
+The five scorers are the mechanical audit; behavioral/model evaluation is a
+separate, budget-gated surface (spec §7 行为评测放行门, task T15) — the
+deterministic layer invents no LLM judges.
 
 ## Related
 
-- `scoring-system.md` — Automated quality scoring based on traces
-- `checkpoint-protocol.md` — Checkpoint output format (user-facing)
-- `post-game-review.md` — Post-game review questionnaire (feeds into traces)
+- `scoring-system.md` — the five scorers, the four statuses, the sidecar
+- `checkpoint-protocol.md` — the user-facing checkpoint render (the nonce carrier)
+- `post-game-review.md` — the questionnaire that closes a run
+- spec §7 — the event set's authority

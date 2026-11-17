@@ -1,209 +1,153 @@
 #!/bin/bash
 set -o pipefail
 
-# regression-test.sh — Test a new trace against a baseline
-# Usage: regression-test.sh --baseline <baseline.json> --new-trace <trace.jsonl>
+# regression-test.sh — test a new v2 trace against a pinned baseline
+# (spec §6.10: read the version-bound derived-score sidecar; a REQUIRED score
+# that is missing is a FAIL, never a silent skip).
+#
+# Checks:
+#   1. the new trace's derived sidecar `<new>.score.json` exists — missing
+#      sidecar = FAIL (run scripts/score-trace.sh first)
+#   2. the new trace is the same trace schema version the baseline pinned
+#   3. every scorer the baseline pinned is present in the new sidecar
+#      (missing = FAIL) and did not regress:
+#        PASS > NA_JUSTIFIED > MISSING_EVIDENCE > FAIL
+#      improvements are reported, not penalized
+#
+# Usage: regression-test.sh --baseline <baseline.json> --new-trace <trace.jsonl> [--output <result.json>]
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
-
-# Parse arguments
+BASELINE_FILE=""
+NEW_TRACE=""
+OUTPUT_FILE=""
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --baseline)
-      BASELINE_FILE="$2"
-      shift 2
-      ;;
-    --new-trace)
-      NEW_TRACE="$2"
-      shift 2
-      ;;
-    --output)
-      OUTPUT_FILE="$2"
-      shift 2
-      ;;
-    *)
-      echo "Usage: $0 --baseline <baseline.json> --new-trace <trace.jsonl> [--output <result.json>]"
-      exit 1
-      ;;
+    --baseline) BASELINE_FILE="$2"; shift 2 ;;
+    --new-trace) NEW_TRACE="$2"; shift 2 ;;
+    --output) OUTPUT_FILE="$2"; shift 2 ;;
+    *) echo "Usage: $0 --baseline <b.json> --new-trace <t.jsonl> [--output <r.json>]"; exit 1 ;;
   esac
 done
 
-# Validate arguments
-if [[ -z "$BASELINE_FILE" ]] || [[ -z "$NEW_TRACE" ]]; then
+if [[ -z "$BASELINE_FILE" || -z "$NEW_TRACE" ]]; then
   echo "Error: --baseline and --new-trace are required"
   exit 1
 fi
-
 if [[ ! -f "$BASELINE_FILE" ]]; then
   echo "Error: Baseline file not found: $BASELINE_FILE"
   exit 1
 fi
-
 if [[ ! -f "$NEW_TRACE" ]]; then
   echo "Error: New trace file not found: $NEW_TRACE"
   exit 1
 fi
 
-BASELINE_NAME=$(jq -r '.name' "$BASELINE_FILE")
-echo "📊 Regression Test: $BASELINE_NAME"
-echo "Baseline: $(basename "$BASELINE_FILE")"
-echo "New trace: $(basename "$NEW_TRACE")"
-echo ""
-
-# Initialize results
-PASS_COUNT=0
-FAIL_COUNT=0
-WARNINGS=()
-DETAILS=()
-
-# 1. Phase Coverage Check
-echo "🔍 Checking phase coverage..."
-EXPECTED_PHASES=$(jq -r '.expected_phases | join(",")' "$BASELINE_FILE")
-ACTUAL_PHASES=$(jq -r 'select(.type=="phase_end") | .phase' "$NEW_TRACE" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-
-if [[ "$EXPECTED_PHASES" == "$ACTUAL_PHASES" ]]; then
-  echo "  ✅ MATCH (phases: [$ACTUAL_PHASES])"
-  PASS_COUNT=$((PASS_COUNT + 1))
-  DETAILS+=('{"check":"phase_coverage","status":"pass","expected":"'"$EXPECTED_PHASES"'","actual":"'"$ACTUAL_PHASES"'"}')
-else
-  echo "  ❌ MISMATCH"
-  echo "     Expected: [$EXPECTED_PHASES]"
-  echo "     Actual:   [$ACTUAL_PHASES]"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-  DETAILS+=('{"check":"phase_coverage","status":"fail","expected":"'"$EXPECTED_PHASES"'","actual":"'"$ACTUAL_PHASES"'"}')
-fi
-
-# 2. Tool Sequence Similarity (LCS algorithm)
-echo "🔍 Checking tool sequence similarity..."
-EXPECTED_TOOLS=$(jq -r '.expected_tool_sequence | join(",")' "$BASELINE_FILE")
-ACTUAL_TOOLS=$(jq -r 'select(.type=="tool_call") | .tool' "$NEW_TRACE" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-
-# Simple similarity check (exact match for now; TODO: implement LCS)
-if [[ "$EXPECTED_TOOLS" == "$ACTUAL_TOOLS" ]]; then
-  echo "  ✅ MATCH (100% similarity)"
-  PASS_COUNT=$((PASS_COUNT + 1))
-  DETAILS+=('{"check":"tool_sequence","status":"pass","similarity":100}')
-else
-  # Count matching tools
-  EXPECTED_COUNT=$(echo "$EXPECTED_TOOLS" | tr ',' '\n' | wc -l)
-  ACTUAL_COUNT=$(echo "$ACTUAL_TOOLS" | tr ',' '\n' | wc -l)
-
-  # Simple Jaccard similarity
-  COMMON=$(comm -12 <(echo "$EXPECTED_TOOLS" | tr ',' '\n' | sort) <(echo "$ACTUAL_TOOLS" | tr ',' '\n' | sort) | wc -l)
-  UNION=$((EXPECTED_COUNT + ACTUAL_COUNT - COMMON))
-  SIMILARITY=$((COMMON * 100 / UNION))
-
-  if [[ $SIMILARITY -ge 80 ]]; then
-    echo "  ⚠️  PARTIAL MATCH (${SIMILARITY}% similarity)"
-    WARNINGS+=("Tool sequence differs but ${SIMILARITY}% similar")
-    PASS_COUNT=$((PASS_COUNT + 1))
-    DETAILS+=('{"check":"tool_sequence","status":"pass","similarity":'$SIMILARITY'}')
-  else
-    echo "  ❌ MISMATCH (${SIMILARITY}% similarity)"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    DETAILS+=('{"check":"tool_sequence","status":"fail","similarity":'$SIMILARITY'}')
+SIDECAR="${NEW_TRACE}.score.json"
+if [[ ! -f "$SIDECAR" ]]; then
+  echo "❌ FAIL — required score missing: no derived sidecar at $SIDECAR."
+  echo "   Run scripts/score-trace.sh --trace '$NEW_TRACE' first (spec §6.10:"
+  echo "   必需评分缺失=FAIL, never a silent skip)."
+  if [[ -n "$OUTPUT_FILE" ]]; then
+    printf '{"baseline": "%s", "new_trace": "%s", "status": "fail", "reason": "missing_sidecar"}\n' \
+      "${BASELINE_FILE##*/}" "${NEW_TRACE##*/}" > "$OUTPUT_FILE"
   fi
+  exit 1
 fi
 
-# 3. Score Comparison
-echo "🔍 Checking scores..."
-EXPECTED_P0=$(jq -r '.expected_scores.P0 // 0' "$BASELINE_FILE")
-EXPECTED_P0_MAX=$(jq -r '.expected_scores.P0_max // 100' "$BASELINE_FILE")
+python3 - "$BASELINE_FILE" "$NEW_TRACE" "$SIDECAR" "$OUTPUT_FILE" <<'PYEOF'
+import json, os, sys
 
-# Get actual scores from new trace
-SCORING_RESULT=$(jq -c 'select(.type=="scoring_result" and .priority=="P0")' "$NEW_TRACE" 2>/dev/null | tail -1)
+baseline_path, new_trace, sidecar, output = sys.argv[1:5]
 
-if [[ -z "$SCORING_RESULT" ]]; then
-  echo "  ⚠️  No scoring result in new trace. Run score-trace.sh first."
-  WARNINGS+=("No scoring result in new trace")
-  DETAILS+=('{"check":"scores","status":"skip","reason":"no_scoring_result"}')
-else
-  ACTUAL_P0=$(echo "$SCORING_RESULT" | jq -r '.total_score')
-  ACTUAL_P0_MAX=$(echo "$SCORING_RESULT" | jq -r '.max_score')
+RANK = {"PASS": 3, "NA_JUSTIFIED": 2, "MISSING_EVIDENCE": 1, "FAIL": 0}
 
-  DELTA=$((ACTUAL_P0 - EXPECTED_P0))
+try:
+    baseline = json.load(open(baseline_path, encoding="utf-8"))
+except json.JSONDecodeError as e:
+    print(f"❌ FAIL — baseline does not parse: {e}")
+    sys.exit(1)
+try:
+    new = json.load(open(sidecar, encoding="utf-8"))
+except json.JSONDecodeError as e:
+    print(f"❌ FAIL — sidecar does not parse: {e}")
+    sys.exit(1)
 
-  if [[ $DELTA -ge 0 ]]; then
-    echo "  ✅ MAINTAINED or IMPROVED (expected: $EXPECTED_P0, actual: $ACTUAL_P0, delta: +$DELTA)"
-    PASS_COUNT=$((PASS_COUNT + 1))
-    DETAILS+=('{"check":"scores","status":"pass","expected":'$EXPECTED_P0',"actual":'$ACTUAL_P0',"delta":'$DELTA'}')
-  elif [[ $DELTA -ge -5 ]]; then
-    echo "  ⚠️  MINOR DEGRADATION (expected: $EXPECTED_P0, actual: $ACTUAL_P0, delta: $DELTA)"
-    WARNINGS+=("P0 score dropped by $((DELTA * -1)) points (within 5-point tolerance)")
-    PASS_COUNT=$((PASS_COUNT + 1))
-    DETAILS+=('{"check":"scores","status":"pass","expected":'$EXPECTED_P0',"actual":'$ACTUAL_P0',"delta":'$DELTA'}')
-  else
-    echo "  ❌ DEGRADED (expected: $EXPECTED_P0, actual: $ACTUAL_P0, delta: $DELTA)"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    DETAILS+=('{"check":"scores","status":"fail","expected":'$EXPECTED_P0',"actual":'$ACTUAL_P0',"delta":'$DELTA'}')
-  fi
-fi
+print(f"📊 Regression Test: {baseline.get('name')}")
+print(f"Baseline:  {os.path.basename(baseline_path)} (pinned "
+      f"{baseline.get('created_at', '?')})")
+print(f"New trace: {os.path.basename(new_trace)}")
+print("")
 
-# 4. Duration Comparison (optional)
-echo "🔍 Checking duration..."
-EXPECTED_DURATION=$(jq -r '.expected_duration_ms // 0' "$BASELINE_FILE")
-ACTUAL_DURATION=$(jq -r 'select(.type=="session_end") | .total_duration_ms' "$NEW_TRACE" 2>/dev/null | head -1)
+fails, notes = [], []
 
-if [[ -z "$ACTUAL_DURATION" ]] || [[ "$ACTUAL_DURATION" == "0" ]]; then
-  echo "  ⊘ SKIP (no duration data)"
-  DETAILS+=('{"check":"duration","status":"skip"}')
-else
-  DURATION_DELTA=$((ACTUAL_DURATION - EXPECTED_DURATION))
-  DURATION_DELTA_PCT=$((DURATION_DELTA * 100 / EXPECTED_DURATION))
+# --- version binding -------------------------------------------------------------
+pinned = baseline.get("schema_version")
+carried = new.get("schema_version")
+if pinned and carried and pinned != carried:
+    fails.append(f"schema version drift: baseline pins {pinned}, new trace "
+                 f"sidecar carries {carried} (re-pin the baseline or migrate)")
 
-  if [[ $DURATION_DELTA_PCT -le 20 ]]; then
-    echo "  ✅ ACCEPTABLE (expected: ${EXPECTED_DURATION}ms, actual: ${ACTUAL_DURATION}ms, delta: ${DURATION_DELTA_PCT}%)"
-    DETAILS+=('{"check":"duration","status":"pass","expected":'$EXPECTED_DURATION',"actual":'$ACTUAL_DURATION',"delta_pct":'$DURATION_DELTA_PCT'}')
-  else
-    echo "  ⚠️  SLOWER (expected: ${EXPECTED_DURATION}ms, actual: ${ACTUAL_DURATION}ms, delta: ${DURATION_DELTA_PCT}%)"
-    WARNINGS+=("Duration increased by ${DURATION_DELTA_PCT}% (>${EXPECTED_DURATION}ms → ${ACTUAL_DURATION}ms)")
-    DETAILS+=('{"check":"duration","status":"pass","expected":'$EXPECTED_DURATION',"actual":'$ACTUAL_DURATION',"delta_pct":'$DURATION_DELTA_PCT'}')
-  fi
-fi
+expected = baseline.get("expected_scores", {})
+if not expected:
+    fails.append("baseline pins no expected_scores — re-create it with "
+                 "scripts/create-baseline.sh (the v1 phase/tool-sequence "
+                 "baseline format is gone)")
 
-# Summary
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+new_scores = {e.get("name"): e.get("status") for e in new.get("scorers", [])
+              if isinstance(e, dict)}
 
-if [[ $FAIL_COUNT -eq 0 ]]; then
-  if [[ ${#WARNINGS[@]} -eq 0 ]]; then
-    echo "✅ PASS — No regressions detected"
-    OVERALL_STATUS="pass"
-  else
-    echo "⚠️  PASS with warnings — ${#WARNINGS[@]} minor issue(s)"
-    OVERALL_STATUS="pass_with_warnings"
-    for warning in "${WARNINGS[@]}"; do
-      echo "   - $warning"
-    done
-  fi
-  EXIT_CODE=0
-else
-  echo "❌ FAIL — $FAIL_COUNT regression(s) detected"
-  OVERALL_STATUS="fail"
-  EXIT_CODE=1
-fi
+# --- every REQUIRED score present, none regressed ---------------------------------
+print("🔍 Checking pinned scorer statuses...")
+for scorer, want in expected.items():
+    got = new_scores.get(scorer)
+    if got is None:
+        fails.append(f"required score missing: sidecar records no result for "
+                     f"{scorer} (baseline pinned {want})")
+        print(f"   ❌ {scorer}: MISSING (baseline pinned {want})")
+    elif got not in RANK:
+        fails.append(f"{scorer}: unknown sidecar status {got!r}")
+        print(f"   ❌ {scorer}: {got}")
+    elif RANK[got] < RANK.get(want, 0):
+        fails.append(f"{scorer} regressed: baseline pinned {want}, new trace "
+                     f"scores {got}")
+        print(f"   ❌ {scorer}: {want} → {got}")
+    elif RANK[got] > RANK.get(want, 3):
+        notes.append(f"{scorer} improved: {want} → {got}")
+        print(f"   ✅ {scorer}: {want} → {got} (improved)")
+    else:
+        print(f"   ✅ {scorer}: {got} (maintained)")
 
-echo "Checks: $PASS_COUNT passed, $FAIL_COUNT failed"
+# --- overall sanity ---------------------------------------------------------------
+overall = new.get("overall", {}).get("status")
+if overall is not None and overall != "PASS":
+    for entry in new.get("scorers", []):
+        if entry.get("status") in ("FAIL", "MISSING_EVIDENCE"):
+            fails.append(f"{entry.get('name')} = {entry.get('status')}")
 
-# Write JSON output if requested
-if [[ -n "$OUTPUT_FILE" ]]; then
-  DETAILS_JSON=$(IFS=,; echo "${DETAILS[*]}")
-  WARNINGS_JSON=$(printf '%s\n' "${WARNINGS[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-
-  cat > "$OUTPUT_FILE" <<EOF
-{
-  "baseline": "$BASELINE_NAME",
-  "status": "$OVERALL_STATUS",
-  "pass_count": $PASS_COUNT,
-  "fail_count": $FAIL_COUNT,
-  "warnings": $WARNINGS_JSON,
-  "checks": [$DETAILS_JSON],
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+print("")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+result = {
+    "baseline": baseline.get("name"),
+    "new_trace": os.path.basename(new_trace),
+    "status": "fail" if fails else "pass",
+    "fails": fails,
+    "notes": notes,
+    "scores": new_scores,
 }
-EOF
-  echo ""
-  echo "Results written to: $OUTPUT_FILE"
-fi
+if fails:
+    print(f"❌ FAIL — {len(fails)} regression(s):")
+    for msg in fails:
+        print(f"   - {msg}")
+    exit_code = 1
+else:
+    print("✅ PASS — no pinned score regressed"
+          + (f" ({len(notes)} improvement(s))" if notes else ""))
+    exit_code = 0
 
-exit $EXIT_CODE
+if output:
+    with open(output, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"Results written to: {output}")
+sys.exit(exit_code)
+PYEOF
+exit $?

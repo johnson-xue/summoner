@@ -1,0 +1,17 @@
+description = "Read-only Summoner run status — phase route, checkpoint, budget, sandbox tier"
+
+prompt = """
+Invoke the Summoner status view.
+
+This command is a POINTER, not a copy — do NOT rely on any paraphrased
+description. Read and execute the canonical definition from the installed
+Summoner plugin (locate the plugin dir: the one containing both scripts/ and
+memory/):
+
+  1. <plugin-root>/skills/summoner/SKILL.md     — routing hub + checkpoint contract
+  2. <plugin-root>/commands/status.md              — this command's exact steps
+
+The command runs <plugin-root>/hooks/bin/summoner-status (read-only) and pastes
+its output verbatim; checkpoint renders and decisions follow the canonical
+files, never a local restatement.
+"""

@@ -29,9 +29,9 @@ Patterns loaded into context (≤1500 tokens)
 Memory is isolated by `project.name` declared in each project's `summoner.yaml`. The global `_index.json` maps project names to their database files:
 
 ```
-~/.claude/plugins/summoner/memory/
+${SUMMONER_PLUGIN_ROOT}/memory/          # plugin root = the dir with scripts/ + memory/
 ├── _index.json              # {"my-project": "my-project.db", ...}
-├── my-project.db          # Project-specific patterns + journal
+├── my-project.db            # Project-specific patterns + journal
 └── my-other-project.db      # Fully isolated
 ```
 
@@ -44,7 +44,26 @@ Executed at the start of every `/summoner:*` workflow, before Phase 1.
 From the user's input:
 1. **error_codes**: Scan for SC_* patterns, "panic", "nil pointer", "index out of range", etc.
 2. **module**: Infer from log file paths, function mentions, or explicit references
+   - e.g. `player/task/task.go` → try both `player` (the top subsystem dir, usually the right token) and `task`; `internal/module/game/player/guild/...` → `player` or `guild`
+   - The inferred token is matched against the patterns' `modules` column via LIKE. If the most specific token (e.g. `task`) returns nothing, fall back to the broader subsystem token (`player`) before concluding "no match".
 3. **keywords**: Tokenize Chinese (jieba-style splitting) and English words
+
+### DB Path Resolution (version-independent, all platforms)
+
+- **Canonical root:** `$SUMMONER_MEMORY_DIR`, default `~/.summoner/memory/` —
+  `DB_FILE = <root>/<project-name>.db`. This root does NOT live inside the
+  plugin install (plugin-cache paths change on every version bump and used to
+  orphan every project DB on upgrade — the 2026-09 fix). Same rule on every
+  platform (Claude Code, Gemini, OpenCode, ...).
+- **Legacy locations** (pre-2026-09: `<plugin-root>/memory/` in the plugin
+  cache, or `~/.claude/plugins/summoner/memory/`): `scripts/init-memory-db.sh
+  <project-name>` migrates them by copy-if-missing (original kept as a
+  rollback fossil); the SessionStart hook reports "legacy DB found" until
+  then. summoner-ctx context DBs migrate automatically on first open.
+- If the DB file doesn't exist (and no legacy one does): run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/init-memory-db.sh <project-name>` on Claude
+  Code; on other platforms — or if init fails — skip Phase 0 and proceed to
+  Phase 1.
 
 ### SQL Query
 
@@ -113,11 +132,16 @@ If the total token count exceeds 1500:
 | Level 2 | Top 1 pattern, short summary (100 tokens) | ≤300 |
 | Skip | No patterns loaded, Phase 0 skipped | 0 |
 
-**Degradation triggers:**
-1. Count tokens after feature extraction + SQL query
-2. If Top 5 full summaries > 1500 tokens → drop to Level 1 (Top 3, 150 tokens each)
-3. If Top 3 truncated > 1500 → drop to Level 2 (Top 1, 100 tokens)
-4. If even Top 1 > 1500 → skip Phase 0 entirely
+**Degradation triggers (estimate BEFORE rendering — degrade pre-emptively, not after overflow):**
+1. Estimate after feature extraction + SQL query (`estimated = count × avg_summary / 3`)
+2. estimated ≥ 1000 OR conversation context > 70% of model limit → Level 1 immediately
+3. estimated > 700 OR conversation context > 85% of model limit → Level 2
+4. even Level 2 would push total context > 90% of model limit → skip Phase 0 entirely
+5. Top 5 full summaries > 1500 tokens → Level 1; Top 3 > 1500 → Level 2; Top 1 > 1500 → skip
+
+**Degradation is automatic and SILENT — do not explain the choice, just apply it.
+When in doubt, degrade one level lower than you think: erring toward less output
+is always correct.**
 
 **Truncation rules:**
 - Level 1: Keep first 2 sentences of summary, discard detail
@@ -205,5 +229,5 @@ When a pattern is promoted into a skill's Red Flags or Rationalizations section,
 New project namespaces are initialized via `scripts/init-memory-db.sh <project-name>`:
 - Creates the SQLite database with WAL mode and all pragmas
 - Creates `patterns` and `journal` tables with indices
-- Seeds high-priority patterns from the project's AI mistake history
+- Seeds ONE project-agnostic pattern (project-specific seeds are the project's own `--seed <file.sql>`, never the framework's)
 - Registers the namespace in `memory/_index.json`

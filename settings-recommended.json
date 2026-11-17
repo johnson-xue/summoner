@@ -1,0 +1,15 @@
+{
+  "askUserQuestionTimeout": "never",
+  "sandbox": {
+    "filesystem": {
+      "denyRead": ["~/.summoner/state-v2", "~/.summoner/traces-v2"]
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Read(~/.summoner/state-v2/**)",
+      "Read(~/.summoner/traces-v2/**)",
+      "Edit(~/.summoner/**)"
+    ]
+  }
+}

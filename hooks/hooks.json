@@ -1,4 +1,5 @@
 {
+  "description": "Summoner single-loop checkpoint enforcement hooks (v2)",
   "hooks": {
     "SessionStart": [
       {
@@ -12,13 +13,63 @@
         ]
       }
     ],
-    "PreToolUse": [
+    "UserPromptSubmit": [
       {
-        "matcher": "Skill",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/pretooluse-skill\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/userpromptsubmit\"",
+            "timeout": 10,
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/pretooluse-gate\"",
+            "timeout": 10,
+            "onFailure": "block",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/posttooluse\"",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/posttooluse\"",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/subagentstop\"",
             "async": false
           }
         ]

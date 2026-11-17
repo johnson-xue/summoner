@@ -55,7 +55,7 @@ body:
         - Hooks (SessionStart/PreToolUse/Stop)
         - Memory Chain (SQLite)
         - Checkpoint Protocol
-        - Personas (code-reviewer / security-auditor / test-engineer)
+        - Review contract (reviewer agent / review-submit channel)
         - Manifest / summoner.yaml
         - Platform adapter (non-Claude-Code support)
         - Documentation

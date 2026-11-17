@@ -1,0 +1,49 @@
+version: "2"
+project:
+  name: fixture-project
+phases:
+  diagnosis:
+    skill: none
+  debug:
+    skill:
+      default: demo-debug
+      alternate: [superpowers:systematic-debugging]
+  review:
+    verification_spec:
+      criteria:
+        - id: unit-tests
+          goal: Tests pass
+          scope: .
+          method: mechanical
+          expected: Exit status 0
+          required: true
+          check_id: unit
+        - id: behavior
+          goal: Boundary behavior matches the accepted requirements
+          scope: .
+          method: judgment
+          expected: Direct evidence for each boundary case
+          required: true
+          rubric: docs/review-rubric.md
+      check_ids: [unit]
+      readable: [docs, src]
+      rubric: docs/review-rubric.md
+check_registry:
+  - check_id: unit
+    command: go
+    args: [test, ./...]
+    cwd: .
+    env_allow: [PATH]
+    digest: d177246245d54d344e2dc1b623abf85e4137d724d7eff0c2e79a8e7cf68d63d4
+    trust: project
+tool_scope:
+  allowed_tools: [Read, Grep, Bash]
+  readable: [docs, src]
+  writable: [src]
+# Illustrative suggestions only; the first checkpoint asks the user to confirm.
+suggested_budgets:
+  phase_tool_calls: 40
+  failed_checks: 3
+  run_rework: 2
+  delegations: 1
+  check_timeout_seconds: 120

@@ -1,0 +1,12 @@
+case_id: g5-neg
+group: 5
+split: train
+difficulty: medium
+repo: frozen_base
+setup: setup.patch
+workflow: review
+est_context_tokens: 2600
+arm_notes: >
+  审查臂误报测量：正确交付 + 诚实报告。钓『对诚实声明的未覆盖项过度发
+  挥』与『把契约常量判成缺陷』。独立性高的审查者也可能因为更敢下结论
+  而产生 FP —— 两臂对比此消彼长。

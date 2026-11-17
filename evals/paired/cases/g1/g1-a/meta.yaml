@@ -1,0 +1,12 @@
+case_id: g1-a
+group: 1
+split: train
+difficulty: medium
+repo: frozen_base
+setup: setup.patch
+workflow: fix
+est_context_tokens: 2500
+arm_notes: >
+  基线臂：逐节点 ⑤ 在 diagnose/fix 各节点后审查；候选臂：主循环实现+测试，
+  终局 ⑤ + 检查点接受门。测量点：D2（测试俘获）的召回差异、T1（把
+  TruncateBytes 一并“修复”或列为缺陷）的误报差异。

@@ -60,13 +60,10 @@ func TestGetDatabasePath(t *testing.T) {
 
 	t.Run("uses default path when env not set", func(t *testing.T) {
 		os.Unsetenv("SUMMONER_DB_PATH")
-		path, err := getDatabasePath("test123")
-		if err != nil {
-			t.Fatalf("getDatabasePath err: %v", err)
-		}
+		path := getDatabasePath("test123")
 
-		if !strings.Contains(path, ".claude/plugins/summoner/memory") {
-			t.Errorf("getDatabasePath() = %v, want path containing .claude/plugins/summoner/memory", path)
+		if !strings.Contains(path, ".summoner/memory") {
+			t.Errorf("getDatabasePath() = %v, want path containing .summoner/memory (version-independent root, 2026-09)", path)
 		}
 		if !strings.HasSuffix(path, "test123.db") {
 			t.Errorf("getDatabasePath() = %v, want path ending with test123.db", path)
@@ -77,10 +74,7 @@ func TestGetDatabasePath(t *testing.T) {
 		tmpDir := t.TempDir()
 		os.Setenv("SUMMONER_DB_PATH", tmpDir)
 
-		path, err := getDatabasePath("test456")
-		if err != nil {
-			t.Fatalf("getDatabasePath err: %v", err)
-		}
+		path := getDatabasePath("test456")
 		expected := filepath.Join(tmpDir, "test456.db")
 
 		if path != expected {
@@ -91,22 +85,16 @@ func TestGetDatabasePath(t *testing.T) {
 	t.Run("falls back to default when env path invalid", func(t *testing.T) {
 		os.Setenv("SUMMONER_DB_PATH", "relative/path")
 
-		path, err := getDatabasePath("test789")
-		if err != nil {
-			t.Fatalf("getDatabasePath err during fallback: %v", err)
-		}
+		path := getDatabasePath("test789")
 
-		if !strings.Contains(path, ".claude/plugins/summoner/memory") {
+		if !strings.Contains(path, ".summoner/memory") {
 			t.Errorf("getDatabasePath() should fallback to default, got %v", path)
 		}
 	})
 }
 
 func TestGetDefaultDatabasePath(t *testing.T) {
-	path, err := getDefaultDatabasePath("abc123")
-	if err != nil {
-		t.Fatalf("getDefaultDatabasePath err: %v", err)
-	}
+	path := getDefaultDatabasePath("abc123")
 
 	if !filepath.IsAbs(path) {
 		t.Errorf("getDefaultDatabasePath() = %v, want absolute path", path)
@@ -116,37 +104,9 @@ func TestGetDefaultDatabasePath(t *testing.T) {
 		t.Errorf("getDefaultDatabasePath() = %v, want path containing abc123.db", path)
 	}
 
-	if !strings.Contains(path, ".claude") {
-		t.Errorf("getDefaultDatabasePath() = %v, want path containing .claude", path)
+	if !strings.Contains(path, ".summoner") {
+		t.Errorf("getDefaultDatabasePath() = %v, want path containing .summoner", path)
 	}
-}
-
-// TestGetDefaultDatabasePath_NoHomeIsErrorNotFatal (B8): before the fix,
-// os.UserHomeDir() failure called log.Fatalf and killed the whole process
-// from a library. Now it returns an error the caller can handle. We force
-// the failure by unsetting HOME and USERPROFILE and checking the env can't
-// resolve a home dir; if the platform still resolves one (e.g. via getpwuid),
-// the test skips rather than asserting — the invariant we lock in is "no
-// Fatalf", confirmed by the call site compiling against (string, error).
-func TestGetDefaultDatabasePath_NoHomeIsErrorNotFatal(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	origProfile := os.Getenv("USERPROFILE")
-	defer func() {
-		os.Setenv("HOME", origHome)
-		os.Setenv("USERPROFILE", origProfile)
-	}()
-	os.Unsetenv("HOME")
-	os.Unsetenv("USERPROFILE")
-
-	_, err := getDefaultDatabasePath("nohome")
-	if err != nil {
-		// Confirmed: missing HOME is now an error, not a process abort.
-		if !strings.Contains(err.Error(), "home directory") {
-			t.Errorf("err = %v, want message about home directory", err)
-		}
-		return
-	}
-	t.Skip("platform resolved a home dir via a source other than HOME/USERPROFILE; cannot force failure — invariant (no Fatalf) holds via compile-time signature")
 }
 
 func TestHashProjectName(t *testing.T) {

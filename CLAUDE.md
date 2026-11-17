@@ -23,8 +23,8 @@ Summoner is a portable, project-agnostic orchestration layer for AI coding agent
 ```
 skills/summoner/SKILL.md    → Meta-skill: reads manifest, routes, enforces protocol
 commands/                   → Slash command entry points (thin — just workflow + rules)
-agents/                     → Reusable personas (code-reviewer, security-auditor, test-engineer)
-references/                 → Protocol specifications (manifest, checkpoint, review, personas)
+agents/                     → reviewer.md (the ⑤ review agent) + worker.md (on disk; registration pending behavioral approval)
+references/                 → Protocol specifications (manifest, checkpoint, review, composition)
 scripts/                    → Validation and utility scripts
 memory/                     → Per-project SQLite databases (patterns + journal)
 journal/                    → Post-game review artifacts (deprecated, moved to SQLite)

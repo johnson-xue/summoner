@@ -1,6 +1,6 @@
 {
   "name": "summoner",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "description": "Summoner — AI Agent Orchestration Framework. Portable, project-agnostic workflow orchestration with checkpoint-based interruption and post-game review. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
   "author": "Jingshan Xue",
   "license": "MIT",
@@ -18,39 +18,82 @@
     },
     {
       "name": "summoner-release",
-      "path": "skills/release/SKILL.md",
-      "description": "Version release automation — version planning, changelog generation, release execution. Keeps plugin.json and marketplace.json synchronized. Use when user invokes /summoner:release."
+      "path": "skills/summoner-release/SKILL.md",
+      "description": "Version release automation — version planning, changelog generation, release execution. Keeps ALL THREE version manifests synchronized (root plugin.json, .claude-plugin/plugin.json, .claude-plugin/marketplace.json). Use when user invokes /summoner:release."
+    },
+    {
+      "name": "auto-setup-summoner",
+      "path": "skills/auto-setup-summoner/SKILL.md",
+      "description": "Configure a v2 Summoner capability map when the user explicitly requests setup or asks how to resolve a missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration."
+    },
+    {
+      "name": "phase-submit",
+      "path": "skills/phase-submit/SKILL.md",
+      "description": "ONLY to submit a completed phase result — invoke when a phase's work is done; never for anything else. Not user-invocable; it is the main session's single submission channel to the checkpoint protocol."
+    },
+    {
+      "name": "change",
+      "path": "skills/change/SKILL.md",
+      "description": "ONLY to open or apply a requirement change in a live Summoner run; never for anything else. Not user-invocable; it is the main session's single channel into the requirement-change loop (open freezes the development position, apply submits the delta + impact)."
+    },
+    {
+      "name": "review-submit",
+      "path": "skills/review-submit/SKILL.md",
+      "description": "ONLY to register one review (identity-only form) in a live Summoner run, or to recover a wedged RUNNING review attempt — invoke when the review must start or the reviewer's child died mid-review; never for anything else. Not user-invocable; it is the main session's single registration channel (the reducer mints the envelope from the pinned acceptance view minus drops)."
+    },
+    {
+      "name": "probe-submit",
+      "path": "skills/probe-submit/SKILL.md",
+      "description": "ONLY to resolve an OUTCOME_UNKNOWN episode of a live Summoner run; never for anything else. Not user-invocable; it is the main session's single crash-recovery channel (bound byte-exact probes per unknown; the PostToolUse matcher computes every verdict — outcomes are never accepted on the wire)."
     }
   ],
   "agents": [
     {
-      "name": "code-reviewer",
-      "path": "agents/code-reviewer.md",
-      "description": "Senior Staff Engineer — 5-axis code review (correctness, idiom, architecture, security, impact)"
-    },
-    {
-      "name": "security-auditor",
-      "path": "agents/security-auditor.md",
-      "description": "Security Engineer — OWASP Top 10 vulnerability audit, secrets handling, dependency analysis"
-    },
-    {
-      "name": "test-engineer",
-      "path": "agents/test-engineer.md",
-      "description": "QA Engineer — test strategy, coverage analysis, Prove-It pattern for bug fixes"
-    },
-    {
-      "name": "debug-agent",
-      "path": "agents/debug-agent.md",
-      "description": "Root Cause Analyst — systematic error diagnosis, stack trace analysis, log correlation, hypothesis-driven debugging"
+      "name": "reviewer",
+      "path": "agents/reviewer.md",
+      "description": "Single-loop ⑤ reviewer — independent black-box re-derivation of one artifact set against a frozen acceptance envelope; returns a structured ReviewResult with evidence_tool_call_ids (a PASS with empty evidence is a rubber-stamp protocol error)"
     }
   ],
   "commands": [
-    { "name": "summoner:fix", "path": "commands/fix.md", "description": "Bug fix full pipeline: diagnose → reproduce → fix → verify → review. Triggers: '线上报错 SC_ErrInnerLogic', '帮我排查这个 bug', '登录失败了'" },
-    { "name": "summoner:new", "path": "commands/new.md", "description": "New feature full pipeline: define → plan → implement → test → review. Triggers: '新增一个子系统', 'add knight mode feature', '加一个排行榜功能'" },
-    { "name": "summoner:ship", "path": "commands/ship.md", "description": "Pre-launch review: adaptive fan-out 1-3 personas in parallel → merge → go/no-go. Triggers: '准备发版', 'review before merge', '上线前检查'" },
-    { "name": "summoner:debug", "path": "commands/debug.md", "description": "Diagnose only — root cause analysis without making changes. Triggers: '帮我看下这个报错是什么原因', '这个 nil pointer 哪里来的'" },
-    { "name": "summoner:ops", "path": "commands/ops.md", "description": "Ops operations routed through project's ops skill. Triggers: '启动服务', '重启', '查看状态'" },
-    { "name": "summoner:review", "path": "commands/review.md", "description": "Standalone code review via code-reviewer persona without other phases. Triggers: 'review 一下这个改动', '帮我看看这段代码有什么问题'" },
-    { "name": "summoner:release", "path": "commands/release.md", "description": "Version release workflow: version planning → changelog → release execution. Triggers: '发版', 'release 0.1.x', 'publish a new version'" }
+    {
+      "name": "summoner:fix",
+      "path": "commands/fix.md",
+      "description": "Bug fix full pipeline: context → diagnosis (iron law) → reproduce → fix → regression → review, each phase closing at a user-verified checkpoint. DEFAULT for 排查-type phrases ('帮我排查这个 bug') — route here unless the user explicitly wants diagnosis only (then /summoner:debug). Triggers: '线上报错', '帮我排查这个 bug 并修好', '登录失败了修一下'"
+    },
+    {
+      "name": "summoner:new",
+      "path": "commands/new.md",
+      "description": "New feature full pipeline: context → requirements → plan → implement → verify → review, each phase closing at a user-verified checkpoint. Triggers: '新增一个子系统', 'add knight mode feature', '加一个排行榜功能'"
+    },
+    {
+      "name": "summoner:ship",
+      "path": "commands/ship.md",
+      "description": "Pre-launch review: one independent reviewer over the full rubric → merge report → go/no-go. Sensitive changes add criteria, not reviewers. Triggers: '准备发版', 'review before merge', '上线前检查'"
+    },
+    {
+      "name": "summoner:debug",
+      "path": "commands/debug.md",
+      "description": "Diagnose ONLY — root cause analysis without making changes. Use when the user explicitly wants the cause and no code changes ('先别改代码', '只告诉我原因', '我自己来修'); otherwise 排查-type phrases default to /summoner:fix. Triggers: '帮我看下这个报错是什么原因，先别改', '这个 nil pointer 哪里来的'"
+    },
+    {
+      "name": "summoner:ops",
+      "path": "commands/ops.md",
+      "description": "Ops operations routed through project's ops skill. Triggers: '启动服务', '重启', '查看状态'"
+    },
+    {
+      "name": "summoner:review",
+      "path": "commands/review.md",
+      "description": "Standalone code review via the verification_spec route — one independent reviewer, no code changes. Triggers: 'review 一下这个改动', '帮我看看这段代码有什么问题'"
+    },
+    {
+      "name": "summoner:release",
+      "path": "commands/release.md",
+      "description": "Version release workflow: version planning → changelog → release execution. Triggers: '发版', 'release 0.1.x', 'publish a new version'"
+    },
+    {
+      "name": "summoner:status",
+      "path": "commands/status.md",
+      "description": "Read-only status view of the current run — phase route, pending checkpoint, budget, sandbox tier. Renders via hooks/bin/summoner-status; never mutates state. Triggers: '当前进度', 'run status', '检查点状态'"
+    }
   ]
 }

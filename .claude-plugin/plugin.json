@@ -1,7 +1,7 @@
 {
   "name": "summoner",
   "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows: framework verbs are fixed, project skills are replaceable.",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "author": {
     "name": "Jingshan Xue"
   },
@@ -15,15 +15,20 @@
     "code-review",
     "debugging",
     "tdd",
-    "memory",
-    "personas"
+    "memory"
   ],
   "commands": "./commands",
-  "skills": "./skills",
+  "skills": [
+    "./skills/summoner",
+    "./skills/summoner-setup",
+    "./skills/summoner-release",
+    "./skills/auto-setup-summoner",
+    "./skills/phase-submit",
+    "./skills/change",
+    "./skills/review-submit",
+    "./skills/probe-submit"
+  ],
   "agents": [
-    "./agents/code-reviewer.md",
-    "./agents/security-auditor.md",
-    "./agents/test-engineer.md",
-    "./agents/debug-agent.md"
+    "./agents/reviewer.md"
   ]
 }

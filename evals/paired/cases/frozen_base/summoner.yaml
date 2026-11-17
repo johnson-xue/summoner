@@ -1,0 +1,9 @@
+version: "1"
+project:
+  name: inventoryd
+phases:
+  # Phases intentionally omitted fall back to superpowers defaults
+  # (brainstorming / writing-plans / TDD). inventoryd ships no domain
+  # skills; review criteria live in REVIEW-CRITERIA.md.
+  docs:
+    skill: none
