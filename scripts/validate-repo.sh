@@ -441,8 +441,10 @@ if PAIRED_SELFCHECK_OUT="$(bash "$SCRIPT_DIR/test-paired-harness.sh" 2>&1)"; the
 else
   fail "paired-eval harness selftest RED — run scripts/test-paired-harness.sh for detail"
   # The failing assertions are the detail that matters in CI (2026-11-17: the
-  # first v0.5.0 release run failed here with every ✗ line swallowed).
-  printf '%s\n' "$PAIRED_SELFCHECK_OUT" | grep '^[✗✓] ' | tail -30 | sed 's/^/    /' >&2
+  # first v0.5.0 release run failed here with every ✗ line swallowed; run 4
+  # then hid the ONE remaining failure above the tail-30 window). Print every
+  # ✗ line untruncated — failures are few by construction.
+  printf '%s\n' "$PAIRED_SELFCHECK_OUT" | grep '^✗' | sed 's/^/    /' >&2
 fi
 
 # ------------------------------------------------------------------ result
