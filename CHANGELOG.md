@@ -1,5 +1,15 @@
 # Summoner Changelog
 
+## [0.5.2] - 2026-11-19
+
+Live-use reliability fixes (three user-reported 0.5.1 failures in a real project session).
+
+### 🐛 Bug Fixes
+- **WAIT_USER render surface unblocked**: `Skill(summoner:status)` is no longer blocked while a checkpoint waits for the user's decision — the read-only viewer is the re-render surface (content feedback and page navigation re-render before re-asking); the gate now admits it alongside `summoner:change`/`phase-submit`. Work skills stay blocked at the checkpoint.
+- **bare `summoner-status` invocation**: empty or whitespace-only stdin is now treated as the empty payload `{}` instead of exiting 2 (`stdin is not a hook JSON object: EOF`) — the protocol's own recipe is `<<< '{}'` and the bare spelling is the model's natural form.
+- **runtime pointer qualification (dead-link class fix)**: every bare `references/…` pointer in `skills/` and `commands/` was a dead link at runtime — the model resolves paths relative to the SKILL directory while `references/` lives at the plugin root (user hit `Read …/skills/summoner/references/memory-chain.md`). Skills now carry `../../`-qualified pointers, commands carry `${CLAUDE_PLUGIN_ROOT}/`-qualified ones, and a new validate-repo lint enforces the forms plus target existence (74 findings fixed; the root-relative dead-path check could never catch this class). Skill byte ceiling 13568→13632 for the qualification bytes (dated recalibration).
+- `summoner-release` skill: the stale 0.2.0 checkpoint-box instruction (5 mandatory fields, `Next:` grammar) now points at the canonical render contract instead of contradicting it.
+
 ## [0.5.1] - 2026-11-19
 
 Checkpoint readability fix. **The checkpoint block renders as a left-rail structured frame** — the 0.5.0 canonical render packed every section into an undifferentiated `key:value` wall; the frame gives it the table readability back without touching any protocol semantics.

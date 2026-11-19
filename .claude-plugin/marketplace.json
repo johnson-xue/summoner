@@ -11,7 +11,7 @@
       "name": "summoner",
       "source": "./",
       "description": "AI Agent Orchestration Framework — checkpoint-based workflow orchestration with post-game review and memory chain. Like a Makefile for AI workflows.",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "homepage": "https://github.com/johnson-xue/summoner",
       "license": "MIT",
       "keywords": [
