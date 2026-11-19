@@ -16,8 +16,8 @@ route's internal phase id — never `phases.operate`) — never topology.
 Resolve the operate capability from `summoner.yaml`; no manifest → built-in
 default, declared「未配置项目专属能力」. User gates, trace, budgets and
 post-game run through the same single-loop reducer as every workflow
-(`references/checkpoint-protocol.md`; red flags / auto-skip table:
-`references/workflow-reference.md`) — no second execution chain.
+(`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`; red flags / auto-skip table:
+`${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`) — no second execution chain.
 
 ## Rules
 
@@ -25,7 +25,7 @@ post-game run through the same single-loop reducer as every workflow
    business — Summoner does not re-orchestrate it. The framework loop wraps
    it: the operate phase closes ONCE at its checkpoint (single acceptance
    gate per operate phase) via `summoner:phase-submit`; decisions via
-   AskUserQuestion (`references/checkpoint-protocol.md`).
+   AskUserQuestion (`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`).
 2. Mutating ops steps are exactly where OUTCOME_UNKNOWN bites: a crashed
    deploy/tag/write surfaces as a recovery checkpoint — run the capability's
    read-only probe, then let the user decide retry / recall / stop. Mutating
@@ -38,4 +38,4 @@ post-game run through the same single-loop reducer as every workflow
 
 ## Post-Game Review
 
-Mandatory — Type 4 (流程评价) per `references/post-game-review.md`.
+Mandatory — Type 4 (流程评价) per `${CLAUDE_PLUGIN_ROOT}/references/post-game-review.md`.

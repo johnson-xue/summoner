@@ -26,20 +26,20 @@ four phases). The manifest maps CAPABILITIES, never topology. In practice:
    against its transcript; BLOCKED (sandbox/env) is a reason code, never a
    quality verdict.
 3. **Merge** — render the canonical **Ship Merge Report Format** from
-   `references/workflow-reference.md` (GO | NO-GO + blockers / recommended /
+   `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md` (GO | NO-GO + blockers / recommended /
    risks / rollback / full report — never inline a variant).
 4. **Decide** — the checkpoint asks the user; a Critical finding defaults
    NO-GO unless the user explicitly accepts the risk.
 
 ## Rules
 
-1. Checkpoints + AskUserQuestion per `references/checkpoint-protocol.md`.
+1. Checkpoints + AskUserQuestion per `${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`.
 2. Cite existing review/verification evidence instead of re-running it —
    same-digest artifacts with a still-valid result reuse once.
 3. Rollback plan is MANDATORY before any GO.
 4. review vs ship: review answers「这份变更有哪些问题」；ship 引用其证据做
    GO/NO-GO，不重复同一审查（boundary canonical:
-   `references/capability-map.md`）.
+   `${CLAUDE_PLUGIN_ROOT}/references/capability-map.md`）.
 
 ## Post-Game Review
 

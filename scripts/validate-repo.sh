@@ -171,6 +171,49 @@ done < <(grep -rhoE '(^|[^A-Za-z0-9_/-])(references|scripts|skills|hooks|agents|
          | sed -E 's/^[^A-Za-z0-9_-]//' | sort -u)
 [[ $DEAD -eq 0 ]] && ok "no dead path references (commands/, skills/, references/, agents/, scripts/, hooks.json)"
 
+# ------------------------------------------- 3b. runtime pointer qualification
+# 2026-11-19 (user report: Read …/skills/summoner/references/memory-chain.md
+# failed at runtime): skills resolve relative paths against the SKILL
+# directory and commands have no base dir at all, so a bare
+# `references/x.md` pointer — which resolves fine from the repo root, which
+# is why the dead-path check above never caught it — is a dead link at
+# runtime. Skills must carry ../-qualified pointers that resolve from the
+# mentioning file; commands must carry ${CLAUDE_PLUGIN_ROOT}/-qualified
+# pointers (resolved from the repo root here).
+PTR_CODE=$(python3 - <<'PYEOF'
+import glob, os, re, sys
+pat = re.compile(r'`((?:references|skills|scripts|commands|agents|scorers|tests)/[^`]*?(?:\.md|\.sh|\.json|\.jsonl|\.ya?ml|\.toml))`')
+plugin_root_prefix = "$" + "{CLAUDE_PLUGIN_ROOT}/"
+bad = []
+for kind, files in (("skill", glob.glob("skills/**/*.md", recursive=True)),
+                    ("command", glob.glob("commands/*.md"))):
+    for f in files:
+        text = open(f, encoding="utf-8").read()
+        for m in pat.finditer(text):
+            tok = m.group(1)
+            if kind == "skill":
+                if not tok.startswith("../"):
+                    bad.append(f"{f}: bare pointer `{tok}` — qualify as `../…` from the skill dir")
+                    continue
+                target = os.path.normpath(os.path.join(os.path.dirname(f), tok))
+            else:
+                if not tok.startswith(plugin_root_prefix):
+                    bad.append(f"{f}: bare pointer `{tok}` — qualify as `${{CLAUDE_PLUGIN_ROOT}}/…` (commands have no base dir)")
+                    continue
+                target = tok[len(plugin_root_prefix):]
+            if not any(ch in target for ch in "*<") and not os.path.exists(target):
+                bad.append(f"{f}: pointer `{tok}` resolves to missing {target}")
+for line in bad:
+    print(line)
+sys.exit(1 if bad else 0)
+PYEOF
+)
+if [[ $? -eq 0 ]]; then
+  ok "runtime pointers qualified (skills ../-relative, commands \${CLAUDE_PLUGIN_ROOT}/) and resolving"
+else
+  while IFS= read -r l; do fail "$l"; done <<< "$PTR_CODE"
+fi
+
 # ------------------------------------------- 4. hardcoded project names
 # Routing + script + gemini-pointer layers, case-insensitive. Examples in
 # SKILL.md/references/tests are exempt by design (the 2026-09 finds were:
@@ -283,7 +326,9 @@ fi
 # 2026-11-17: skill ceiling 13312→13568 — the v1 zero-touch compat routing
 # pointer (3 lines, load-bearing: the model must route a v1 project by the
 # translated view) bound summoner/SKILL.md at 13527B.
-CEIL_SKILL=13568
+# 2026-11-19: 13568→13632 — runtime pointer qualification (../../-prefixed
+# references in skills; section 3b — user-reported dead links).
+CEIL_SKILL=13632
 CEIL_CMD=3072
 OVER=0
 while IFS= read -r f; do

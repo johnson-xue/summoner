@@ -5,13 +5,13 @@ description: 修 Bug 全链路 — context → diagnosis（铁律）→ reproduc
 # /summoner:fix
 
 Bug-repair pipeline. Every phase closes at a user checkpoint; decisions come
-only from AskUserQuestion (`references/checkpoint-protocol.md`).
+only from AskUserQuestion (`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`).
 
 ## Route
 
 context → diagnosis(M) → reproduce → fix → regression → review → post-game
 
-- **context**: memory retrieval (`references/memory-chain.md` §Phase 0); no DB → state it, continue.
+- **context**: memory retrieval (`${CLAUDE_PLUGIN_ROOT}/references/memory-chain.md` §Phase 0); no DB → state it, continue.
 - **diagnosis (M)**: the project's debug skill (manifest `phases.debug` or `phases.diagnosis`) produces root cause + trigger conditions + location + evidence. Writes are gate-denied until this phase is ACCEPTED at its checkpoint. Root cause unknown → keep investigating or stop; never proceed blind.
 - **reproduce** (skippable): same-context reproduction test.
 - **fix**: repair using the manifest-mapped fix skill (or freeform with the user); local same-context tests.
@@ -20,18 +20,18 @@ context → diagnosis(M) → reproduce → fix → regression → review → pos
 
 ## Rules
 
-1. Loop per `skills/summoner/SKILL.md`: work → `summoner:phase-submit` (only
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/skills/summoner/SKILL.md`: work → `summoner:phase-submit` (only
    channel) → paste the summoner-status render verbatim → AskUserQuestion
    (nonce in question, keyword-led labels).
 2. Skips are proposed at the checkpoint against the auto-skip table
-   (`references/workflow-reference.md`) — only the user confirms; skipped
+   (`${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`) — only the user confirms; skipped
    phases are marked UNVERIFIED/UNREVIEWED.
 3. Any phase checkpoint may take `review:` ([v] on-demand independent review).
 4. Requirement tweaks mid-run open the change loop (delta → impact →
    single-point accept), not a recall and not a restart.
-5. Rationalizations/red flags: `references/workflow-reference.md`.
+5. Rationalizations/red flags: `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`.
 
 ## Post-Game Review
 
-Mandatory — questionnaire per `references/post-game-review.md`; the run is
+Mandatory — questionnaire per `${CLAUDE_PLUGIN_ROOT}/references/post-game-review.md`; the run is
 CLOSED only after the journal persists.

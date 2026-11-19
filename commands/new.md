@@ -5,13 +5,13 @@ description: 新增功能全链路 — context → requirements → plan → imp
 # /summoner:new
 
 Feature pipeline. Spec/plan first; every phase closes at a user checkpoint
-(`references/checkpoint-protocol.md`).
+(`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`).
 
 ## Route
 
 context → requirements → plan → implement → verify → review → post-game
 
-- **context**: memory retrieval (`references/memory-chain.md` §Phase 0).
+- **context**: memory retrieval (`${CLAUDE_PLUGIN_ROOT}/references/memory-chain.md` §Phase 0).
 - **requirements**: definition + exit criteria — the acceptance view freezes at user acceptance; producers cannot trim it later.
 - **plan**: task breakdown frozen at its checkpoint (goal/deliverables/dependencies/acceptance — a document, not an execution topology).
 - **implement**: build in this session via the manifest-mapped implement skill; local tests in the same context.
@@ -37,19 +37,19 @@ bindable to a project skill via the manifest:
 拆能力，不拆上下文，不拆状态: both roles share the ONE run state and the
 main session's context — this is a capability binding split, not a second
 execution mode. A requirement change mid-delivery opens the change loop
-(`skills/change/SKILL.md`), freezes the development position, and resumes in
+(`${CLAUDE_PLUGIN_ROOT}/skills/change/SKILL.md`), freezes the development position, and resumes in
 place after the single-point confirm — it never restarts the pipeline or
 re-enters requirements/plan wholesale.
 
 ## Rules
 
-1. Loop per `skills/summoner/SKILL.md`: work → `summoner:phase-submit` →
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/skills/summoner/SKILL.md`: work → `summoner:phase-submit` →
    paste the summoner-status render verbatim → AskUserQuestion.
 2. requirements/plan are not skippable (没 spec 不动工，没 plan 不写码).
 3. Direction wrong after acceptance → `recall:` to the phase's history label
    (downstream accepted criteria go stale). Baseline moved → change loop.
-4. Rationalizations: `references/workflow-reference.md`.
+4. Rationalizations: `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`.
 
 ## Post-Game Review
 
-Mandatory; type rules per `references/post-game-review.md`.
+Mandatory; type rules per `${CLAUDE_PLUGIN_ROOT}/references/post-game-review.md`.

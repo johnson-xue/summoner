@@ -26,7 +26,7 @@ Read-only viewer. It never starts, advances, or mutates a run — rendering only
 
 2. **Paste the binary's output VERBATIM into your reply.** Never summarize,
    reformat, or hand-write a status or checkpoint render — the canonical format
-   lives in `references/checkpoint-protocol.md`, and a pending checkpoint's
+   lives in `${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`, and a pending checkpoint's
    block (its id + nonce) is what display verification binds to.
 
 3. Interpret for the user, briefly, below the pasted block: what is awaited

@@ -848,3 +848,25 @@ func TestParseInputAcceptsHookEnvelope(t *testing.T) {
 		t.Fatalf("empty object must parse with empty session id: %v %+v", err, in)
 	}
 }
+
+// TestBareInvocationIsEmptyPayload — the protocol's own render recipe is
+// `summoner-status <<< '{}'`, but a bare invocation (no stdin at all) is the
+// model's natural spelling (user report 2026-11-19). Empty stdin is the
+// empty object: a useful no-run view, never an exit-2 error.
+func TestBareInvocationIsEmptyPayload(t *testing.T) {
+	useStatusEnv(t)
+	useSandboxSettings(t, false)
+	stubProbe(t, false)
+	code, out, stderr := callStatus(t, "")
+	if code != 0 {
+		t.Fatalf("bare invocation: exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if !strings.Contains(out, "No active Summoner run") {
+		t.Fatalf("bare invocation should render the no-run view, got: %q", out)
+	}
+	// Whitespace-only stdin is the same empty payload.
+	code, _, stderr = callStatus(t, "  \n")
+	if code != 0 {
+		t.Fatalf("whitespace invocation: exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+}

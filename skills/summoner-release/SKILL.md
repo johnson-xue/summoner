@@ -86,7 +86,7 @@ git tag -l "v$NEW_VERSION" | grep -q . && { echo "❌ Tag v$NEW_VERSION already 
 echo "✅ Version: $CURRENT_VERSION → $NEW_VERSION ($VERSION_TYPE)"
 ```
 
-**CHECKPOINT Block:** render the canonical box from `references/checkpoint-protocol.md` §CHECKPOINT Block (5 mandatory fields, fixed `Next:` grammar — never inline a variant). Field values — 完成内容: 确定新版本号并验证无冲突；产物: Current: {CURRENT_VERSION}, New: {NEW_VERSION}, Type: {VERSION_TYPE}；发现: {consistency warning or None}.
+**CHECKPOINT 渲染**：本阶段收口走 `summoner:phase-submit`（summary 概述版本决定，Current/New/Type 写进 note）；检查点块由规范渲染器生成并逐字粘贴 —— 契约见 `../../references/checkpoint-protocol.md`（左栏结构框、nonce、菜单全量；不要手写或改写渲染）。
 
 ### Phase 2: Changelog Generation
 
@@ -235,12 +235,12 @@ trap - ERR
 
 ## 只读对账探针 — publish 阶段的必填能力项
 
-publish（version writes, commit, tag, push）is the mutating phase: its capability list MUST declare a read-only reconciliation probe set BEFORE the release enters it — 无探针声明不得进变更阶段 (spec §5: 变更性阶段的能力清单必须声明探针). A declared probe is a manifest `check_registry` entry whose definition is a read-only predicate (L1 framework op) or a read-class Bash line (`references/manifest-spec.md`). The OBSERVED evidence `summoner:probe-submit` accepts is strictly a read-class Bash tool id — run the probe as the Bash equivalent and submit that id, never an in-process L1 result. Default set:
+publish（version writes, commit, tag, push）is the mutating phase: its capability list MUST declare a read-only reconciliation probe set BEFORE the release enters it — 无探针声明不得进变更阶段 (spec §5: 变更性阶段的能力清单必须声明探针). A declared probe is a manifest `check_registry` entry whose definition is a read-only predicate (L1 framework op) or a read-class Bash line (`../../references/manifest-spec.md`). The OBSERVED evidence `summoner:probe-submit` accepts is strictly a read-class Bash tool id — run the probe as the Bash equivalent and submit that id, never an in-process L1 result. Default set:
 
 - **版本-已一致** — L1 `grep-count (path, pattern, count)` per manifest: each (paths in Phase 1) carries `"version": "$NEW_VERSION"` once.
 - **tag-已存在** — not L1-expressible (git query): one read-class Bash probe (`git tag -l "v$NEW_VERSION"`) per dangling intent at OUTCOME_UNKNOWN recovery.
 
-Probes 对账 not 修复 — READ-ONLY, one probe per unknown, resolved only via `summoner:probe-submit` (`skills/probe-submit/SKILL.md`). 不一致 and 未生效 are honest bad-outcome verdicts routed to the recovery checkpoint (user decides CONTINUE / RECALL / STOP) — never a mutating fix, never silently passed, never auto-replayed. Pinned by `tests/fixtures/traces/valid-release-probe-*.jsonl` + `scorers/deterministic/recovery-check.sh`: exists+matches → `accepted`; exists+mismatch → `failed`; missing → `failed`（未生效 — 重试是用户决定）.
+Probes 对账 not 修复 — READ-ONLY, one probe per unknown, resolved only via `summoner:probe-submit` (`../probe-submit/SKILL.md`). 不一致 and 未生效 are honest bad-outcome verdicts routed to the recovery checkpoint (user decides CONTINUE / RECALL / STOP) — never a mutating fix, never silently passed, never auto-replayed. Pinned by `../../tests/fixtures/traces/valid-release-probe-*.jsonl` + `../../scorers/deterministic/recovery-check.sh`: exists+matches → `accepted`; exists+mismatch → `failed`; missing → `failed`（未生效 — 重试是用户决定）.
 
 ### Integration with summoner-ctx
 
@@ -268,7 +268,7 @@ Handled inline above: tag exists → Phase 1 abort; no new commits → Phase 2 w
 
 ## Post-Game Review
 
-`done` / emergency `stop` land POST_GAME_PENDING — no release exemption, no separate closure. CLOSED comes only via the post-game writer: ONE AskUserQuestion call with the `[pg:q1]..[pg:q4]` questions (text carries the run id), the journal at `.summoner/journal/<run_id>.md`, then `CompletePostGame` emits `post_game.completed` + `workflow.ended` once — CLOSED never reopens. A clean release is Type 4（流程评价）. Protocol: `references/post-game-review.md`.
+`done` / emergency `stop` land POST_GAME_PENDING — no release exemption, no separate closure. CLOSED comes only via the post-game writer: ONE AskUserQuestion call with the `[pg:q1]..[pg:q4]` questions (text carries the run id), the journal at `.summoner/journal/<run_id>.md`, then `CompletePostGame` emits `post_game.completed` + `workflow.ended` once — CLOSED never reopens. A clean release is Type 4（流程评价）. Protocol: `../../references/post-game-review.md`.
 
 ## Testing
 

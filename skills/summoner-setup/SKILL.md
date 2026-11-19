@@ -31,16 +31,16 @@ then try `/summoner:fix "your bug description"`.
 ## What the wizard does (v2 semantics)
 
 1. Generates a v2 `summoner.yaml` capability map — atomic: the candidate is
-   validated by `scripts/validate-manifest.sh` before rename, so any failure
+   validated by `../../scripts/validate-manifest.sh` before rename, so any failure
    leaves an existing manifest untouched. `--quick` never reads stdin;
    `--force` replaces explicitly (no legacy merge).
 2. Validates an EXISTING manifest — no silent v1 repair or merge.
 3. Initializes the version-independent memory DB (honors
    `SUMMONER_MEMORY_DIR`).
 
-Field reference: `references/manifest-spec.md`. Missing-manifest semantics
+Field reference: `../../references/manifest-spec.md`. Missing-manifest semantics
 (built-in defaults in the same reducer, no auto-init): see
-`references/no-manifest-flow.md` and `skills/auto-setup-summoner/SKILL.md`.
+`../../references/no-manifest-flow.md` and `../auto-setup-summoner/SKILL.md`.
 
 ## Troubleshooting
 
@@ -51,11 +51,11 @@ Field reference: `references/manifest-spec.md`. Missing-manifest semantics
   `hooks/bin/` binaries ship with it (no manual build).
 - A failing memory DB is NOT fixed by deleting it — memory holds run
   patterns and journals. Address the reported cause and rerun
-  `scripts/init-memory-db.sh`; see `references/memory-chain.md`.
+  `../../scripts/init-memory-db.sh`; see `../../references/memory-chain.md`.
 
 ## Related
 
-- `scripts/summoner-setup.sh` — the wizard (delegates to the single v2
-  emitter `scripts/summoner-bp.sh`)
-- `scripts/summoner-init.sh` — interactive init modes 1/2/3
-- `scripts/init-memory-db.sh` — memory DB initialization
+- `../../scripts/summoner-setup.sh` — the wizard (delegates to the single v2
+  emitter `../../scripts/summoner-bp.sh`)
+- `../../scripts/summoner-init.sh` — interactive init modes 1/2/3
+- `../../scripts/init-memory-db.sh` — memory DB initialization

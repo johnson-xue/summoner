@@ -1869,3 +1869,31 @@ func TestWaitUserSkillDenyKeepsSubmitPath(t *testing.T) {
 		t.Fatalf("WAIT_USER phase-submit must end with phase_submitted.rejected, got %v", got)
 	}
 }
+
+// TestStatusSkillAllowedWhileWaitUser — the read-only status viewer is the
+// re-render surface at a pending checkpoint (user report 2026-11-19: the
+// model flailed at WAIT_USER because Skill(summoner:status) was blocked and
+// a bare binary invocation then failed on empty stdin). summoner:status is
+// a framework verb with no state effect — it must pass the WAIT_USER
+// discipline, while work skills stay blocked.
+func TestStatusSkillAllowedWhileWaitUser(t *testing.T) {
+	useGateEnv(t)
+	r := startFixRun(t, shared.BudgetLimits{})
+	acceptPhase(t, r, "context")
+	acceptPhase(t, r, "diagnosis")
+	if err := r.OpenPhase("reproduce"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	if _, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "reproduce"}); err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	} // WAIT_USER
+
+	code, stderr := callGate(t, toolPayload(t, "Skill", map[string]interface{}{"skill": "summoner:status"}))
+	if code != 0 {
+		t.Fatalf("Skill(summoner:status) at WAIT_USER: exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// Work skills stay blocked at the checkpoint.
+	code, stderr = callGate(t, toolPayload(t, "Skill", map[string]interface{}{"skill": "superpowers:brainstorming"}))
+	wantExit2(t, code, stderr, "WAIT_USER")
+}

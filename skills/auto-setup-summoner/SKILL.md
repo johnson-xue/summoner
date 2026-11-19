@@ -13,7 +13,7 @@ allowed-tools:
 
 A missing `summoner.yaml` means **未配置项目专属能力**, not “Summoner cannot run.”
 Disclosed built-in inline capabilities use the **same reducer** and checkpoint
-protocol. See `references/no-manifest-flow.md`. Do not introduce a second
+protocol. See `../../references/no-manifest-flow.md`. Do not introduce a second
 execution chain, an initialization precondition in commands, or a silent
 fallback for a present but invalid manifest.
 
@@ -25,7 +25,7 @@ fallback for a present but invalid manifest.
 2. Read an existing manifest first. Validate with
    `${CLAUDE_PLUGIN_ROOT}/scripts/validate-manifest.sh summoner.yaml`.
    Only string `version: "2"` is accepted. A v1 file needs explicit migration
-   according to `references/manifest-spec.md`; changing its version alone is
+   according to `../../references/manifest-spec.md`; changing its version alone is
    insufficient.
 3. Distinguish missing capabilities from missing memory. Memory belongs at
    `${SUMMONER_MEMORY_DIR:-$HOME/.summoner/memory}`, not inside a plugin version's
@@ -56,7 +56,7 @@ Run from the project directory. Quick mode is genuinely non-interactive:
 
 Use the user's chosen portable project namespace, not the literal example.
 Without `--project`, quick mode uses a safe directory-name default. For an
-interactive terminal, run `scripts/summoner-setup.sh` without `--quick`; init
+interactive terminal, run `../../scripts/summoner-setup.sh` without `--quick`; init
 modes 1/2/3 mean choose skills / quick defaults / manual names. Do not hang an
 unattended tool call on interactive prompts: offer the terminal command or
 collect the desired inputs first.
@@ -64,7 +64,7 @@ collect the desired inputs first.
 The three setup entry points share one v2 emitter. It validates a temporary
 candidate before atomic rename. Any failure leaves the existing manifest
 unchanged. There is no v1 emission, merge, grep-validator fallback or dry-run
-flag. `scripts/validate-manifest.sh` forwards `--skills-dir` when local skill
+flag. `../../scripts/validate-manifest.sh` forwards `--skills-dir` when local skill
 existence checks are desired; plugin-qualified names still resolve at runtime.
 
 ## Explain the resulting configuration honestly
@@ -84,6 +84,6 @@ existence checks are desired; plugin-qualified names still resolve at runtime.
   the existing run without resetting accepted criteria or bypassing its gate.
 
 If manifest validation succeeds but memory initialization fails, report the
-separate failure and rerun `scripts/init-memory-db.sh` with the validated
+separate failure and rerun `../../scripts/init-memory-db.sh` with the validated
 namespace after addressing the cause. Do not delete a database or regenerate
 custom capabilities as an automatic repair.

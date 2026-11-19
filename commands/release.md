@@ -8,13 +8,13 @@ Version release on the framework route **planning → changelog → publish**
 (fixed in `hooks/shared/workflow.go` — commands define topology; the manifest
 maps capabilities, never routes). User gates, trace, budgets and post-game
 run through the SAME single-loop reducer as every workflow: phase closes →
-checkpoint render → AskUserQuestion decision (`references/checkpoint-protocol.md`);
-never auto-advance. Red flags / auto-skip table: `references/workflow-reference.md`.
+checkpoint render → AskUserQuestion decision (`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`);
+never auto-advance. Red flags / auto-skip table: `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`.
 
 ## Capability
 
 `phases.release` in `summoner.yaml` may bind a project provider to replace
-the default framework implementation (`skills/summoner-release/SKILL.md` —
+the default framework implementation (`${CLAUDE_PLUGIN_ROOT}/skills/summoner-release/SKILL.md` —
 version planning, changelog from conventional commits, publish with rollback;
 options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
 --skip-changelog`). No manifest → the default, disclosed「未配置项目专属能力」.
@@ -27,8 +27,8 @@ options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
    enters it: 无探针声明不得进变更阶段. Probes are read-only 对账 resolved
    only via `summoner:probe-submit`; 不一致/未生效 route to the recovery
    checkpoint (CONTINUE/RECALL/STOP) — never a mutating fix, never silently
-   passed (`skills/summoner-release/SKILL.md` §只读对账探针; fixtures
-   `tests/fixtures/traces/valid-release-probe-*.jsonl`).
+   passed (`${CLAUDE_PLUGIN_ROOT}/skills/summoner-release/SKILL.md` §只读对账探针; fixtures
+   `${CLAUDE_PLUGIN_ROOT}/tests/fixtures/traces/valid-release-probe-*.jsonl`).
 2. Safety lives in the skill: auto rollback (delete tag / reset commit),
    pre-flight (git repo, `jq`, uncommitted-change warning), validation
    (semver, new > current, tag-conflict).
@@ -40,7 +40,7 @@ git 仓库、`jq`（`brew install jq`）、`gh` CLI（可选）。大版本建�
 
 ## Post-Game Review
 
-Mandatory — Type 4 (流程评价) per `references/post-game-review.md`: `done`
+Mandatory — Type 4 (流程评价) per `${CLAUDE_PLUGIN_ROOT}/references/post-game-review.md`: `done`
 lands POST_GAME_PENDING; CLOSED only after the `[pg:q1..q4]` questionnaire +
 `.summoner/journal/<run_id>.md` persist (CompletePostGame is the sole CLOSED
 writer). No release exemption.

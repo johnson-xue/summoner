@@ -53,7 +53,7 @@ straight there; pure Q&A → answer directly.
    rpc/subsystem/gmt/migrate→implement; manifest-spec §v1 compat).
 3. **Submit** — when a phase's work is done, submit via
    `Skill(summoner:phase-submit, args=<phase-result JSON>)` — the ONLY
-   submission channel (`skills/phase-submit/SKILL.md` defines the payload).
+   submission channel (`../phase-submit/SKILL.md` defines the payload).
    The gate closes the phase and opens its checkpoint atomically; anything
    else you say about "done" advances nothing.
 4. **Render** — run `${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and
@@ -91,7 +91,7 @@ straight there; pure Q&A → answer directly.
 Any phase checkpoint can commission ⑤ independent review of its artifacts: `review:` → REVIEW_PENDING under a review obligation; register via
 `Skill(summoner:review-submit, args=<identity-only JSON>)`, then ONE
 `reviewer` Agent with the EXACT capsule status serves (view:review); prose
-never binds. Rules: `skills/review-submit/SKILL.md` + `agents/reviewer.md`
+never binds. Rules: `../review-submit/SKILL.md` + `../../agents/reviewer.md`
 (mechanical criteria freeze `check_id@digest`; forged evidence fails the
 REVIEW, never the run; reusing a prior PASS needs it still valid).
 `drop:`/`keep:` ride-alongs record per-id drops. PASS leaves the
@@ -122,7 +122,7 @@ diagnosis is re-accepted. It NEVER stash/reset/restores files.
 ## 需求变更闭环 (requirement-change loop)
 
 实现/测试进行中可立刻进入需求调整，调整后增量恢复，不重跑流水线（spec §1 增补）。
-Channel contract（payload 形状、字段规则）：`skills/change/SKILL.md`。
+Channel contract（payload 形状、字段规则）：`../change/SKILL.md`。
 
 - **触发**：任意时刻自由文本提出需求调整——它是内容反馈，开启变更子环，
   **不是推进通道**（自由文本永远不授予推进）；检查点期间也可显式进入
@@ -137,7 +137,7 @@ Channel contract（payload 形状、字段规则）：`skills/change/SKILL.md`�
   保持有效；原地恢复，不重走 P1-P2。变更触及公共接口时必要重规划不可省，
   由影响评估结论决定并在确认点呈现。
 - **变更 vs recall**：recall = 方向错了回城重做；变更 = 基线移动增量处理——
-  边界表见 `references/workflow-reference.md`。
+  边界表见 `../../references/workflow-reference.md`。
 
 ## Two-turn decisions (paged menus)
 
@@ -154,11 +154,11 @@ paged menu projection (`menu_pages`; full menus page in 2, anchor pages carry
 verbatim — the gate rejects any other offered set. `more:`/`back:` are
 navigation, not decisions: nonce-free content feedback — re-ask with the
 other page. Exactly ONE nonce-carrying question per call; two or more fail
-closed. Canonical render + paging contract: `references/checkpoint-protocol.md`.
+closed. Canonical render + paging contract: `../../references/checkpoint-protocol.md`.
 
 ## Budget lifecycle (confirm → exhaust → extend)
 
-Canonical rules: `references/checkpoint-protocol.md` (T18). In brief —
+Canonical rules: `../../references/checkpoint-protocol.md` (T18). In brief —
 - **Run-start ask**: the FIRST checkpoint carries a budget ask (manifest
   `suggested_budgets`, else framework-unlimited) with nonce-free pointer
   options `budget: 按已显示预算` / `budget: 不设上限` riding the decision
@@ -182,12 +182,12 @@ and the journal at the FIXED path `.summoner/journal/<run_id>.md` (latest
 observed digest governs; emergency `stop` writes a minimal journal
 hook-side at once, questionnaire owed as 补答). Closure fires
 `post_game.completed` + `workflow.ended` once; CLOSED never reopens.
-Protocol: `references/post-game-review.md`.
+Protocol: `../../references/post-game-review.md`.
 
 ## Phase 0 memory (the `context` phase)
 
 Before first domain work in any workflow: read `project.name` from
-`summoner.yaml`; if the memory DB exists, follow `references/memory-chain.md`
+`summoner.yaml`; if the memory DB exists, follow `../../references/memory-chain.md`
 §Phase 0 retrieval (Top-5 SQL, 1500-token cap). No DB → say so and
 continue. The context phase closes at its checkpoint.
 
@@ -198,7 +198,7 @@ review = context→review; ship = prepare→review→merge→decide; ops =
 context→operate; release = planning→changelog→publish; status = read-only;
 fix/new/debug likewise. The manifest maps CAPABILITIES
 (`phases.<capability>`), never topology; per-workflow rules live in
-`commands/<name>.md`.
+`../../commands/<name>.md`.
 
 ## OUTCOME_UNKNOWN recovery + the check trust ladder
 
@@ -208,10 +208,10 @@ fix/new/debug likewise. The manifest maps CAPABILITIES
   while an episode is open; a crashed action is NEVER auto-replayed.
 - **Resolution**: each unknown's EXACT probe (status serves it) binds
   once; the PostToolUse matcher computes every verdict — no outcome on
-  the wire (`skills/probe-submit/SKILL.md`). All `accepted` →
+  the wire (`../probe-submit/SKILL.md`). All `accepted` →
   pre-episode status restores; any `failed`/`indeterminate` → RECOVERY
   checkpoint.
-- **Check ladder** (spec §3; canonical rules: `references/manifest-spec.md`):
+- **Check ladder** (spec §3; canonical rules: `../../references/manifest-spec.md`):
   L1 `trust: framework` = shipped adapter ops, computed in-gate at
   phase-submit. L2 `trust: project` = the EXACT registered line as a model
   Bash call, admitted only after the in-band probe
@@ -224,7 +224,7 @@ fix/new/debug likewise. The manifest maps CAPABILITIES
 
 ## Capability → provider resolution
 
-Authority: `references/capability-map.md` (four layers + precedence). An
+Authority: `../../references/capability-map.md` (four layers + precedence). An
 explicit manifest binding (`phases.<capability>.skill.default` or a
 user-chosen alternate) wins — a configured project provider is never
 displaced by a generic built-in. Only an UNBOUND capability walks the
@@ -236,10 +236,10 @@ acceptance evidence, budgets, recovery, post-game.
 
 ## References
 
-- `commands/<name>.md` — per-workflow rules
-- `references/capability-map.md` — capability→provider authority
-- `references/checkpoint-protocol.md` — canonical render + decision channel
-- `references/workflow-reference.md` — auto-skip table, red flags
-- `references/post-game-review.md` — questionnaire/journal protocol
-- `references/memory-chain.md` — memory protocols
-- `references/manifest-spec.md` — summoner.yaml fields
+- `../../commands/<name>.md` — per-workflow rules
+- `../../references/capability-map.md` — capability→provider authority
+- `../../references/checkpoint-protocol.md` — canonical render + decision channel
+- `../../references/workflow-reference.md` — auto-skip table, red flags
+- `../../references/post-game-review.md` — questionnaire/journal protocol
+- `../../references/memory-chain.md` — memory protocols
+- `../../references/manifest-spec.md` — summoner.yaml fields

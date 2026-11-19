@@ -11,7 +11,7 @@ deliverable the user can act on themselves (or hand to `/summoner:fix`).
 
 context → diagnosis → 检查点（结束）
 
-- **context**: memory retrieval (`references/memory-chain.md` §Phase 0).
+- **context**: memory retrieval (`${CLAUDE_PLUGIN_ROOT}/references/memory-chain.md` §Phase 0).
 - **diagnosis**: root cause + trigger conditions + location + evidence, via
   the manifest-mapped debug/diagnose skill. Infra vs 业务码分流: infra
   symptoms (端口/启动/中间件) → `phases.diagnose`; config mismatches →
@@ -20,7 +20,7 @@ context → diagnosis → 检查点（结束）
 
 ## Rules
 
-1. Loop per `skills/summoner/SKILL.md`: work → `summoner:phase-submit` →
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/skills/summoner/SKILL.md`: work → `summoner:phase-submit` →
    paste the summoner-status render verbatim → AskUserQuestion.
 2. NO code changes, no test files — the write gate enforces this until
    diagnosis is accepted, and the workflow ends there anyway.
@@ -30,4 +30,4 @@ context → diagnosis → 检查点（结束）
 
 ## Post-Game Review
 
-Mandatory — Type 4 (流程评价) per `references/post-game-review.md`.
+Mandatory — Type 4 (流程评价) per `${CLAUDE_PLUGIN_ROOT}/references/post-game-review.md`.

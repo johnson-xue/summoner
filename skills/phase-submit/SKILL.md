@@ -53,6 +53,6 @@ Field rules:
 On success the gate atomically closes the phase and opens its checkpoint
 (WAIT_USER). The next step is rendering the checkpoint — run
 `${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and paste its output
-verbatim (`references/checkpoint-protocol.md` is the render contract). Never
+verbatim (`../../references/checkpoint-protocol.md` is the render contract). Never
 submit twice for one phase; never submit while a checkpoint is pending or a
 requirement change is open (CHANGE_OPEN) — both are rejected.

@@ -7,7 +7,7 @@ description: 独立代码审查 — verification_spec 路线（manifest phases.r
 Standalone review of a change. Review answers "这份变更有哪些问题" — it does
 not decide shipping (that is `/summoner:ship`, which cites review evidence
 without repeating it). Thin entry: the boundary and both capability rows are
-canonical in `references/capability-map.md`.
+canonical in `${CLAUDE_PLUGIN_ROOT}/references/capability-map.md`.
 
 ## Route
 
@@ -15,7 +15,7 @@ The capability comes from the project manifest: `phases.review` maps to a
 **verification_spec** — criteria to verify, registered check ids, readable
 scope, rubric pointer. The project defines WHAT to verify; the reviewer, in a
 fresh restricted context, works out HOW (spec §3; envelope contract in
-`agents/reviewer.md`).
+`${CLAUDE_PLUGIN_ROOT}/agents/reviewer.md`).
 
 Run-start records the run on the framework route **context → review** (fixed
 in `hooks/shared/workflow.go`). The manifest maps the CAPABILITY — the
@@ -43,4 +43,4 @@ and post-game flow through the same reducer as every workflow.
 
 ## Post-Game Review
 
-Mandatory — Type 4 per `references/post-game-review.md`.
+Mandatory — Type 4 per `${CLAUDE_PLUGIN_ROOT}/references/post-game-review.md`.

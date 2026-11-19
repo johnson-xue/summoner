@@ -29,6 +29,12 @@ const skillPhaseSubmit = "summoner:phase-submit"
 // into the change loop).
 const skillChange = "summoner:change"
 
+// skillStatus is the read-only status viewer (Ruling 4's render surface).
+// It is allowed at WAIT_USER: a pending checkpoint must stay re-displayable
+// (content feedback and page navigation re-render before re-asking) — the
+// viewer reads state and renders, never advances anything.
+const skillStatus = "summoner:status"
+
 // skillReviewSubmit is the envelope-registration micro-skill (T17, spec §3 ⑤):
 // its args are ONE review envelope (strict JSON) which the gate decodes,
 // validates against the run's frozen acceptance view minus recorded drops and
@@ -530,15 +536,19 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		return deny("Summoner gate: Skill call without a skill name — cannot be verified, denying (fail-closed).")
 	}
 
-	// WAIT_USER discipline: while a checkpoint is pending, the ONLY Skill
+	// WAIT_USER discipline: while a checkpoint is pending, the only Skill
 	// calls through are summoner:change (the explicit checkpoint entry into
-	// the change loop, spec §1 增补 — it supersedes the pending checkpoint)
-	// and summoner:phase-submit, which owns its own WAIT_USER rejection path
+	// the change loop, spec §1 增补 — it supersedes the pending checkpoint),
+	// summoner:phase-submit, which owns its own WAIT_USER rejection path
 	// (SubmitPhase refuses it and the rejection is traced as
-	// phase_submitted.rejected). Every other skill waits for the decision.
-	if run.Status == shared.StatusWaitUser && skill != skillChange && skill != skillPhaseSubmit {
+	// phase_submitted.rejected), and summoner:status — the READ-ONLY viewer
+	// is the re-render surface at a pending checkpoint (content feedback and
+	// page navigation re-render before re-asking; blocking it leaves the
+	// model no legitimate way to display what the user must decide on).
+	// Every other skill waits for the decision.
+	if run.Status == shared.StatusWaitUser && skill != skillChange && skill != skillPhaseSubmit && skill != skillStatus {
 		return deny(fmt.Sprintf(
-			"Summoner gate: Skill(%s) is blocked while the run waits for a user decision (WAIT_USER) — only summoner:change (the change-loop entry) may run there; present the checkpoint and wait for the decision.",
+			"Summoner gate: Skill(%s) is blocked while the run waits for a user decision (WAIT_USER) — only summoner:change (the change-loop entry) and the read-only summoner:status may run there; present the checkpoint and wait for the decision.",
 			skill))
 	}
 

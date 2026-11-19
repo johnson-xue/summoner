@@ -25,6 +25,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,13 +66,24 @@ type statusInput struct {
 
 // parseInput decodes one payload object. Anything that is not a single JSON
 // object is an error — the caller fails closed (exit 2, the only exit-2 path).
-// Trailing garbage after the object is refused.
+// Trailing garbage after the object is refused. EMPTY (or whitespace-only)
+// stdin is the EMPTY OBJECT: the protocol's own render recipe is
+// `summoner-status <<< '{}'`, and a bare invocation is the model's natural
+// spelling of the same thing — it renders the useful no-payload view instead
+// of erroring (user report 2026-11-19).
 func parseInput(r io.Reader) (*statusInput, error) {
 	var raw struct {
 		SessionID string `json:"session_id"`
 		View      string `json:"view"`
 	}
-	dec := json.NewDecoder(r)
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("stdin is not a hook JSON object: %v", err)
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return &statusInput{}, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("stdin is not a hook JSON object: %v", err)
 	}
