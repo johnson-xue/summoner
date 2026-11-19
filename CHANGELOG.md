@@ -1,5 +1,13 @@
 # Summoner Changelog
 
+## [0.5.1] - 2026-11-19
+
+Checkpoint readability fix. **The checkpoint block renders as a left-rail structured frame** — the 0.5.0 canonical render packed every section into an undifferentiated `key:value` wall; the frame gives it the table readability back without touching any protocol semantics.
+
+### 🐛 Bug Fixes
+- **left-rail frame render**: `RenderCheckpointMessage` (the ONE canonical renderer the Stop hook's whole-message display binding compares against) now emits a framed layout — `╔` header carrying the canonical signature verbatim (`⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind}`), `║` rails with `▶` section heads (本阶段结果 / 验收标准 / 产物（版本已冻结）/ 需求快照 / 计划范围（尚未落地）/ 验证环境 / 预算), `╠` decision divider before the full menu + pages, `╚` tail. The rail is left-only by design: no right edge means no CJK/full-width alignment math and no runewidth dependency, so the bytes stay deterministic on every terminal. Every field the pre-frame render carried is preserved verbatim; display binding, nonce, menu paging and budget ride-along semantics are untouched (layout-only change, pinned by the new `render_layout_test.go`).
+- `escapeScalar` control-character branch now uses `fmt.Fprintf` directly (drops a staticcheck QF1012 the rewrite surfaced).
+
 ## [0.5.0] - 2026-11-17
 
 Single-mode rewrite + zero-threshold upgrade. **A project updates the plugin and nothing else** — a `version: "1"` summoner.yaml keeps working as-is.
