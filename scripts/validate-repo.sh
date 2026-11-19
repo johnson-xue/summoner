@@ -180,7 +180,7 @@ done < <(grep -rhoE '(^|[^A-Za-z0-9_/-])(references|scripts|skills|hooks|agents|
 # runtime. Skills must carry ../-qualified pointers that resolve from the
 # mentioning file; commands must carry ${CLAUDE_PLUGIN_ROOT}/-qualified
 # pointers (resolved from the repo root here).
-PTR_CODE=$(python3 - <<'PYEOF'
+if PTR_CODE=$(python3 - <<'PYEOF'
 import glob, os, re, sys
 pat = re.compile(r'`((?:references|skills|scripts|commands|agents|scorers|tests)/[^`]*?(?:\.md|\.sh|\.json|\.jsonl|\.ya?ml|\.toml))`')
 plugin_root_prefix = "$" + "{CLAUDE_PLUGIN_ROOT}/"
@@ -207,8 +207,7 @@ for line in bad:
     print(line)
 sys.exit(1 if bad else 0)
 PYEOF
-)
-if [[ $? -eq 0 ]]; then
+); then
   ok "runtime pointers qualified (skills ../-relative, commands \${CLAUDE_PLUGIN_ROOT}/) and resolving"
 else
   while IFS= read -r l; do fail "$l"; done <<< "$PTR_CODE"
