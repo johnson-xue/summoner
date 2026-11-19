@@ -40,30 +40,63 @@ One lightweight line, no frame:
      a variant anywhere else is a lint error (scripts/validate-repo.sh,
      exactly-once + signature confinement + nonce-field rule). -->
 
+Left-rail structured frame (ruling 2026-11-19): the rail is left-only by
+design — no right edge, no CJK width alignment, no width dependency — so
+the bytes stay deterministic while the checkpoint reads as a table again.
+The inner header signature and every field text are unchanged from the
+pre-frame render; only the layout is framed.
+
 ```
-⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind}
-phase: {phase-id | —}
-note: {the submitted phase summary | —}
-criteria: {sorted criterion ids, comma-joined | —}
-artifacts:
-  - {path} @{digest[0:12]}          (or: artifacts: —)
-menu:
-  {one line per legal option, labels below}
-paged ask (one page per decision question, ≤4 options):
-  page 1/2: continue · skip · done · stop — more: 查看其余选项
-  page 2/2: continue · recall · review · stop — back: 返回上一页
-budget ask (run-start budget — rides the decision call, nonce-free):
-  proposal ({manifest | framework}): {axis} {n | 不限} · …
-  options: budget: 按已显示预算 · budget: 不设上限
-extend ask (budget exhausted — add the displayed amount once more):
-  delta: {axis} {n | 不限} · …
-  options: extend: 追加已显示额度 · extend: 不追加
+╔═ ⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind} ══════════
+║ run: {run} · workflow: {workflow} · requirements v{n}
+║ phase: {phase-id | —}
+║
+║ ▶ 本阶段结果
+║   note: {the submitted phase summary | —}
+║
+║ ▶ 验收标准
+║   {id} [{method} · {required | optional}]
+║     goal: {goal}            (sub-lines only when staged)
+║     expected: {expected}
+║     scope: {scope}
+║     check: {check-id}
+║     rubric: {rubric}
+║   {id} (no staged meaning; judged at acceptance)
+║                              (when no criterion is pending: ║   —)
+║
+║ ▶ 产物（版本已冻结）
+║   {path} @ {digest}         (when none: ║   —)
+║
+║ ▶ 需求快照                  (only when requirements are staged)
+║   {req-id} v{n}: {content}
+║     criteria: {ids}
+║
+║ ▶ 计划范围（尚未落地）       (only when planned scope exists)
+║   {paths}
+║
+║ ▶ 验证环境
+║   tier={tier} os={os} arch={arch} runtime={runtime} defaults={digest}
+║
+║ ▶ 预算
+║   limits {limits} · counters {counters}
+║   budget ask ({manifest | framework} proposal — rides the decision call): confirm="{label}" unlimited="{label}" limits {limits}
+║   extend ask (budget exhausted): extend="{label}" hold="{label}" delta {limits}
+║
+╠═ 下一轮裁决 — AskUserQuestion（选项须与一页菜单完全一致）
+║ menu:
+║   {one full label per legal option, keyword-first}
+║   page {i}/{n}: {labels joined by ·} — {more:/back: nav}
+║ recall targets:              (when offered)
+║   - {label} (phase {id}, visit {id})
+║ review retry: review {id} attempt {id} — resume {target} · retry="{label}" skip="{label}"
+║ decide on the NEXT turn with an AskUserQuestion whose question carries nonce {nonce} and whose options equal one menu page exactly.
+╚════════════════════════════════════
 ```
 
-(The `paged ask` block appears only when the kind's menu pages — single-page
-kinds omit it. The `menu:` block always shows the FULL legal menu. The
-`budget ask` block appears only on the run's FIRST checkpoint while the
-run-start budget is unsettled; the `extend ask` block only on a checkpoint
+(The `page i/n` lines appear only when the kind's menu pages — single-page
+kinds omit them. The `menu:` block always shows the FULL legal menu. The
+`budget ask` line appears only on the run's FIRST checkpoint while the
+run-start budget is unsettled; the `extend ask` line only on a checkpoint
 opened at budget exhaustion — see "Budget ride-along questions".)
 
 Field rules:
@@ -83,22 +116,41 @@ Field rules:
 Example (fix, diagnosis submitted):
 
 ```
-⚡ SUMMONER CHECKPOINT cp-2 — nonce 1a2b3c4d — PHASE
-phase: diagnosis
-note: root cause located: TaskModule.handle() dereferences player.SubTask without a nil check
-criteria: crit-evid, crit-root
-artifacts:
-  - docs/reviews/2026-11-10-task-npe.md @ 5f4a3b2c1d0e
-menu:
-  continue: 继续下一阶段
-  skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）
-  done: 完成——进入收尾（post-game）
-  recall: 回城——回到指定历史阶段重做
-  review: [v] 对本阶段产物发起独立审查
-  stop: 停止——保留状态退出
-paged ask (one page per decision question, ≤4 options):
-  page 1/2: continue: 继续下一阶段 · skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS） · done: 完成——进入收尾（post-game） · stop: 停止——保留状态退出 — more: 查看其余选项
-  page 2/2: continue: 继续下一阶段 · recall: 回城——回到指定历史阶段重做 · review: [v] 对本阶段产物发起独立审查 · stop: 停止——保留状态退出 — back: 返回上一页
+╔═ ⚡ SUMMONER CHECKPOINT cp-2 — nonce 1a2b3c4d — PHASE ══════════
+║ run: fix-a1b2 · workflow: fix · requirements v1
+║ phase: diagnosis
+║
+║ ▶ 本阶段结果
+║   note: root cause located: TaskModule.handle() dereferences player.SubTask without a nil check
+║
+║ ▶ 验收标准
+║   crit-evid [mechanical · required]
+║     goal: 复现证据链完整
+║     expected: repro.log + 定位文件
+║   crit-root [judgment · required]
+║     goal: 根因唯一且已证实
+║
+║ ▶ 产物（版本已冻结）
+║   docs/reviews/2026-11-10-task-npe.md @ 5f4a3b2c1d0e
+║
+║ ▶ 验证环境
+║   tier=L2 os=darwin arch=amd64 runtime=claude-code-hooks defaults=unobserved
+║
+║ ▶ 预算
+║   limits phase_tool_calls=40,failed_checks=3,run_rework=2,delegations=5 · counters phase_tool_calls=4,failed_checks=0,run_rework=0,delegations=1
+║
+╠═ 下一轮裁决 — AskUserQuestion（选项须与一页菜单完全一致）
+║ menu:
+║   continue: 继续下一阶段
+║   skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）
+║   done: 完成——进入收尾（post-game）
+║   recall: 回城——回到指定历史阶段重做
+║   review: [v] 对本阶段产物发起独立审查
+║   stop: 停止——保留状态退出
+║   page 1/2: continue: 继续下一阶段 · skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS） · done: 完成——进入收尾（post-game） · stop: 停止——保留状态退出 — more: 查看其余选项
+║   page 2/2: continue: 继续下一阶段 · recall: 回城——回到指定历史阶段重做 · review: [v] 对本阶段产物发起独立审查 · stop: 停止——保留状态退出 — back: 返回上一页
+║ decide on the NEXT turn with an AskUserQuestion whose question carries nonce 1a2b3c4d and whose options equal one menu page exactly.
+╚════════════════════════════════════
 ```
 
 ## The decision channel (AskUserQuestion) — TWO-TURN by construction

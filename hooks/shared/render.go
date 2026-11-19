@@ -12,6 +12,14 @@ package shared
 // forge or hide structure. The comparison contract: normalize with
 // NormalizePrompt (CRLF→LF, at most one trailing LF), then compare the
 // ENTIRE message — a correct block plus false prose fails.
+//
+// Layout (user ruling 2026-11-19): a LEFT-RAIL structured frame — ╔ header,
+// ║ rails with ▶ section heads, ╠ decision divider, ╚ tail. The rail is
+// deliberately left-only: no right edge means no CJK/full-width alignment
+// math and no runewidth dependency, so the bytes stay deterministic on every
+// terminal while the frame still gives the checkpoint its table readability
+// back. The inner header signature (id — nonce — kind) and every field text
+// are kept verbatim from the pre-frame render; only the layout changed.
 
 import (
 	"fmt"
@@ -21,27 +29,47 @@ import (
 	"unicode"
 )
 
+// renderFrameTail closes the frame; fixed width, never content-dependent.
+const renderFrameTail = "╚════════════════════════════════════\n"
+
+// railf writes one railed content line: "║ " + the formatted text.
+func railf(b *strings.Builder, format string, args ...interface{}) {
+	b.WriteString("║ ")
+	fmt.Fprintf(b, format, args...)
+}
+
+// railBlank writes the bare rail spacer line.
+func railBlank(b *strings.Builder) { b.WriteString("║\n") }
+
+// railSection writes a ▶ section head line.
+func railSection(b *strings.Builder, name string) { railf(b, "▶ %s\n", name) }
+
 // RenderCheckpointMessage renders the canonical checkpoint message of the
 // run's CURRENT open checkpoint. Pure: reads only the given state.
 func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⚡ SUMMONER CHECKPOINT %s — nonce %s — %s\n", escapeScalar(cp.ID), escapeScalar(cp.Nonce), escapeScalar(string(cp.Kind)))
+	fmt.Fprintf(&b, "╔═ ⚡ SUMMONER CHECKPOINT %s — nonce %s — %s ══════════\n", escapeScalar(cp.ID), escapeScalar(cp.Nonce), escapeScalar(string(cp.Kind)))
 	phase := cp.PhaseID
 	if phase == "" {
 		phase = "—"
 	}
-	fmt.Fprintf(&b, "run: %s · workflow: %s · requirements v%d\n", escapeScalar(run.RunID), escapeScalar(run.Workflow), run.RequirementsVersion)
-	fmt.Fprintf(&b, "phase: %s\n", escapeScalar(phase))
+	railf(&b, "run: %s · workflow: %s · requirements v%d\n", escapeScalar(run.RunID), escapeScalar(run.Workflow), run.RequirementsVersion)
+	railf(&b, "phase: %s\n", escapeScalar(phase))
+
+	// ▶ 本阶段结果 — the submitted phase summary.
+	railBlank(&b)
+	railSection(&b, "本阶段结果")
 	note := cp.Note
 	if note == "" {
 		note = "—"
 	}
-	fmt.Fprintf(&b, "note: %s\n", escapeScalar(note))
+	railf(&b, "  note: %s\n", escapeScalar(note))
 
-	// Complete criterion meaning — never bare ids. The staged snapshot's
-	// criteria carry goal/expected/scope/method/required; ids without staged
-	// meaning are listed honestly as pending-meaning ids.
-	b.WriteString("criteria:\n")
+	// ▶ 验收标准 — complete criterion meaning, never bare ids. The staged
+	// snapshot's criteria carry goal/expected/scope/method/required; ids
+	// without staged meaning are listed honestly as pending-meaning ids.
+	railBlank(&b)
+	railSection(&b, "验收标准")
 	byID := make(map[string]Criterion, len(cp.Snapshot.Criteria))
 	for _, c := range cp.Snapshot.Criteria {
 		byID[c.ID] = c
@@ -54,54 +82,57 @@ func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 	}
 	sort.Strings(ids)
 	if len(ids) == 0 {
-		b.WriteString("  —\n")
+		railf(&b, "  —\n")
 	}
 	for _, id := range ids {
 		c, ok := byID[id]
 		if !ok {
-			fmt.Fprintf(&b, "  - %s (no staged meaning; judged at acceptance)\n", escapeScalar(id))
+			railf(&b, "  %s (no staged meaning; judged at acceptance)\n", escapeScalar(id))
 			continue
 		}
 		required := "optional"
 		if c.Required {
 			required = "required"
 		}
-		fmt.Fprintf(&b, "  - %s [%s · %s]\n", escapeScalar(c.ID), escapeScalar(string(c.Method)), required)
+		railf(&b, "  %s [%s · %s]\n", escapeScalar(c.ID), escapeScalar(string(c.Method)), required)
 		if c.Goal != "" {
-			fmt.Fprintf(&b, "      goal: %s\n", escapeScalar(c.Goal))
+			railf(&b, "    goal: %s\n", escapeScalar(c.Goal))
 		}
 		if c.Expected != "" {
-			fmt.Fprintf(&b, "      expected: %s\n", escapeScalar(c.Expected))
+			railf(&b, "    expected: %s\n", escapeScalar(c.Expected))
 		}
 		if c.Scope != "" {
-			fmt.Fprintf(&b, "      scope: %s\n", escapeScalar(c.Scope))
+			railf(&b, "    scope: %s\n", escapeScalar(c.Scope))
 		}
 		if c.CheckID != "" {
-			fmt.Fprintf(&b, "      check: %s\n", escapeScalar(c.CheckID))
+			railf(&b, "    check: %s\n", escapeScalar(c.CheckID))
 		}
 		if c.Rubric != "" {
-			fmt.Fprintf(&b, "      rubric: %s\n", escapeScalar(c.Rubric))
+			railf(&b, "    rubric: %s\n", escapeScalar(c.Rubric))
 		}
 	}
 
-	// Versioned artifact digests — the pinned bytes a decision accepts.
+	// ▶ 产物（版本已冻结）— versioned artifact digests: the pinned bytes a
+	// decision accepts.
+	railBlank(&b)
+	railSection(&b, "产物（版本已冻结）")
 	paths := make([]string, 0, len(cp.ArtifactVersions))
 	for p := range cp.ArtifactVersions {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
 	if len(paths) == 0 {
-		b.WriteString("artifacts: —\n")
+		railf(&b, "  —\n")
 	} else {
-		b.WriteString("artifacts (pinned versions):\n")
 		for _, p := range paths {
-			fmt.Fprintf(&b, "  - %s @ %s\n", escapeScalar(p), escapeScalar(cp.ArtifactVersions[p]))
+			railf(&b, "  %s @ %s\n", escapeScalar(p), escapeScalar(cp.ArtifactVersions[p]))
 		}
 	}
 
-	// Requirement meaning staged for this acceptance.
+	// ▶ 需求快照 — requirement meaning staged for this acceptance.
 	if len(cp.Snapshot.Requirements) > 0 {
-		b.WriteString("requirements:\n")
+		railBlank(&b)
+		railSection(&b, "需求快照")
 		for _, fr := range cp.Snapshot.Requirements {
 			content := fr.Content
 			if content == "" {
@@ -111,49 +142,62 @@ func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 			if fr.Version > 0 {
 				ver = fmt.Sprintf(" v%d", fr.Version)
 			}
-			fmt.Fprintf(&b, "  - %s%s: %s\n", escapeScalar(fr.ID), ver, escapeScalar(content))
+			railf(&b, "  %s%s: %s\n", escapeScalar(fr.ID), ver, escapeScalar(content))
 			if len(fr.CriteriaIDs) > 0 {
 				crit := append([]string(nil), fr.CriteriaIDs...)
 				sort.Strings(crit)
-				fmt.Fprintf(&b, "      criteria: %s\n", escapeScalar(strings.Join(crit, ", ")))
+				railf(&b, "    criteria: %s\n", escapeScalar(strings.Join(crit, ", ")))
 			}
 		}
 	}
+
+	// ▶ 计划范围（尚未落地）— the staged planned scope of the snapshot.
 	if planned := cp.Snapshot.PlannedScopeOf(); len(planned) > 0 {
 		sort.Strings(planned)
-		fmt.Fprintf(&b, "planned scope (not yet existing): %s\n", escapeScalar(strings.Join(planned, ", ")))
+		railBlank(&b)
+		railSection(&b, "计划范围（尚未落地）")
+		railf(&b, "  %s\n", escapeScalar(strings.Join(planned, ", ")))
 	}
 
-	// Verification environment/tier (observed facts only).
+	// ▶ 验证环境 — verification environment/tier (observed facts only).
 	env := cp.Snapshot.Environment
-	fmt.Fprintf(&b, "verification: tier=%s os=%s arch=%s runtime=%s defaults=%s\n",
+	railBlank(&b)
+	railSection(&b, "验证环境")
+	railf(&b, "  tier=%s os=%s arch=%s runtime=%s defaults=%s\n",
 		escapeScalar(firstNonEmpty(env.Tier, "unobserved")),
 		escapeScalar(firstNonEmpty(env.OS, "unobserved")),
 		escapeScalar(firstNonEmpty(env.Arch, "unobserved")),
 		escapeScalar(firstNonEmpty(env.Runtime, "unobserved")),
 		escapeScalar(shortDigestOr(env.DefaultsDigest, "unobserved")))
 
-	// Budget: applied limits and counters, plus any persisted digest-bound offer.
-	fmt.Fprintf(&b, "budget: limits %s · counters %s\n", budgetLimitsKey(run.Limits), budgetCountersKey(run.Counters))
+	// ▶ 预算 — applied limits and counters, plus any persisted digest-bound
+	// offer.
+	railBlank(&b)
+	railSection(&b, "预算")
+	railf(&b, "  limits %s · counters %s\n", budgetLimitsKey(run.Limits), budgetCountersKey(run.Counters))
 	if cp.BudgetAsk != nil {
 		source := cp.BudgetAsk.Proposal.Source
 		if source == "" {
 			source = "framework"
 		}
-		fmt.Fprintf(&b, "budget ask (%s proposal — rides the decision call): confirm=\"%s\" unlimited=\"%s\" limits %s\n",
+		railf(&b, "  budget ask (%s proposal — rides the decision call): confirm=\"%s\" unlimited=\"%s\" limits %s\n",
 			source, escapeScalar(cp.BudgetAsk.ConfirmLabel), escapeScalar(cp.BudgetAsk.UnlimitedLabel),
 			budgetLimitsKey(cp.BudgetAsk.Proposal.Limits))
 	}
 	if cp.ExtendAsk != nil {
-		fmt.Fprintf(&b, "extend ask (budget exhausted): extend=\"%s\" hold=\"%s\" delta %s\n",
+		railf(&b, "  extend ask (budget exhausted): extend=\"%s\" hold=\"%s\" delta %s\n",
 			escapeScalar(cp.ExtendAsk.ExtendLabel), escapeScalar(cp.ExtendAsk.HoldLabel),
 			budgetLimitsKey(cp.ExtendAsk.Delta))
 	}
 
-	// The actual legal menu (full label set; pages as persisted).
-	b.WriteString("menu:\n")
+	// The decision divider: everything above is state, everything below is
+	// the ask. The full legal menu follows (labels as persisted; pages too).
+	b.WriteString("╠═ 下一轮裁决 — AskUserQuestion（选项须与一页菜单完全一致）\n")
+	b.WriteString("║ menu:\n")
 	for _, opt := range DecisionMenuLabels(cp.Kind) {
-		b.WriteString("  " + escapeScalar(opt) + "\n")
+		b.WriteString("║   ")
+		b.WriteString(escapeScalar(opt))
+		b.WriteString("\n")
 	}
 	if len(cp.MenuPages) > 1 {
 		for i, pg := range cp.MenuPages {
@@ -164,27 +208,28 @@ func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 			if pg.NavPrev != "" {
 				nav += " — " + pg.NavPrev
 			}
-			fmt.Fprintf(&b, "  page %d/%d: %s%s\n", i+1, len(cp.MenuPages), escapeScalar(strings.Join(pg.Labels, " · ")), escapeScalar(nav))
+			railf(&b, "  page %d/%d: %s%s\n", i+1, len(cp.MenuPages), escapeScalar(strings.Join(pg.Labels, " · ")), escapeScalar(nav))
 		}
 	}
 
 	// Recall targets actually offered at this checkpoint.
 	if len(cp.RecallTargets) > 0 {
-		b.WriteString("recall targets:\n")
+		b.WriteString("║ recall targets:\n")
 		for _, t := range cp.RecallTargets {
-			fmt.Fprintf(&b, "  - %s (phase %s, visit %s)\n", escapeScalar(t.Label), escapeScalar(t.PhaseID), escapeScalar(t.VisitID))
+			railf(&b, "  - %s (phase %s, visit %s)\n", escapeScalar(t.Label), escapeScalar(t.PhaseID), escapeScalar(t.VisitID))
 		}
 	}
 
 	// A pending funded same-envelope retry offer.
 	if cp.ReviewRetry != nil {
-		fmt.Fprintf(&b, "review retry: review %s attempt %s — resume %s · retry=\"%s\" skip=\"%s\"\n",
+		railf(&b, "review retry: review %s attempt %s — resume %s · retry=\"%s\" skip=\"%s\"\n",
 			escapeScalar(cp.ReviewRetry.ReviewID), escapeScalar(cp.ReviewRetry.AttemptID),
 			escapeScalar(cp.ReviewRetry.ResumeTarget), escapeScalar(cp.ReviewRetry.RetryLabel),
 			escapeScalar(cp.ReviewRetry.SkipLabel))
 	}
 
-	fmt.Fprintf(&b, "decide on the NEXT turn with an AskUserQuestion whose question carries nonce %s and whose options equal one menu page exactly.\n", escapeScalar(cp.Nonce))
+	railf(&b, "decide on the NEXT turn with an AskUserQuestion whose question carries nonce %s and whose options equal one menu page exactly.\n", escapeScalar(cp.Nonce))
+	b.WriteString(renderFrameTail)
 	return b.String()
 }
 
@@ -247,7 +292,7 @@ func escapeScalar(s string) string {
 		case r == '\t':
 			b.WriteString("\\t")
 		case unicode.IsControl(r), unicode.Is(unicode.Bidi_Control, r), unicode.Is(unicode.Cf, r):
-			b.WriteString(fmt.Sprintf("\\u%04x", r))
+			fmt.Fprintf(&b, "\\u%04x", r)
 		default:
 			b.WriteRune(r)
 		}
