@@ -182,57 +182,94 @@ done < <(grep -rhoE '(^|[^A-Za-z0-9_/-])(references|scripts|skills|hooks|agents|
 # pointers (resolved from the repo root here).
 if PTR_CODE=$(python3 - <<'PYEOF'
 import glob, os, re, sys
-# Qualified pointers are captured TOO (ship review F1: the rev1 regex only
-# matched bare dir-rooted tokens, so the existence check was dead code - a
-# qualified pointer to a missing file passed green). Cross-form rules:
-# skills qualify with ../, commands with the plugin-root prefix; either
-# form in the wrong file kind is an error. skills/**/*.yaml joins the scan
-# (roster.yaml carried a bare pointer comments-only globs missed - F5).
-# NOTE: this heredoc body deliberately contains ZERO backtick characters
-# (the pattern builds its tick via chr(96)) - backtick text inside a
-# heredoc-in-command-substitution is a parser hazard this repo hit once.
+# Ship review round 2 (N1/N4): the prefix is OPTIONAL (*, not +) — the
+# rev2 rewrite made it mandatory and silently dropped ALL bare-pointer
+# enforcement (the lint's original 0.5.2 purpose); the existence check is
+# only meaningful when both forms reach it. The checker now carries a
+# BUILT-IN characterization matrix (every behavior row below, including the
+# pre-rewrite bare cases) that runs BEFORE the scan — a future regex edit
+# that drops any row fails loudly instead of silently retiring enforcement.
+# The green line reports the matched-token count; zero matches on a repo
+# this size means the pattern went stale (N4).
 tick = chr(96)
 qual_cmd_prefix = "$" + "{CLAUDE_PLUGIN_ROOT}/"
-# (?:\.\./)+ — ONE OR MORE parent hops: skills sit at skills/<name>/, so the
-# plugin root is ../../ away; the rev2 "?single-hop" pattern could never
-# match a real qualified pointer (found while fixing ship review F1).
-# [^tick\s] — a pointer token contains no whitespace: backticked COMMAND
-# strings ("${...}/validate-manifest.sh summoner.yaml") are not pointers.
-prefix = "(?:\\.\\./|" + re.escape(qual_cmd_prefix) + ")+"
+prefix = "(?:\\.\\./|" + re.escape(qual_cmd_prefix) + ")*"
 body = r"(?:references|skills|scripts|commands|agents|scorers|tests)/[^" + tick + r"\s]*?(?:\.md|\.sh|\.json|\.jsonl|\.ya?ml|\.toml)"
 pat = re.compile(tick + "(" + prefix + body + ")" + tick)
+
+def check(kind, f, text):
+    out = []
+    for m in pat.finditer(text):
+        tok = m.group(1)
+        if tok.startswith("../"):
+            if kind != "skill":
+                out.append(f + ": pointer 「" + tok + "」 uses the skill-dir form in a command — commands qualify with the plugin-root prefix")
+                continue
+            target = os.path.normpath(os.path.join(os.path.dirname(f), tok))
+        elif tok.startswith(qual_cmd_prefix):
+            if kind != "command":
+                out.append(f + ": pointer 「" + tok + "」 uses the plugin-root form in a skill — skills qualify with ../ from the skill dir")
+                continue
+            target = tok[len(qual_cmd_prefix):]
+        else:
+            if kind == "skill":
+                out.append(f + ": bare pointer 「" + tok + "」 — qualify as ../… from the skill dir")
+            else:
+                out.append(f + ": bare pointer 「" + tok + "」 — qualify with the plugin-root prefix (commands have no base dir)")
+            continue
+        if not any(ch in target for ch in "*<") and not os.path.exists(target):
+            out.append(f + ": pointer 「" + tok + "」 resolves to missing " + target)
+    return out
+
+# --- characterization matrix (portability discipline: the OLD bare-pointer
+# rows 1a/1b/1c are carried forward from the 0.5.2 lint; rows are (name,
+# kind, file, text, must_flag). Round-2 review case ① revived here. ---
+T = tick
+MATRIX = [
+    ("1a bare→existing, skill", "skill", "skills/x/SKILL.md", T + "references/checkpoint-protocol.md" + T, True),
+    ("1b bare→existing, command", "command", "commands/x.md", T + "references/checkpoint-protocol.md" + T, True),
+    ("1c bare→missing, skill", "skill", "skills/x/SKILL.md", T + "references/zzz-absent.md" + T, True),
+    ("2a qualified→missing, skill", "skill", "skills/x/SKILL.md", T + "../../references/zzz-absent.md" + T, True),
+    ("2b qualified→missing, command", "command", "commands/x.md", T + qual_cmd_prefix + "scripts/zzz-absent.sh" + T, True),
+    ("3a cross-form plugin-root in skill", "skill", "skills/x/SKILL.md", T + qual_cmd_prefix + "references/zzz.md" + T, True),
+    ("3b cross-form ../ in command", "command", "commands/x.md", T + "../references/zzz.md" + T, True),
+    ("4 wildcard tolerated", "skill", "skills/x/SKILL.md", T + "../../tests/fixtures/valid-*.jsonl" + T, False),
+    ("5 placeholder tolerated", "command", "commands/x.md", T + qual_cmd_prefix + "commands/<name>.md" + T, False),
+    ("6 clean-tree real token, depth-2", "skill", "skills/x/SKILL.md", T + "../../references/checkpoint-protocol.md" + T, False),
+    ("7 depth-1 file, one hop", "skill", "skills/roster.yaml", T + "../references/capability-map.md" + T, False),
+    ("8 depth-1 file, missing target", "skill", "skills/roster.yaml", T + "../references/zzz-absent.md" + T, True),
+    ("9 command string with args is not a pointer", "skill", "skills/x/SKILL.md", T + qual_cmd_prefix + "scripts/validate-manifest.sh summoner.yaml" + T, False),
+]
+self_fail = []
+for name, kind, f, text, must_flag in MATRIX:
+    got = len(check(kind, f, text)) > 0
+    if got != must_flag:
+        self_fail.append("lint self-test failed: case 「" + name + "」 flagged=" + str(got) + " want=" + str(must_flag))
+if self_fail:
+    for line in self_fail:
+        print(line)
+    sys.exit(1)
+
+# --- the real scan ---
 bad = []
+matched = 0
 skill_files = sorted(set(glob.glob("skills/**/*.md", recursive=True) + glob.glob("skills/**/*.yaml", recursive=True) + glob.glob("skills/**/*.yml", recursive=True)))
 for kind, files in (("skill", skill_files),
                     ("command", glob.glob("commands/*.md"))):
     for f in files:
         text = open(f, encoding="utf-8").read()
-        for m in pat.finditer(text):
-            tok = m.group(1)
-            if tok.startswith("../"):
-                if kind != "skill":
-                    bad.append(f + ": pointer 「" + tok + "」 uses the skill-dir form in a command — commands qualify with the plugin-root prefix")
-                    continue
-                target = os.path.normpath(os.path.join(os.path.dirname(f), tok))
-            elif tok.startswith(qual_cmd_prefix):
-                if kind != "command":
-                    bad.append(f + ": pointer 「" + tok + "」 uses the plugin-root form in a skill — skills qualify with ../ from the skill dir")
-                    continue
-                target = tok[len(qual_cmd_prefix):]
-            else:
-                if kind == "skill":
-                    bad.append(f + ": bare pointer 「" + tok + "」 — qualify as ../… from the skill dir")
-                else:
-                    bad.append(f + ": bare pointer 「" + tok + "」 — qualify with the plugin-root prefix (commands have no base dir)")
-                continue
-            if not any(ch in target for ch in "*<") and not os.path.exists(target):
-                bad.append(f + ": pointer 「" + tok + "」 resolves to missing " + target)
+        matched += len(pat.findall(text))
+        bad.extend(check(kind, f, text))
+if matched == 0:
+    bad.append("pointer lint matched ZERO tokens — the pattern is stale (this repo carries dozens of qualified pointers)")
 for line in bad:
     print(line)
-sys.exit(1 if bad else 0)
+if bad:
+    sys.exit(1)
+print("matched=" + str(matched) + " tokens")
 PYEOF
 ); then
-  ok "runtime pointers qualified (skills ../-relative, commands \${CLAUDE_PLUGIN_ROOT}/) and resolving"
+  ok "runtime pointers qualified and resolving ($PTR_CODE)"
 else
   while IFS= read -r l; do fail "$l"; done <<< "$PTR_CODE"
 fi
