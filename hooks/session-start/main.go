@@ -179,26 +179,6 @@ func scanDanglingIntents(sessionID string) {
 	}
 }
 
-// emitPendingPostGame surfaces this project's owed post-games (T18): runs
-// stuck POST_GAME_PENDING in ANY session. Display-only — completion happens
-// in the OWNING session (its hooks observe the questionnaire answers and the
-// journal write); this pointer exists so a fresh session knows the debt
-// exists and names it. Errors stay silent: a state-read problem must never
-// break session start (the viewer path reports it properly).
-func emitPendingPostGame() {
-	runs, err := shared.PendingPostGameRuns()
-	if err != nil || len(runs) == 0 {
-		return
-	}
-	ids := make([]string, 0, len(runs))
-	for _, r := range runs {
-		ids = append(ids, r.RunID)
-	}
-	shared.EmitOutput("SessionStart", fmt.Sprintf(
-		"Summoner post-game owed: run(s) %s are POST_GAME_PENDING (questionnaire q1..q4 + journal .summoner/journal/<run_id>.md) — resume the OWNING session to complete and CLOSE them.",
-		strings.Join(ids, ", ")))
-}
-
 // renderContext builds the SessionStart injection: project status + one
 // pointer. (M-C1) The old block carried a hand-maintained command catalog —
 // which went stale once: it said "Six" while seven commands existed — plus a

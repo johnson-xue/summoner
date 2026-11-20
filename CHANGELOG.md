@@ -4,8 +4,6 @@
 
 Session-start hotfix. **SessionStart stdout is now ONE JSON object** — the 0.5.2 hook emitted up to three concatenated objects (project block + v1 compat view + pending post-game) and every session in a project with a v1 summoner.yaml failed to start with `Hook output looks like a JSON object but is not valid JSON` (stable repro). All context blocks are joined into a single `additionalContext` payload; the whole-stdout contract is pinned by the new `TestSingleJSONObjectOnStdout` (the old suite only tested the render functions, which is why concatenated objects slipped through).
 
-# Summoner Changelog
-
 ## [0.5.2] - 2026-11-19
 
 Live-use reliability fixes (three user-reported 0.5.1 failures in a real project session).

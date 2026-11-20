@@ -182,27 +182,51 @@ done < <(grep -rhoE '(^|[^A-Za-z0-9_/-])(references|scripts|skills|hooks|agents|
 # pointers (resolved from the repo root here).
 if PTR_CODE=$(python3 - <<'PYEOF'
 import glob, os, re, sys
-pat = re.compile(r'`((?:references|skills|scripts|commands|agents|scorers|tests)/[^`]*?(?:\.md|\.sh|\.json|\.jsonl|\.ya?ml|\.toml))`')
-plugin_root_prefix = "$" + "{CLAUDE_PLUGIN_ROOT}/"
+# Qualified pointers are captured TOO (ship review F1: the rev1 regex only
+# matched bare dir-rooted tokens, so the existence check was dead code - a
+# qualified pointer to a missing file passed green). Cross-form rules:
+# skills qualify with ../, commands with the plugin-root prefix; either
+# form in the wrong file kind is an error. skills/**/*.yaml joins the scan
+# (roster.yaml carried a bare pointer comments-only globs missed - F5).
+# NOTE: this heredoc body deliberately contains ZERO backtick characters
+# (the pattern builds its tick via chr(96)) - backtick text inside a
+# heredoc-in-command-substitution is a parser hazard this repo hit once.
+tick = chr(96)
+qual_cmd_prefix = "$" + "{CLAUDE_PLUGIN_ROOT}/"
+# (?:\.\./)+ — ONE OR MORE parent hops: skills sit at skills/<name>/, so the
+# plugin root is ../../ away; the rev2 "?single-hop" pattern could never
+# match a real qualified pointer (found while fixing ship review F1).
+# [^tick\s] — a pointer token contains no whitespace: backticked COMMAND
+# strings ("${...}/validate-manifest.sh summoner.yaml") are not pointers.
+prefix = "(?:\\.\\./|" + re.escape(qual_cmd_prefix) + ")+"
+body = r"(?:references|skills|scripts|commands|agents|scorers|tests)/[^" + tick + r"\s]*?(?:\.md|\.sh|\.json|\.jsonl|\.ya?ml|\.toml)"
+pat = re.compile(tick + "(" + prefix + body + ")" + tick)
 bad = []
-for kind, files in (("skill", glob.glob("skills/**/*.md", recursive=True)),
+skill_files = sorted(set(glob.glob("skills/**/*.md", recursive=True) + glob.glob("skills/**/*.yaml", recursive=True) + glob.glob("skills/**/*.yml", recursive=True)))
+for kind, files in (("skill", skill_files),
                     ("command", glob.glob("commands/*.md"))):
     for f in files:
         text = open(f, encoding="utf-8").read()
         for m in pat.finditer(text):
             tok = m.group(1)
-            if kind == "skill":
-                if not tok.startswith("../"):
-                    bad.append(f"{f}: bare pointer `{tok}` — qualify as `../…` from the skill dir")
+            if tok.startswith("../"):
+                if kind != "skill":
+                    bad.append(f + ": pointer 「" + tok + "」 uses the skill-dir form in a command — commands qualify with the plugin-root prefix")
                     continue
                 target = os.path.normpath(os.path.join(os.path.dirname(f), tok))
-            else:
-                if not tok.startswith(plugin_root_prefix):
-                    bad.append(f"{f}: bare pointer `{tok}` — qualify as `${{CLAUDE_PLUGIN_ROOT}}/…` (commands have no base dir)")
+            elif tok.startswith(qual_cmd_prefix):
+                if kind != "command":
+                    bad.append(f + ": pointer 「" + tok + "」 uses the plugin-root form in a skill — skills qualify with ../ from the skill dir")
                     continue
-                target = tok[len(plugin_root_prefix):]
+                target = tok[len(qual_cmd_prefix):]
+            else:
+                if kind == "skill":
+                    bad.append(f + ": bare pointer 「" + tok + "」 — qualify as ../… from the skill dir")
+                else:
+                    bad.append(f + ": bare pointer 「" + tok + "」 — qualify with the plugin-root prefix (commands have no base dir)")
+                continue
             if not any(ch in target for ch in "*<") and not os.path.exists(target):
-                bad.append(f"{f}: pointer `{tok}` resolves to missing {target}")
+                bad.append(f + ": pointer 「" + tok + "」 resolves to missing " + target)
 for line in bad:
     print(line)
 sys.exit(1 if bad else 0)

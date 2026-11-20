@@ -506,6 +506,14 @@ func budgetControlExempt(in *gateInput, run *shared.RunState, isSubmit bool) boo
 		return true
 	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillChange:
 		return true
+	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillStatus:
+		// Ship review F2: the read-only status viewer is a control-plane
+		// escape exactly like the Bash spellings below — an exhausted run
+		// must still be able to render the budget state and the extension
+		// offer it is deciding on. decide() checks this BEFORE routing, so
+		// without this case Skill(summoner:status) died at the budget gate
+		// while the exact-Bash form sailed through.
+		return true
 	case in.ToolName == "Skill" && stringField(in.ToolInput, "skill") == skillProbeSubmit &&
 		run.Status == shared.StatusOutcomeUnknown:
 		return true

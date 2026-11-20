@@ -1896,4 +1896,23 @@ func TestStatusSkillAllowedWhileWaitUser(t *testing.T) {
 	// Work skills stay blocked at the checkpoint.
 	code, stderr = callGate(t, toolPayload(t, "Skill", map[string]interface{}{"skill": "superpowers:brainstorming"}))
 	wantExit2(t, code, stderr, "WAIT_USER")
+
+	// Ship review F2: the status skill must ALSO pass the BUDGET gate at an
+	// exhausted WAIT_USER checkpoint — decide() checks budgetControlExempt
+	// before routing, and the 0.5.2 exemption list named only the exact Bash
+	// status spellings, so Skill(summoner:status) was still denied exactly
+	// when the user needs the render that shows the extension offer.
+	r2 := reloadRun(t, "run-1")
+	r2.Limits = shared.BudgetLimits{PhaseToolCalls: 1}
+	r2.Counters = shared.BudgetCounters{PhaseToolCalls: 1}
+	if err := r2.Save(); err != nil {
+		t.Fatal(err)
+	}
+	code, stderr = callGate(t, toolPayload(t, "Skill", map[string]interface{}{"skill": "summoner:status"}))
+	if code != 0 {
+		t.Fatalf("Skill(summoner:status) at exhausted WAIT_USER: exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	// And a work skill at exhausted WAIT_USER still hits the budget wall.
+	code, stderr = callGate(t, toolPayload(t, "Skill", map[string]interface{}{"skill": "superpowers:brainstorming"}))
+	wantExit2(t, code, stderr, "budget")
 }
