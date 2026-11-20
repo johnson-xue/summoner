@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,4 +212,40 @@ func TestRenderContextMemoryLocations(t *testing.T) {
 		t.Errorf("(c) init hint: %q", got)
 	}
 	restore()
+}
+
+// TestSingleJSONObjectOnStdout — the platform parses SessionStart stdout as
+// ONE JSON object. The 0.5.2 hook emitted up to three concatenated objects
+// (context block + v1 compat view + pending post-game) and every session in
+// a manifest project failed to start with a JSON parse error (user report
+// 2026-11-20, stable repro). The WHOLE stdout must decode as one object
+// carrying every context block in additionalContext.
+func TestSingleJSONObjectOnStdout(t *testing.T) {
+	dir := t.TempDir()
+	defer setenvS(t, "CLAUDE_PROJECT_DIR", dir)()
+	defer setenvS(t, "CLAUDE_PLUGIN_ROOT", "/plugin-root-under-test")()
+	defer setenvS(t, "SUMMONER_STATE_DIR", t.TempDir())()
+	defer setenvS(t, "SUMMONER_TRACE_DIR", t.TempDir())()
+	manifest := "version: \"1\"\nproject:\n  name: \"jsonproj\"\nphases:\n  debug:\n    skill: some-debug-skill\n"
+	if err := os.WriteFile(filepath.Join(dir, "summoner.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errB bytes.Buffer
+	if code := runSessionStart(strings.NewReader(`{"session_id":"sess-json"}`), &out, &errB); code != 0 {
+		t.Fatalf("exit = %d, stderr: %q", code, errB.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout must be ONE valid JSON object, got parse error %v\n--- stdout ---\n%s", err, out.String())
+	}
+	hso, ok := payload["hookSpecificOutput"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing hookSpecificOutput: %v", payload)
+	}
+	ctx, _ := hso["additionalContext"].(string)
+	for _, want := range []string{"SUMMONER-HOOK", "zero-touch compat ACTIVE", "some-debug-skill"} {
+		if !strings.Contains(ctx, want) {
+			t.Errorf("additionalContext lost block %q\n--- context ---\n%s", want, ctx)
+		}
+	}
 }

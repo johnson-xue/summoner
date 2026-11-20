@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -132,6 +133,15 @@ type HookSpecificOutput struct {
 // EmitOutput prints the hook response to stdout as JSON.
 // hookEventName is required — it identifies which hook is emitting (e.g. "SessionStart").
 func EmitOutput(hookEventName, ctx string) {
+	EmitOutputTo(os.Stdout, hookEventName, ctx)
+}
+
+// EmitOutputTo prints one hook response to w as JSON. The platform parses a
+// hook's stdout as a SINGLE JSON object — hooks with several context blocks
+// must join them into one payload and call this once (the 0.5.2 session-start
+// emitted one object per block and broke every session start in manifest
+// projects; user report 2026-11-20).
+func EmitOutputTo(w io.Writer, hookEventName, ctx string) {
 	out := Output{AdditionalContext: ctx}
 	if os.Getenv("CLAUDE_PLUGIN_ROOT") != "" && os.Getenv("COPILOT_CLI") == "" {
 		out = Output{
@@ -141,5 +151,5 @@ func EmitOutput(hookEventName, ctx string) {
 			},
 		}
 	}
-	json.NewEncoder(os.Stdout).Encode(out)
+	json.NewEncoder(w).Encode(out)
 }

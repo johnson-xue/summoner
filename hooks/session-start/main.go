@@ -15,30 +15,58 @@ import (
 )
 
 func main() {
-	sessionID := parseSessionID(os.Stdin)
-	shared.EmitOutput("SessionStart", renderContext(shared.PluginRoot(), shared.ProjectDir()))
-	emitCompatView()
-	emitPendingPostGame()
+	os.Exit(runSessionStart(os.Stdin, os.Stdout, os.Stderr))
+}
+
+// runSessionStart is the whole hook over injectable streams (testable whole-
+// stdout contract). The platform parses SessionStart stdout as ONE JSON
+// object: every context block (project status, v1 compat view, pending
+// post-game debt) is gathered and emitted in a SINGLE payload — the 0.5.2
+// hook emitted one object per block and every session in a manifest project
+// died on "Hook output looks like a JSON object but is not valid JSON"
+// (user report 2026-11-20).
+func runSessionStart(in io.Reader, outW, errW io.Writer) int {
+	sessionID := parseSessionID(in)
+	var blocks []string
+	if ctx := renderContext(shared.PluginRoot(), shared.ProjectDir()); ctx != "" {
+		blocks = append(blocks, ctx)
+	}
+	// v1 zero-touch compat (user ruling 2026-11-16): a version "1"
+	// summoner.yaml is translated in memory by every runtime hook; the model
+	// still needs the v2 capability view to route, so it is rendered here. A
+	// manifest the runtime REJECTS is disclosed on stderr — the session must
+	// know runs are blocked, but must still start.
+	view, err := renderCompatView()
+	if err != nil {
+		fmt.Fprintf(errW, "summoner session-start: summoner.yaml rejected by the runtime — Summoner runs are blocked until it is fixed: %v\n", err)
+	} else if view != "" {
+		blocks = append(blocks, view)
+	}
+	// Owed post-games (T18): runs stuck POST_GAME_PENDING in ANY session.
+	// Display-only — completion happens in the OWNING session; this pointer
+	// exists so a fresh session knows the debt exists and names it. Errors
+	// stay silent: a state-read problem must never break session start.
+	if runs, err := shared.PendingPostGameRuns(); err == nil && len(runs) > 0 {
+		ids := make([]string, 0, len(runs))
+		for _, r := range runs {
+			ids = append(ids, r.RunID)
+		}
+		blocks = append(blocks, fmt.Sprintf(
+			"Summoner post-game owed: run(s) %s are POST_GAME_PENDING (questionnaire q1..q4 + journal .summoner/journal/<run_id>.md) — resume the OWNING session to complete and CLOSE them.",
+			strings.Join(ids, ", ")))
+	}
+	if len(blocks) > 0 {
+		shared.EmitOutputTo(outW, "SessionStart", strings.Join(blocks, "\n\n"))
+	}
 	if sessionID != "" {
 		scanDanglingIntents(sessionID)
 	}
+	return 0
 }
 
-// emitCompatView discloses v1 zero-touch compat (user ruling 2026-11-16): a
-// version "1" summoner.yaml is translated in memory by every runtime hook;
-// the model still needs the v2 capability view to route, so SessionStart
-// renders it once here. A manifest the runtime REJECTS is disclosed on
-// stderr — the session must know runs are blocked, but must still start.
-func emitCompatView() {
-	view, err := renderCompatView()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "summoner session-start: summoner.yaml rejected by the runtime — Summoner runs are blocked until it is fixed: %v\n", err)
-		return
-	}
-	if view != "" {
-		shared.EmitOutput("SessionStart", view)
-	}
-}
+// emitCompatView is retired into runSessionStart's single-payload assembly
+// (2026-11-20): the compat view is one BLOCK of the one JSON object, never a
+// second object. renderCompatView below carries the rendering.
 
 // renderCompatView renders the compat disclosure for a v1 manifest: the
 // translated framework-route bindings plus the surviving project capability
