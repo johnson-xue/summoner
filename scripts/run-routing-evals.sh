@@ -4,7 +4,7 @@
 # NOT a CI gate (panel decision 2026-09: no model-calling ratchet in the
 # merge path). Run it manually or from cron when touching when_to_use text,
 # command descriptions, or the fix-vs-debug disambiguation rule in
-# skills/summoner/SKILL.md.
+# references/single-loop.md.
 #
 # Method: headless claude with THIS checkout loaded via --plugin-dir, asked
 # only "which /summoner:* workflow" — compares against

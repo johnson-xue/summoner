@@ -8,7 +8,7 @@ description. Read and execute the canonical definition from the installed
 Summoner plugin (locate the plugin dir: the one containing both scripts/ and
 memory/):
 
-  1. <plugin-root>/skills/summoner/SKILL.md     — routing hub + checkpoint contract
+  1. <plugin-root>/references/single-loop.md     — loop contract + suite routing
   2. <plugin-root>/commands/status.md              — this command's exact steps
 
 The command runs <plugin-root>/hooks/bin/summoner-status (read-only) and pastes

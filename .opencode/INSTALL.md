@@ -2,9 +2,10 @@
 
 ## Installation
 
-1. Copy the Summoner skills to your project:
+1. Copy the Summoner surface files to your project:
    ```bash
-   cp -r skills/summoner .claude/skills/summoner/
+   mkdir -p .claude/summoner
+   cp -r commands references skills .claude/summoner/
    ```
 
 2. Ensure `AGENTS.md` is in your project root. Summoner's AGENTS.md provides intent→skill routing rules compatible with OpenCode's skill-driven execution model.
@@ -19,16 +20,16 @@
 ## How It Works
 
 OpenCode uses the `skill` tool to invoke skills. Summoner's `AGENTS.md` tells the agent to:
-- Detect when a Summoner workflow applies (bug fix → summoner skill)
-- Invoke `skill("summoner")` 
-- Follow the SKILL.md workflow exactly
+- Detect when a Summoner workflow applies (bug fix → fix suite)
+- Read the loop contract (`.claude/summoner/references/single-loop.md`) and the suite's command (`.claude/summoner/commands/<name>.md`)
+- Follow them exactly
 
 ## Usage
 
 Use natural language — the agent auto-routes:
-- "Fix this bug" → summoner skill (fix workflow)
-- "Add a new feature" → summoner skill (new workflow)
-- "Review before launch" → summoner skill (ship workflow)
+- "Fix this bug" → fix suite
+- "Add a new feature" → new suite
+- "Review before launch" → ship suite
 
 ## Limitations
 

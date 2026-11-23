@@ -172,8 +172,8 @@ done < <(grep -rhoE '(^|[^A-Za-z0-9_/-])(references|scripts|skills|hooks|agents|
 [[ $DEAD -eq 0 ]] && ok "no dead path references (commands/, skills/, references/, agents/, scripts/, hooks.json)"
 
 # ------------------------------------------- 3b. runtime pointer qualification
-# 2026-11-19 (user report: Read …/skills/summoner/references/memory-chain.md
-# failed at runtime): skills resolve relative paths against the SKILL
+# 2026-11-19 (user report: a runtime Read of a references/ path failed —
+# the mentioning skill resolved it relative to its own directory): skills resolve relative paths against the SKILL
 # directory and commands have no base dir at all, so a bare
 # `references/x.md` pointer — which resolves fine from the repo root, which
 # is why the dead-path check above never caught it — is a dead link at
@@ -512,8 +512,8 @@ else
     if [[ ! -f "$toml" ]]; then
       fail "missing .gemini pointer: $toml"; P4=1; continue
     fi
-    if ! grep -q "skills/summoner/SKILL.md" "$toml" || ! grep -q "commands/$(basename "$f")" "$toml"; then
-      fail "$toml is not pointer-form (must reference skills/summoner/SKILL.md + $(basename "$f"))"; P4=1
+    if ! grep -q "references/single-loop.md" "$toml" || ! grep -q "commands/$(basename "$f")" "$toml"; then
+      fail "$toml is not pointer-form (must reference references/single-loop.md + $(basename "$f"))"; P4=1
     fi
     if ! grep -q "summoner:$name" .gemini/GEMINI.md; then
       fail ".gemini/GEMINI.md table missing /summoner:$name"; P4=1

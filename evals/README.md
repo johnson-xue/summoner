@@ -4,7 +4,7 @@
 
 30 cases (27 positive + 3 negative-with-owner) pinning the router's
 free-text routing: CJK + English intents per workflow, the fix-vs-debug
-repair-bias disambiguation rule (skills/summoner/SKILL.md §When to Use),
+repair-bias disambiguation rule (references/single-loop.md §1),
 and three negative cases that used to be plausible mis-routes.
 
 Run (opt-in, needs claude CLI + model auth — NOT a CI gate):

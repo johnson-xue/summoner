@@ -4,7 +4,10 @@ Summoner is an AI Agent Orchestration Framework. When loaded in Gemini CLI, it p
 
 ## How Skills Load
 
-Gemini CLI uses the `activate_skill` tool. Summoner's meta-skill at `skills/summoner/SKILL.md` is the routing hub — it reads `summoner.yaml` from your project and dispatches to domain skills.
+Gemini CLI uses the `activate_skill` tool. The loop contract lives at
+`references/single-loop.md`; each `commands/<name>.md` is its own suite's
+entry — the agent reads `summoner.yaml` from your project and dispatches to
+domain skills.
 
 ## Commands
 
@@ -22,7 +25,7 @@ Available via slash commands in `.gemini/commands/`:
 | `/summoner:status` | read-only run status view |
 
 Command bodies in `.gemini/commands/*.toml` are POINTERS to the canonical
-`skills/summoner/SKILL.md` + `commands/<name>.md` — never a paraphrase.
+`references/single-loop.md` + `commands/<name>.md` — never a paraphrase.
 
 ## Setup
 

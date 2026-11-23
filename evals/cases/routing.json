@@ -11,7 +11,7 @@
   "prompt": "帮我排查这个 bug",
   "expected": "fix",
   "kind": "positive",
-  "note": "歧义短语的默认裁决：未说明只要原因 → fix（SKILL.md 裁决规则）",
+  "note": "歧义短语的默认裁决：未说明只要原因 → fix（single-loop.md 裁决规则）",
   "borderline": true
  },
  {
