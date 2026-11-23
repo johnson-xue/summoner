@@ -66,6 +66,30 @@ func TestFinalWaveWriteBarrier(t *testing.T) {
 		{"cat 'a path (read only)'", 0}, {"env -u X cat 'a path'", 0},
 		{"git status --short", 0}, {"git branch --list", 0}, {"git tag --list", 0},
 		{"git branch", 0}, {"git tag", 0}, {"printf '%s' 'rm scratch'", 0},
+		// 0.7.0 D5.3: reads the old classifier denied (two of them are the
+		// incident run's). A redirection to /dev/null is not a write; a '>'
+		// inside quotes, a conditional, arithmetic, a comment or a heredoc
+		// body is not a redirection.
+		{"ls -la ~/.summoner/state-v2/*/ 2>/dev/null", 0},
+		{"awk 'NR>=1213 && /^func /' hooks/gate.go", 0},
+		{"git status 2>/dev/null 1>&2", 0}, {"cmd >>/dev/null", 0}, {"cmd &> /dev/null", 0},
+		{"echo \"a > b\"", 0}, {"[[ a > b ]] && echo yes", 0}, {"echo $((1 > 2))", 0},
+		{"ls -la # see docs > notes", 0}, {"cat <<'EOF' hooks/gate.go\npattern > here\nEOF", 0},
+		// …and writers it admitted (D5.5, user ruling: the diagnosis freeze
+		// covers everything that can change the tree).
+		{"make test", 2}, {"go run ./cmd/x", 2}, {"ssh host ls", 2}, {"rsync -a a b", 2},
+		{"curl -s -o out.json https://example.com", 2}, {"npm i", 2}, {"npx tsc", 2},
+		{"pip install requests", 2}, {"tar -xzf x.tgz", 2}, {"unzip x.zip", 2},
+		{"git restore scratch", 2}, {"git am p.mbox", 2}, {"git frobnicate", 2},
+		{"git remote add origin git@h:x/y.git", 2},
+		{"find . -name x -exec rm {} \\;", 2}, {"awk 'BEGIN{system(\"ls\")}'", 2},
+		{"python3 -c 'print(1)'", 2}, {"node -e 'console.log(1)'", 2}, {"perl -i -pe 's/a/b/' f", 2},
+		{"if true; then rm scratch; fi", 2}, {"time make test", 2}, {"! rm scratch", 2},
+		{"$(echo rm) -rf scratch", 2},
+		// multi-line and line-continued commands: the verb on the next line
+		// is still the command's verb (and the gate must answer, never hang)
+		{"ls\nrm scratch", 2}, {"ls\r\nrm scratch", 2}, {"ls && \\\nrm scratch", 2},
+		{"ls\ncat 'a path'", 0}, {"ls && \\\ncat 'a path'", 0},
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {

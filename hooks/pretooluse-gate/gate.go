@@ -234,11 +234,18 @@ func decide(in *gateInput, run *shared.RunState) decision {
 			// observation join (see bashClassEffect).
 			return allow(&effects{bashClass: &bashClassEffect{readClass: true, probe: true}})
 		}
-		if isWriteClassCommand(command) {
+		if rule := writeClassRule(command); rule != "" {
 			// A write-class command never earns L2 admission even when it
 			// byte-matches a registered check: checks must be read-class to be
-			// creditable (mutating checks stay ordinary writes).
-			return decideWrite(run, "Bash")
+			// creditable (mutating checks stay ordinary writes). A denial
+			// names the rule that matched (0.7.0 D5.3): the model sees why,
+			// and what to change.
+			d := decideWrite(run, "Bash")
+			if !d.allow {
+				d.reason += fmt.Sprintf(" [写类规则: %s]", rule)
+				return d
+			}
+			return d
 		}
 		if def, ok := matchProjectCheck(command); ok {
 			return decideL2Check(run, def)
@@ -1444,7 +1451,7 @@ func decideWrite(run *shared.RunState, toolName string) decision {
 	if run.Workflow == "fix" || run.Workflow == "debug" {
 		if !hasAcceptedPhase(run, "diagnosis") {
 			return deny(fmt.Sprintf(
-				"Summoner gate: %s is blocked — workflow %s enforces diagnosis-before-code: writes are denied until the diagnosis phase is accepted at its checkpoint (Phase 1 iron law; 诊断未被接受).", toolName, run.Workflow))
+				"Summoner gate: %s is blocked — workflow %s enforces diagnosis-before-code: writes are denied until the diagnosis phase is accepted at its checkpoint (Phase 1 iron law; 诊断未被接受). Until then the executable surface is read-only commands, LSP and the tools the manifest declares read-only; a Bash denial names the rule it matched.", toolName, run.Workflow))
 		}
 	}
 	return allow(nil)

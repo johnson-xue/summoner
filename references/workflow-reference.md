@@ -17,7 +17,18 @@ capability, it never rewrites the order):
 - `/summoner:release`: planning → changelog → publish（fixed framework route; default implementation `skills/summoner-release/SKILL.md`, replaceable via manifest `phases.release`; publish 是变更阶段 — 只读对账探针先行）
 
 (M) = iron law: in fix/debug, writes are gate-denied until the diagnosis
-phase is ACCEPTED at its checkpoint.
+phase is ACCEPTED at its checkpoint. "Write" is the gate's write-class
+verdict on the command text (0.7.0): file and process writers and shells;
+interpreters with inline code (`python3 -c`, `node -e`, `perl -i`, awk
+`system()`); build and run (`make`, `go run`, `npm i`, `npx`,
+`pip install`); remote and copy (`ssh`, `rsync`, `scp`); downloads
+(`curl -o`, `wget`); unpacking (`tar -x`, `unzip`); `find -exec`; and
+every git subcommand outside the read-only table (`status`, `log`, `diff`,
+`rev-parse`, `ls-files`, …). A redirection is judged on its own: to a
+file it is a write, to `/dev/null` it is not, and `2>&1` is a descriptor
+copy. Until diagnosis is accepted the executable surface is read-only
+commands, LSP and the tools the manifest declares read-only; a Bash
+denial names the rule it matched.
 
 Capability keys ≠ route phase ids: the manifest binds `phases.<capability>`
 (the ops capability key is `phases.ops`), never a route's internal phase id
