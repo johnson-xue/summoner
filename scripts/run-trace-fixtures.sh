@@ -69,6 +69,10 @@ invalid-usergate-auto-phase-mismatch.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-auto-on-ask-call.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-auto-twice-no-phase.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-drop-after-auto.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-auto-after-fail.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-decision-after-auto.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-extend-after-auto.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-auto-twice-same-id.jsonl|NA|NA|FAIL|NA|NA
 invalid-review-rubber-stamp.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-forged-verdict.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-dangling.jsonl|NA|FAIL|NA|NA|NA
@@ -106,6 +110,10 @@ invalid-usergate-auto-phase-mismatch.jsonl|user-gate-check|FAIL|was opened for p
 invalid-usergate-auto-on-ask-call.jsonl|user-gate-check|FAIL|an AskUserQuestion call
 invalid-usergate-auto-twice-no-phase.jsonl|user-gate-check|FAIL|no phase.started between
 invalid-usergate-drop-after-auto.jsonl|user-gate-check|FAIL|which was auto-passed
+invalid-usergate-auto-after-fail.jsonl|user-gate-check|FAIL|FAIL check.result
+invalid-usergate-decision-after-auto.jsonl|user-gate-check|FAIL|an auto-pass is terminal
+invalid-usergate-extend-after-auto.jsonl|user-gate-check|FAIL|an auto-pass is
+invalid-usergate-auto-twice-same-id.jsonl|user-gate-check|FAIL|auto-passed twice
 invalid-review-rubber-stamp.jsonl|review-evidence-check|FAIL|rubber-stamp
 invalid-review-forged-verdict.jsonl|review-evidence-check|FAIL|without a running review
 invalid-review-dangling.jsonl|review-evidence-check|FAIL|no review.prepared

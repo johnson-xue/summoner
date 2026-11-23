@@ -61,6 +61,10 @@ the script is the executable truth.
 | `invalid-usergate-auto-on-ask-call.jsonl` | `checkpoint.auto` riding an AskUserQuestion call's `tool_use_id` — that id belongs to a human answer. |
 | `invalid-usergate-auto-twice-no-phase.jsonl` | Two auto-passes with no `phase.started` between them. |
 | `invalid-usergate-drop-after-auto.jsonl` | `criterion.dropped` riding an auto-passed checkpoint. |
+| `invalid-usergate-auto-after-fail.jsonl` | A FAIL `check.result` between the open and the auto — a failed check owes the gate. |
+| `invalid-usergate-decision-after-auto.jsonl` | A human decision of an auto-passed checkpoint (an auto-pass is terminal). |
+| `invalid-usergate-extend-after-auto.jsonl` | A budget extension riding an auto-passed checkpoint. |
+| `invalid-usergate-auto-twice-same-id.jsonl` | One checkpoint auto-passed twice (idempotency). |
 | `invalid-usergate-auto-after-display.jsonl` | `checkpoint.auto` on a checkpoint that was already displayed — the human gate was shown; only a human answer concludes it. |
 | `invalid-usergate-stale-render.jsonl` | **stale 渲染**: `change.delta_applied` between a checkpoint's display and its decision — the decision bound pre-change content. |
 | `invalid-usergate-undisplayed-decision.jsonl` | Decision on a checkpoint never displayed (生成文本 ≠ 已展示). |
@@ -91,7 +95,7 @@ displayed-before-decided always.
 
 ## Harness
 
-- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (48
+- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (52
   fixtures × 5 scorers), adversarial message assertions, and sidecar /
   baseline self-checks. Run it in CI and after any scorer/fixture edit.
 - `scripts/score-trace.sh --trace <file>` — scores one trace and writes the
