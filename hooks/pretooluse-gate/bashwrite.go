@@ -157,6 +157,9 @@ var (
 		"explain": true, "why": true, "licenses": true,
 	}
 
+	// goToolReadSubcommands are `go tool` subcommands that only read.
+	goToolReadSubcommands = map[string]bool{"nm": true, "cover": true, "objdump": true, "addr2line": true, "buildid": true}
+
 	// pythonReadModules are the -m modules that only read and print.
 	pythonReadModules = map[string]bool{
 		"json.tool": true, "json": true, "pprint": true, "this": true, "platform": true, "sys": true, "base64": true,
@@ -238,6 +241,7 @@ func isWriteClassCommand(command string) bool {
 // redirectRule judges every redirection on its own.
 func redirectRule(toks []shTok) string {
 	arith := 0
+	var suspended []int
 	for i, t := range toks {
 		if t.kind != shOp {
 			continue
@@ -247,6 +251,16 @@ func redirectRule(toks []shTok) string {
 			arith++
 		case opArithClose:
 			arith--
+		case opSubstOpen:
+			// A substitution inside arithmetic is a COMMAND again: its
+			// redirects write (`$(( $(cat f > out) ))`, ship review r2).
+			suspended = append(suspended, arith)
+			arith = 0
+		case opSubstClose:
+			if n := len(suspended); n > 0 {
+				arith = suspended[n-1]
+				suspended = suspended[:n-1]
+			}
 		}
 		if arith > 0 || !fileTargetOps[t.text] {
 			continue // inside arithmetic a '>' is a comparison
@@ -255,8 +269,8 @@ func redirectRule(toks []shTok) string {
 		if i+1 < len(toks) && toks[i+1].kind == shWord {
 			target = toks[i+1].text
 		}
-		if target == "/dev/null" {
-			continue // the one file target nobody writes
+		if isDevTarget(target) {
+			continue // a character device: nothing durable is written
 		}
 		if t.text == ">&" && (isDigits(target) || target == "-") {
 			continue // a file-descriptor copy or close — not a file target
@@ -264,6 +278,16 @@ func redirectRule(toks []shTok) string {
 		return fmt.Sprintf("redirect %s to %q", t.text, target)
 	}
 	return ""
+}
+
+// isDevTarget: redirects to these write nothing durable — /dev/null and the
+// fd devices (`echo hi > /dev/stderr`, a common logging idiom).
+func isDevTarget(t string) bool {
+	switch t {
+	case "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty":
+		return true
+	}
+	return strings.HasPrefix(t, "/dev/fd/")
 }
 
 // verbRule judges every command of the token stream and returns the first
@@ -279,9 +303,17 @@ func verbRule(toks []shTok) string {
 		return rule
 	}
 	outer := []*[]shTok{} // the commands suspended by an open substitution / arithmetic
+	outerIn := []bool{}   // their stdin-live state
 	words := []shTok{}
-	for _, t := range toks {
+	stdinLive := false
+	skipTarget := false // the next word is an input redirect's target
+	for idx := 0; idx < len(toks); idx++ {
+		t := toks[idx]
 		if t.kind == shWord {
+			if skipTarget {
+				skipTarget = false
+				continue
+			}
 			words = append(words, t)
 			continue
 		}
@@ -289,23 +321,56 @@ func verbRule(toks []shTok) string {
 		case opSubstOpen, opArithOpen:
 			suspended := words // by value: the variable is reused for the nested command
 			outer = append(outer, &suspended)
+			outerIn = append(outerIn, stdinLive)
 			words = []shTok{}
+			stdinLive = false
 			continue
 		case opSubstClose, opArithClose:
 			if n := len(outer); n > 0 {
 				words = *outer[n-1]
 				outer = outer[:n-1]
+				stdinLive = outerIn[n-1]
+				outerIn = outerIn[:n-1]
 			}
 			continue
 		}
 		if shBreaks[t.text] {
-			if rule := commandRule(words); rule != "" {
+			if rule := commandRule(words, stdinLive); rule != "" {
 				return rule
 			}
 			words = []shTok{}
+			// A pipe hands this command's stdout to the NEXT command's
+			// stdin — `echo '…' | python3` runs the interpreter on it.
+			stdinLive = t.text == "|" || t.text == "|&"
+			continue
+		}
+		if inputRedirectOps[t.text] && idx+1 < len(toks) && toks[idx+1].kind == shWord {
+			// `python3 <<'EOF'`, `python3 < script.py`: the word after the
+			// operator is the delimiter / file / herestring — data, not an
+			// argument. `<(` is NOT a redirect: its body is a command.
+			stdinLive = true
+			skipTarget = true
 		}
 	}
-	return commandRule(words)
+	return commandRule(words, stdinLive)
+}
+
+// inputRedirectOps feed a command's stdin from the command text.
+var inputRedirectOps = map[string]bool{"<": true, "<<": true, "<<-": true, "<<<": true, "<>": true}
+
+// hasPositional reports whether any argument is a bare word (a script file
+// for an interpreter). Option VALUES read as positionals here: callers use
+// it only to stay quiet when a program is named.
+func hasPositional(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			continue
+		}
+		if !strings.HasPrefix(a, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 // substitutedCommandRule catches a command substitution that IS the first
@@ -365,7 +430,7 @@ func substitutedCommandRule(toks []shTok) string {
 
 // commandRule judges one command — its words only (operators excluded) —
 // by its command word and its verb.
-func commandRule(words []shTok) string {
+func commandRule(words []shTok, stdinLive bool) string {
 	if len(words) == 0 {
 		return ""
 	}
@@ -417,8 +482,16 @@ func commandRule(words []shTok) string {
 		}
 	}
 	args := texts[verbIdx+1:]
-	if rule := verbTableRule(verb, args); rule != "" {
+	if rule := verbTableRule(verb, args, stdinLive); rule != "" {
 		return rule
+	}
+	// macOS's default filesystem is case-insensitive: `RM -rf x` runs rm.
+	// An exact-case verb the tables do not know is judged by its lower form.
+	if lower := strings.ToLower(verb); lower != verb {
+		if rule := verbTableRule(lower, args, stdinLive); rule != "" {
+			return rule
+		}
+		return scanningWrapperRule(lower, args)
 	}
 	return scanningWrapperRule(verb, args)
 }
@@ -439,7 +512,7 @@ func literalBasename(text string) (string, bool) {
 
 // verbTableRule is the per-verb table: "" when the verb, with these
 // arguments, is read-class.
-func verbTableRule(verb string, args []string) string {
+func verbTableRule(verb string, args []string, stdinLive bool) string {
 	switch {
 	case verb == "git":
 		return gitRule(args)
@@ -468,22 +541,23 @@ func verbTableRule(verb string, args []string) string {
 	case verb == "uv":
 		return uvRule(args)
 	case pythonNameRe.MatchString(verb):
-		return pythonRule(verb, args)
+		return pythonRule(verb, args, stdinLive)
 	case verb == "node":
-		return nodeRule(args)
+		return nodeRule(args, stdinLive)
 	case verb == "perl":
-		for _, a := range args {
-			if a == "--" {
-				return ""
-			}
-			if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "ie") {
-				return "perl -i/-e (in-place or inline code)"
-			}
-		}
+		return perlRule(args, stdinLive)
 	case verb == "sed":
 		return sedRule(args)
 	case verb == "ruby" || verb == "php" || verb == "lua":
-		return inlineCodeRule(verb, args)
+		return inlineCodeRule(verb, args, stdinLive)
+	case verb == "unzip":
+		return unzipRule(args)
+	case verb == "make":
+		return makeRule(args)
+	case verb == "sh" || verb == "bash" || verb == "zsh":
+		if syntaxCheckOnly(args) {
+			return "" // -n parses without running anything
+		}
 	}
 	if writeClassVerbs[verb] {
 		if verb == "source" || verb == "." {
@@ -503,7 +577,7 @@ func verbTableRule(verb string, args []string) string {
 // the alternative is letting a wrapped writer through.
 func scanningWrapperRule(verb string, args []string) string {
 	switch verb {
-	case "timeout", "nice", "watch", "doas", "strace", "ltrace", "setsid", "arch", "caffeinate",
+	case "timeout", "nice", "watch", "time", "doas", "strace", "ltrace", "setsid", "arch", "caffeinate",
 		"parallel", "stdbuf", "script", "xcrun", "flock", "taskset", "ionice", "chrt", "prlimit":
 	default:
 		return ""
@@ -512,7 +586,7 @@ func scanningWrapperRule(verb string, args []string) string {
 		if w == "--" || strings.HasPrefix(w, "-") || envAssign.MatchString(w) {
 			continue
 		}
-		if rule := verbTableRule(w, args[k+1:]); rule != "" {
+		if rule := verbTableRule(w, args[k+1:], false); rule != "" {
 			return verb + " … " + rule
 		}
 	}
@@ -542,6 +616,13 @@ func gitRule(args []string) string {
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
+			if (strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") ||
+				strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--exec-path=")) && strings.HasSuffix(a, "=") && j+1 < len(args) {
+				// `--git-dir="$(pwd)/.git"`: the substitution split the
+				// value into its own word — consume it as the value.
+				j++
+				continue
+			}
 			if gitReadOnlyFlags[a] || strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") ||
 				strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--exec-path=") ||
 				strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-C") {
@@ -674,21 +755,33 @@ func firstWord(words []string) string {
 // (`-avv`, `-vv`): a cluster of listing letters is a listing.
 func branchMutation(args []string) bool {
 	listing := false
+	pattern := false // only --list / -l take bare arguments as patterns
 	for _, a := range args {
 		switch {
-		case a == "--list" || a == "--show-current" || a == "--contains" || a == "--no-contains" ||
+		case a == "-t" || a == "--track" || a == "--no-track" || a == "--set-upstream-to":
+			return true // tracking options name a NEW branch (ship review r2)
+		case a == "--list" || a == "-l":
+			listing, pattern = true, true
+		case a == "--show-current" || a == "--contains" || a == "--no-contains" ||
 			a == "--merged" || a == "--no-merged" || a == "--points-at" || a == "--column" || a == "--no-column" ||
 			a == "--sort" || a == "--format" || a == "--ignore-case" || a == "-i" || a == "--efilter":
 			listing = true
 		case strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=") || strings.HasPrefix(a, "--points-at=") ||
 			strings.HasPrefix(a, "--contains=") || strings.HasPrefix(a, "--merged=") || strings.HasPrefix(a, "--efilter="):
 			listing = true
-		case len(a) > 1 && a[0] == '-' && a[1] != '-' && onlyLetters(a[1:], "larvVqit"):
+		case len(a) > 1 && a[0] == '-' && a[1] != '-' && onlyLetters(a[1:], "larvi"):
 			listing = true
+			if strings.ContainsRune(a[1:], 'l') {
+				pattern = true
+			}
 		case strings.HasPrefix(a, "-"):
 			return true
+		case pattern:
+			continue // a pattern behind --list / -l
 		case !listing:
 			return true // a name without a listing flag: create / copy
+		default:
+			return true // a bare name beside listing flags still creates (`git branch -a newb`)
 		}
 	}
 	return false
@@ -733,6 +826,11 @@ func configWrites(args []string) bool {
 		switch {
 		case a == "--type":
 			k++ // its value follows as a separate word
+		case a == "--global" || a == "--local" || a == "--system" || a == "--worktree":
+			// a scope selector: `git config --global --list` reads
+		case a == "-f" || a == "--file":
+			k++ // its value follows as a separate word
+		case strings.HasPrefix(a, "--file="):
 		case a == "--get" || a == "--get-all" || a == "--get-regexp" || a == "--get-urlmatch" ||
 			a == "--list" || a == "-l" || a == "--name-only" || a == "--show-origin" ||
 			a == "--show-scope" || a == "--show-names" || a == "-z" || a == "--null" ||
@@ -806,9 +904,24 @@ func awkRule(verb string, args []string) string {
 // awkOutput reports a '>' in an awk print statement that is not the '>='
 // comparison.
 func awkOutput(s string) bool {
+	depth := 0
+	quote := byte(0)
 	for i := 0; i < len(s); i++ {
-		if s[i] == '>' && (i+1 >= len(s) || s[i+1] != '=') {
-			return true
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		case c == '>' && depth == 0 && (i+1 >= len(s) || s[i+1] != '='):
+			return true // a redirect at the statement's own level
 		}
 	}
 	return false
@@ -854,7 +967,7 @@ func tarRule(args []string) string {
 		case k == 0 && len(a) > 1 && a[0] != '-':
 			letters = a
 		}
-		if isASCIILetters(letters) && strings.ContainsAny(letters, "xcruA") {
+		if isASCIILetters(letters) && strings.ContainsAny(letters, "xcruA") && !strings.ContainsRune(letters, 'O') {
 			return "tar -x/-c/-r/-u/-A (unpacks or repacks)"
 		}
 	}
@@ -978,6 +1091,18 @@ func goRule(args []string) string {
 			if a == "-c" || strings.HasPrefix(a, "-c=") || a == "--compile" {
 				return "go test -c (writes a test binary)"
 			}
+			name, value := a, ""
+			if eq := strings.IndexByte(a, '='); eq >= 0 {
+				name, value = a[:eq], a[eq+1:]
+			}
+			switch name {
+			case "-o", "-coverprofile", "-cpuprofile", "-memprofile", "-blockprofile", "-mutexprofile", "-trace":
+				if value != "/dev/null" {
+					return "go test " + name + " (writes a file)"
+				}
+			case "--outputdir":
+				return "go test --outputdir (writes files)"
+			}
 		}
 		return ""
 	case "vet", "list", "version", "doc", "help", "bug":
@@ -994,6 +1119,12 @@ func goRule(args []string) string {
 			return "go mod " + args[1] + " (changes the module files)"
 		}
 		return ""
+	}
+	if args[0] == "tool" {
+		if len(args) > 1 && goToolReadSubcommands[args[1]] {
+			return ""
+		}
+		return "go tool (builds, installs or changes the tree)"
 	}
 	if goWriteSubcommands[args[0]] {
 		return "go " + args[0] + " (builds, installs or changes the tree)"
@@ -1022,7 +1153,16 @@ func packageManagerRule(verb string, args []string) string {
 	if pkgReadSubcommands[sub] {
 		return ""
 	}
-	if sub == "config" && len(args) > 1 && args[1] == "get" {
+	if sub == "audit" {
+		return "" // reads the dependency tree; installs nothing
+	}
+	if sub == "get" {
+		return "" // npm get <key>
+	}
+	if sub == "config" && len(args) > 1 && (args[1] == "get" || args[1] == "list" || args[1] == "ls") {
+		return ""
+	}
+	if sub == "pkg" && len(args) > 1 && args[1] == "get" {
 		return ""
 	}
 	if sub == "run" && len(args) == 1 {
@@ -1051,9 +1191,11 @@ func uvRule(args []string) string {
 	return "uv " + args[0] + " (installs, creates an environment or runs code)"
 }
 
-// pythonRule: -c in any short cluster (-ic, -Oc), a program read from
-// stdin, and `-m <module>` outside a small read-only set.
-func pythonRule(verb string, args []string) string {
+// pythonRule: -c in any short cluster (-ic, -Oc), `-m <module>` outside a
+// small read-only set, and — with no program argument — a program read from
+// stdin (`python3 <<'EOF'`, `echo … | python3`, `python3 < script.py`), which
+// runs whatever arrives (ship review round 2).
+func pythonRule(verb string, args []string, stdinLive bool) string {
 	for k := 0; k < len(args); k++ {
 		a := args[k]
 		if a == "--" {
@@ -1066,19 +1208,48 @@ func pythonRule(verb string, args []string) string {
 			return verb + " -c (inline code)"
 		}
 		if a == "-m" {
-			if k+1 < len(args) && pythonReadModules[args[k+1]] {
-				k++
-				continue
+			if k+1 >= len(args) {
+				return verb + " -m <module> (runs a module)"
 			}
-			return verb + " -m <module> (runs a module)"
+			if rule := pythonModuleRule(verb, args[k+1], args[k+2:]); rule != "" {
+				return rule
+			}
+			return "" // a read-only module consumes its input as DATA
 		}
+	}
+	if stdinLive && !hasPositional(args) {
+		return verb + " (program read from stdin)"
 	}
 	return ""
 }
 
+// pythonModuleRule: a read-only -m module only reads and prints; pip, site
+// and zipfile have read subcommands.
+func pythonModuleRule(verb, module string, rest []string) string {
+	if pythonReadModules[module] {
+		return ""
+	}
+	switch module {
+	case "pip":
+		if len(rest) > 0 {
+			switch rest[0] {
+			case "list", "show", "check", "freeze", "--version", "-V", "help", "--help":
+				return ""
+			}
+		}
+	case "site":
+		return ""
+	case "zipfile":
+		if len(rest) > 0 && (rest[0] == "-l" || rest[0] == "--list") {
+			return ""
+		}
+	}
+	return verb + " -m <module> (runs a module)"
+}
+
 // nodeRule: -e / -p / --eval / --print / -r / --require / --import / a
 // program from stdin, in any short cluster.
-func nodeRule(args []string) string {
+func nodeRule(args []string, stdinLive bool) string {
 	for _, a := range args {
 		if a == "--" {
 			return ""
@@ -1092,12 +1263,64 @@ func nodeRule(args []string) string {
 			return "node (inline code or a preloaded module)"
 		}
 	}
+	if stdinLive && !hasPositional(args) {
+		return "node (program read from stdin)"
+	}
 	return ""
+}
+
+// perlRule: -i / -e / -E (any case of E, which also runs inline code) in a
+// short cluster; with no program argument, a program read from stdin runs.
+func perlRule(args []string, stdinLive bool) string {
+	for _, a := range args {
+		if a == "--" {
+			return ""
+		}
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "ieE") {
+			return "perl -i/-e/-E (in-place or inline code)"
+		}
+	}
+	if stdinLive && !hasPositional(args) {
+		return "perl (program read from stdin)"
+	}
+	return ""
+}
+
+// unzipRule: listing, testing and printing members read; extraction writes.
+func unzipRule(args []string) string {
+	for _, a := range args {
+		if len(a) > 1 && a[0] == '-' && strings.ContainsAny(a[1:2], "lvtpZ") {
+			return "" // -l list, -v verbose list, -t test, -p print, -Z zipinfo
+		}
+	}
+	return "write-class verb: unzip"
+}
+
+// makeRule: planning and printing forms run nothing (-n -q -p); every other
+// form builds (the D5.5 ruling: make is a write-class verb).
+func makeRule(args []string) string {
+	for _, a := range args {
+		switch a {
+		case "-n", "--dry-run", "--just-print", "--question", "-q", "-p", "--print-database":
+			return ""
+		}
+	}
+	return "write-class verb: make"
+}
+
+// syntaxCheckOnly: `bash -n file` parses the file without running anything.
+func syntaxCheckOnly(args []string) bool {
+	for _, a := range args {
+		if a == "-n" || a == "--noexec" {
+			return true
+		}
+	}
+	return false
 }
 
 // inlineCodeRule: ruby -e, php -r and lua -e take a program on the command
 // line, alone or inside a short cluster.
-func inlineCodeRule(verb string, args []string) string {
+func inlineCodeRule(verb string, args []string, stdinLive bool) string {
 	flag := "e"
 	if verb == "php" {
 		flag = "r"
@@ -1109,6 +1332,9 @@ func inlineCodeRule(verb string, args []string) string {
 		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a[1:], rune(flag[0])) {
 			return verb + " -" + flag + " (inline code)"
 		}
+	}
+	if stdinLive && !hasPositional(args) {
+		return verb + " (program read from stdin)"
 	}
 	return ""
 }

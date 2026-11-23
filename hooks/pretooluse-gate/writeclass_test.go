@@ -114,10 +114,13 @@ func TestWriteClassWriteForms(t *testing.T) {
 		"awk pipes a command":     {`awk '{"ls" | getline; print}'`, "awk"},
 
 		// --- verb channel, found while rewriting the lexer ------------------
-		"verb behind a reserved word":      {"if true; then rm x; fi", "rm"},
-		"verb behind time":                 {"time make test", "make"},
-		"verb behind a negation":           {"! rm -rf x", "rm"},
-		"verb from a substitution":         {`$(echo rm) -rf x`, "$("},
+		"verb behind a reserved word": {"if true; then rm x; fi", "rm"},
+		"verb behind time":            {"time make test", "make"},
+		"verb behind a negation":      {"! rm -rf x", "rm"},
+		// A bare substitution in command position is judged through its own
+		// expanded word (the message names the run-time computation, not $(…)).
+		"verb from a substitution":         {`$(echo rm) -rf x`, "command word is computed"},
+		"quoted verb from a substitution":  {`"$(echo rm)" -rf x`, "$("},
 		"verb behind wrappers and a quote": {`env FOO=1 command "/bin/rm" -rf x`, "rm"},
 	}
 	for name, c := range cases {

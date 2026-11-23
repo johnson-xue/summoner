@@ -209,13 +209,16 @@ func TestReviewLexerEdges(t *testing.T) {
 		"echo `rm x`",
 		"env -S 'rm x'", "env -",
 		"echo [[ a > b ]]",
-		"cmd > /DEV/NULL", "cmd 2> /dev/nullx", "curl -sSLO https://example.com", "tar -xOf x.tar f",
+		"cmd > /DEV/NULL", "cmd 2> /dev/nullx", "curl -sSLO https://example.com", "tar -cf x.tar dir",
 	} {
 		mustBeWrite(t, cmd, "")
 	}
 	for _, cmd := range []string{
 		"[[ 1 -eq 1 ]] && echo yes", "[[ 1 -eq 1 ]]; echo yes", "[[ 1 -eq 1 ]]\necho yes",
 		"echo ${x:?err > file}",
+		// -O extracts to STDOUT: nothing is written (ship review round 2 —
+		// this row was pinned as a write, which was the false denial).
+		"tar -xOf x.tar f",
 	} {
 		mustBeRead(t, cmd)
 	}
