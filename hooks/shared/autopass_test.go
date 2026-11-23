@@ -74,8 +74,8 @@ func TestAutoPassCheckpointAcceptsAndAdvances(t *testing.T) {
 	if !r.UpcomingVisit {
 		t.Fatal("an auto-pass must authorize the next visit's budget bucket, exactly like CONTINUE")
 	}
-	if r.AutoPassNudgeFor != cp.ID {
-		t.Fatalf("AutoPassNudgeFor = %q, want %q (the Stop hook's one-shot continuation cue)", r.AutoPassNudgeFor, cp.ID)
+	if r.ContinueNudgeFor != cp.ID {
+		t.Fatalf("ContinueNudgeFor = %q, want %q (the Stop hook's one-shot continuation cue)", r.ContinueNudgeFor, cp.ID)
 	}
 
 	disk := reloadRunState(t, "run-1")
@@ -217,9 +217,9 @@ func TestRecordDecisionNeverRecordsAnAutoPass(t *testing.T) {
 	}
 }
 
-// TestOpenPhaseSpendsTheAutoPassNudge: the one-shot continuation cue lives
+// TestOpenPhaseSpendsTheContinuationCue: the one-shot continuation cue lives
 // exactly until the next phase opens.
-func TestOpenPhaseSpendsTheAutoPassNudge(t *testing.T) {
+func TestOpenPhaseSpendsTheContinuationCue(t *testing.T) {
 	r, cp := openConfirmed(t)
 	if err := r.AutoPassCheckpoint(cp.ID, false); err != nil {
 		t.Fatalf("AutoPassCheckpoint: %v", err)
@@ -227,46 +227,46 @@ func TestOpenPhaseSpendsTheAutoPassNudge(t *testing.T) {
 	if err := r.OpenPhase("diagnosis"); err != nil {
 		t.Fatalf("OpenPhase(diagnosis): %v", err)
 	}
-	if r.AutoPassNudgeFor != "" {
-		t.Fatalf("AutoPassNudgeFor = %q after the next phase opened, want empty", r.AutoPassNudgeFor)
+	if r.ContinueNudgeFor != "" {
+		t.Fatalf("ContinueNudgeFor = %q after the next phase opened, want empty", r.ContinueNudgeFor)
 	}
 }
 
-// TestClearAutoPassNudge is the Stop hook's one-shot consumption: the cue
+// TestClearContinueNudge is the Stop hook's one-shot consumption: the cue
 // clears durably, and clearing twice is harmless.
-func TestClearAutoPassNudge(t *testing.T) {
+func TestClearContinueNudge(t *testing.T) {
 	r, cp := openConfirmed(t)
 	if err := r.AutoPassCheckpoint(cp.ID, false); err != nil {
 		t.Fatalf("AutoPassCheckpoint: %v", err)
 	}
-	if err := r.ClearAutoPassNudge(); err != nil {
-		t.Fatalf("ClearAutoPassNudge: %v", err)
+	if err := r.ClearContinueNudge(); err != nil {
+		t.Fatalf("ClearContinueNudge: %v", err)
 	}
-	if reloadRunState(t, "run-1").AutoPassNudgeFor != "" {
+	if reloadRunState(t, "run-1").ContinueNudgeFor != "" {
 		t.Fatal("the cleared cue must stay cleared on disk")
 	}
-	if err := r.ClearAutoPassNudge(); err != nil {
-		t.Fatalf("second ClearAutoPassNudge: %v", err)
+	if err := r.ClearContinueNudge(); err != nil {
+		t.Fatalf("second ClearContinueNudge: %v", err)
 	}
 }
 
-// TestAutoPassNudgePendingReadsTheLifecycleTail — the continuation backstop's
+// TestContinueNudgePendingReadsTheLifecycleTail — the continuation backstop's
 // condition (design D3, review-corrected): the run sits "right after" an
 // auto-pass while the LAST lifecycle event (phase.* / checkpoint.*) is that
 // checkpoint.auto. Tool and check events after it do not count — after a
 // submit there are always tool.result / check.result lines — and a later
 // phase.started ends it.
-func TestAutoPassNudgePendingReadsTheLifecycleTail(t *testing.T) {
+func TestContinueNudgePendingReadsTheLifecycleTail(t *testing.T) {
 	useTraceDir(t)
 	r, cp := openConfirmed(t)
-	if pending, err := AutoPassNudgePending(r); err != nil || pending {
+	if pending, err := ContinueNudgePending(r); err != nil || pending {
 		t.Fatalf("before the auto-pass: pending = %v (err %v), want false", pending, err)
 	}
 	if err := r.AutoPassCheckpoint(cp.ID, false); err != nil {
 		t.Fatalf("AutoPassCheckpoint: %v", err)
 	}
 	mustAppend(t, "run-1", EventCheckpointOpened)
-	if pending, _ := AutoPassNudgePending(r); pending {
+	if pending, _ := ContinueNudgePending(r); pending {
 		t.Fatal("an opened checkpoint with no checkpoint.auto yet is not an auto-pass tail")
 	}
 	auto := TraceEvent{Type: EventCheckpointAuto, Source: "trace_test", Payload: map[string]interface{}{"checkpoint_id": cp.ID, "phase_id": "context", "outcome": ConclusionConfirmed}}
@@ -275,23 +275,23 @@ func TestAutoPassNudgePendingReadsTheLifecycleTail(t *testing.T) {
 	}
 	for _, typ := range []string{EventToolResult, EventCheckResult, EventToolStarted} {
 		mustAppend(t, "run-1", typ)
-		if pending, err := AutoPassNudgePending(r); err != nil || !pending {
+		if pending, err := ContinueNudgePending(r); err != nil || !pending {
 			t.Fatalf("after %s: pending = %v (err %v), want true — non-lifecycle events do not end the tail", typ, pending, err)
 		}
 	}
 	mustAppend(t, "run-1", EventPhaseStarted)
-	if pending, _ := AutoPassNudgePending(r); pending {
+	if pending, _ := ContinueNudgePending(r); pending {
 		t.Fatal("a phase.started after the auto-pass ends the tail")
 	}
 
 	// No cue, no nudge — whatever the trace says.
-	if err := r.ClearAutoPassNudge(); err != nil {
+	if err := r.ClearContinueNudge(); err != nil {
 		t.Fatal(err)
 	}
 	if err := AppendEvent("run-1", "sess-1", auto); err != nil {
 		t.Fatal(err)
 	}
-	if pending, _ := AutoPassNudgePending(r); pending {
+	if pending, _ := ContinueNudgePending(r); pending {
 		t.Fatal("with the cue cleared nothing is pending")
 	}
 }
@@ -339,5 +339,174 @@ func TestNextExpectedPhase(t *testing.T) {
 	acceptDiagnosis()
 	if got := NextExpectedPhase(r); got != "" {
 		t.Fatalf("with the route settled: next = %q, want empty", got)
+	}
+}
+
+// --- ship review round 1 (protocol lens) --------------------------------------------
+
+// TestAutoPassRefusesDegenerateAndDisplayedCheckpoints: a confirmed claim
+// carried by blank items is no evidence, a blank conclusion is no
+// conclusion, and a checkpoint the user has already SEEN is theirs to
+// decide.
+func TestAutoPassRefusesDegenerateAndDisplayedCheckpoints(t *testing.T) {
+	build := func(summary string, evidence []string) (*RunState, CheckpointState) {
+		r := startTestRun(t, BudgetLimits{})
+		if err := r.OpenPhase("context"); err != nil {
+			t.Fatalf("OpenPhase: %v", err)
+		}
+		cp, err := r.SubmitPhaseUnstaged(PhaseSubmission{
+			PhaseID: "context", Outcome: ConclusionConfirmed,
+			Conclusion: &Conclusion{Summary: summary, Evidence: evidence, Approach: "how"},
+		})
+		if err != nil {
+			t.Fatalf("SubmitPhase: %v", err)
+		}
+		return r, cp
+	}
+	cases := []struct {
+		name    string
+		build   func() (*RunState, CheckpointState)
+		display bool
+		want    string
+	}{
+		{"blank evidence items", func() (*RunState, CheckpointState) { return build("a real conclusion", []string{"", " ", "\t"}) }, false, "evidence"},
+		{"one real item among blanks", func() (*RunState, CheckpointState) { return build("a real conclusion", []string{"", " "}) }, false, "evidence"},
+		{"blank conclusion", func() (*RunState, CheckpointState) { return build("   ", []string{"evidence-1"}) }, false, "conclusion"},
+		{"already displayed", func() (*RunState, CheckpointState) { return build("a real conclusion", []string{"evidence-1"}) }, true, "displayed"},
+	}
+	for _, c := range cases {
+		r, cp := c.build()
+		if c.display {
+			displayCurrent(t, r)
+		}
+		err := r.AutoPassCheckpoint(cp.ID, false)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: AutoPassCheckpoint error = %v, want one naming %q", c.name, err, c.want)
+		}
+		if r.Status != StatusWaitUser || checkpointByID(t, r, cp.ID).Decided {
+			t.Errorf("%s: the checkpoint must stay with the user", c.name)
+		}
+	}
+
+	// Control: the same shapes with real content pass, and one real item is
+	// enough even beside blank ones.
+	r, cp := build("a real conclusion", []string{"", "evidence-1", " "})
+	if err := r.AutoPassCheckpoint(cp.ID, false); err != nil {
+		t.Fatalf("one real evidence item must be enough: %v", err)
+	}
+}
+
+// TestAutoPassRefusedWhenNothingFollowsOnTheRoute: an auto-pass opens no
+// checkpoint; if nothing followed on the route the run would be left ACTIVE
+// with no checkpoint to offer done/stop from.
+func TestAutoPassRefusedWhenNothingFollowsOnTheRoute(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{}) // debug route: context → diagnosis
+	// The later phase is already settled, so context is the last thing owed.
+	r.Phases = append(r.Phases, PhaseState{ID: "diagnosis", VisitID: "diagnosis@v1", Outcome: "accepted"})
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(confirmedSubmission("context"))
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	if err := r.AutoPassCheckpoint(cp.ID, false); err == nil || !strings.Contains(err.Error(), "nothing follows") {
+		t.Fatalf("AutoPassCheckpoint error = %v, want a refusal naming that nothing follows", err)
+	}
+	if r.Status != StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER", r.Status)
+	}
+}
+
+// TestRequirementChangeSpendsTheContinuationCue: a change opened right
+// after a pass makes "立即进入下一阶段" false (OpenPhase refuses while a
+// change is open) — the cue is spent.
+func TestRequirementChangeSpendsTheContinuationCue(t *testing.T) {
+	r, cp := openConfirmed(t)
+	if err := r.AutoPassCheckpoint(cp.ID, false); err != nil {
+		t.Fatalf("AutoPassCheckpoint: %v", err)
+	}
+	if r.ContinueNudgeFor != cp.ID {
+		t.Fatal("fixture: the pass must leave the cue")
+	}
+	if err := r.OpenRequirementChangeAt("cover the logout flow too", DevPosition{CurrentTask: "ctx"}); err != nil {
+		t.Fatalf("OpenRequirementChangeAt: %v", err)
+	}
+	if r.ContinueNudgeFor != "" {
+		t.Fatalf("ContinueNudgeFor = %q after a requirement change opened, want empty", r.ContinueNudgeFor)
+	}
+}
+
+// --- ship review round 1 (UX lens): the continuation cue after a HUMAN decision ---
+
+// decidedByHuman parks a debug run right after a human CONTINUE at the
+// context checkpoint, with the trace the PostToolUse hook leaves
+// (opened → displayed → decided), and returns the checkpoint.
+func decidedByHuman(t *testing.T, d Decision) (*RunState, CheckpointState) {
+	t.Helper()
+	r := startTestRun(t, BudgetLimits{})
+	cp := openAndSubmit(t, r, "context")
+	for _, ev := range []TraceEvent{
+		{Type: EventCheckpointOpened, Payload: map[string]interface{}{"checkpoint_id": cp.ID, "phase_id": "context", "nonce": cp.Nonce}},
+		{Type: EventCheckpointDisplayed, Payload: map[string]interface{}{"checkpoint_id": cp.ID, "nonce": cp.Nonce}},
+	} {
+		if err := AppendEvent("run-1", "sess-1", ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Type, err)
+		}
+	}
+	displayCurrent(t, r)
+	if err := r.RecordDecision(cp.ID, d, "tu-ask-1"); err != nil {
+		t.Fatalf("decide %s: %v", d, err)
+	}
+	if err := AppendEvent("run-1", "sess-1", TraceEvent{
+		Type: EventCheckpointDecided, ToolUseID: "tu-ask-1",
+		Payload: map[string]interface{}{"checkpoint_id": cp.ID, "tool_use_id": "tu-ask-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return r, checkpointByID(t, r, cp.ID)
+}
+
+// TestHumanDecisionLeavesTheContinuationCue: a user's continue or skip
+// returns the run to ACTIVE with nothing rendered and nothing pushing the
+// model on — the cue (and the Stop hook's one-shot nudge) covers it exactly
+// as it covers an auto-pass. DONE, which leaves ACTIVE, sets no cue.
+func TestHumanDecisionLeavesTheContinuationCue(t *testing.T) {
+	useTraceDir(t)
+	for _, d := range []Decision{DecisionContinue, DecisionSkip} {
+		r, cp := decidedByHuman(t, d)
+		if r.Status != StatusActive || r.ContinueNudgeFor != cp.ID {
+			t.Errorf("%s: status %s cue %q, want ACTIVE with the cue set to %s", d, r.Status, r.ContinueNudgeFor, cp.ID)
+		}
+		if pending, err := ContinueNudgePending(r); err != nil || !pending {
+			t.Errorf("%s: the run sits right after the decision — pending = %v (err %v), want true", d, pending, err)
+		}
+		mustAppend(t, "run-1", EventToolResult) // the answering call's own result
+		if pending, _ := ContinueNudgePending(r); !pending {
+			t.Errorf("%s: a tool.result after the decision must not end the tail", d)
+		}
+		mustAppend(t, "run-1", EventPhaseStarted)
+		if pending, _ := ContinueNudgePending(r); pending {
+			t.Errorf("%s: a phase.started after the decision ends the tail", d)
+		}
+	}
+
+}
+
+// TestDoneLeavesNoContinuationCue: DONE leaves ACTIVE for post-game — the
+// model owes a questionnaire, not the next phase.
+func TestDoneLeavesNoContinuationCue(t *testing.T) {
+	useTraceDir(t)
+	r := startTestRun(t, BudgetLimits{})
+	cp := openAndSubmit(t, r, "context")
+	displayCurrent(t, r)
+	if err := r.RecordDecision(cp.ID, DecisionDone, "tu-ask-1"); err != nil {
+		t.Fatalf("decide DONE: %v", err)
+	}
+	if r.Status != StatusPostGamePending || r.ContinueNudgeFor != "" {
+		t.Fatalf("DONE: status %s cue %q, want POST_GAME_PENDING with no cue", r.Status, r.ContinueNudgeFor)
 	}
 }

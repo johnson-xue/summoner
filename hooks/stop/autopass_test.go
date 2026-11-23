@@ -73,8 +73,8 @@ func TestStopNudgesOnceAfterAnAutoPass(t *testing.T) {
 			t.Errorf("nudge lost %q:\n%s", want, reason)
 		}
 	}
-	if got := reloadRun(t, "run-1"); got.Status != shared.StatusActive || got.AutoPassNudgeFor != "" {
-		t.Fatalf("the nudge must keep the run ACTIVE and consume its cue: status %s cue %q", got.Status, got.AutoPassNudgeFor)
+	if got := reloadRun(t, "run-1"); got.Status != shared.StatusActive || got.ContinueNudgeFor != "" {
+		t.Fatalf("the nudge must keep the run ACTIVE and consume its cue: status %s cue %q", got.Status, got.ContinueNudgeFor)
 	}
 
 	// Idempotent re-fire of the SAME turn end (the platform re-runs the hook
@@ -85,7 +85,7 @@ func TestStopNudgesOnceAfterAnAutoPass(t *testing.T) {
 		t.Fatalf("second stop: exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	if blocked, reason := decodeBlock(t, stdout); blocked {
-		t.Fatalf("one auto-pass nudges at most once, got a second block %q", reason)
+		t.Fatalf("one continuation nudges at most once, got a second block %q", reason)
 	}
 	if n := len(readStopTrace(t, "run-1")) - before; n != 0 {
 		t.Fatalf("a nudge must append no trace events, got %d", n)
@@ -132,21 +132,5 @@ func TestStopNudgeHonorsStopAck(t *testing.T) {
 	}
 	if got := reloadRun(t, "run-1"); got.Status != shared.StatusActive {
 		t.Fatalf("status = %s, want ACTIVE kept", got.Status)
-	}
-}
-
-// TestStopNoNudgeForAnOrdinaryContinue: a HUMAN continue leaves no cue —
-// the backstop is the auto-pass's alone.
-func TestStopNoNudgeForAnOrdinaryContinue(t *testing.T) {
-	useStopEnv(t)
-	r := startRun(t)
-	cp := waitUserCheckpoint(t, r, "context")
-	displayCheckpoint(t, r, cp)
-	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, "tu-ask-1"); err != nil {
-		t.Fatalf("decide CONTINUE: %v", err)
-	}
-	code, stdout, _ := callStop(t, stopPayload(t, "context 已验收，继续。"))
-	if code != 0 || stdout != "" {
-		t.Fatalf("a human continue must not be nudged: (code, stdout) = (%d, %q)", code, stdout)
 	}
 }
