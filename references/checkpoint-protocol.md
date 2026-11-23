@@ -42,114 +42,154 @@ One lightweight line, no frame:
 
 Left-rail structured frame (ruling 2026-11-19): the rail is left-only by
 design — no right edge, no CJK width alignment, no width dependency — so
-the bytes stay deterministic while the checkpoint reads as a table again.
-The inner header signature and every field text are unchanged from the
-pre-frame render; only the layout is framed.
+the bytes stay deterministic while the checkpoint reads as a table.
+
+**The render is the decision surface and it leads with the conclusion**
+(0.7.0). It answers, in order: what happened before (经过), what this phase
+established and on what evidence (结论), and what the user is asked to
+decide (请决定). It never carries the mechanism — criteria tables, artifact
+digests, requirement snapshot, environment, budget keys, the page
+projection, the recall-target list. Those live in the status **detail view**
+(below). The whole message stays ≤ 42 lines on the largest legal submission.
 
 ```
 ╔═ ⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind} ══════════
-║ run: {run} · workflow: {workflow} · requirements v{n}
-║ phase: {phase-id | —}
+║ run: {run} · workflow: {workflow} · phase: {phase-id | —} · requirements v{n}
 ║
-║ ▶ 本阶段结果
-║   note: {the submitted phase summary | —}
+║ ▶ 经过                          (only once the run has settled phases; ≤ 6 lines)
+║   {phase[@v{n}]} ✓ 已验收: {title | conclusion}
+║   {phase[@v{n}]} ✓ 自动通过: {…}   (accepted by the framework, no user decision)
+║   {phase[@v{n}]} — 已跳过: {…}
+║   {phase[@v{n}]} ↩ 已回城: {…}
+║   …另 {n} 个阶段，见 summoner-status  (first line when history exceeds the cap)
 ║
-║ ▶ 验收标准
-║   {id} [{method} · {required | optional}]
-║     goal: {goal}            (sub-lines only when staged)
-║     expected: {expected}
-║     scope: {scope}
-║     check: {check-id}
-║     rubric: {rubric}
-║   {id} (no staged meaning; judged at acceptance)
-║                              (when no criterion is pending: ║   —)
+║ ▶ 结论 — {已确认 | 未达成 | 未查清}
+║   {conclusion.summary | the phase summary | 未提供}
+║   证据:
+║     - {evidence item}           (≤ 4; overflow: ║     …另 {n} 条，见 summoner-status)
+║   证据: 未提供                   (when the submission cited none)
+║   {怎么查的 | 怎么做的}: {conclusion.approach | 未提供}
+║   没查清 · 需要你判断:           (only on 未查清)
+║     - {open question}           (≤ 3, overflow counted the same way; ║     未提供 when none)
+║   影响: {conclusion.impact | 未提供}
 ║
-║ ▶ 产物（版本已冻结）
-║   {path} @ {digest}         (when none: ║   —)
-║
-║ ▶ 需求快照                  (only when requirements are staged)
-║   {req-id} v{n}: {content}
-║     criteria: {ids}
-║
-║ ▶ 计划范围（尚未落地）       (only when planned scope exists)
-║   {paths}
-║
-║ ▶ 验证环境
-║   tier={tier} os={os} arch={arch} runtime={runtime} defaults={digest}
-║
-║ ▶ 预算
-║   limits {limits} · counters {counters}
-║   extend ask (budget exhausted): extend="{label}" hold="{label}" delta {limits}
-║
-╠═ 下一轮裁决 — AskUserQuestion（选项须与一页菜单完全一致）
-║ menu:
-║   {one full label per legal option, keyword-first}
-║   page {i}/{n}: {labels joined by ·} — {more:/back: nav}
-║ recall targets:              (when offered)
-║   - {label} (phase {id}, visit {id})
+║ 预算已耗尽 · 本次裁决可顺带追加: "{extend label}" / "{hold label}"（追加 {axis +delta, …}）
 ║ review retry: review {id} attempt {id} — resume {target} · retry="{label}" skip="{label}"
-║ decide on the NEXT turn with an AskUserQuestion whose question carries nonce {nonce} and whose options equal one menu page exactly.
+║
+╠═ 请决定 — AskUserQuestion（选项须与本页完全一致）
+║   {page 1 of the menu, verbatim, one label per line}
+║ nonce {nonce} · 其余选项（recall / review / 回城目标）回复 more: 翻页 · 验收标准与产物全文见 summoner-status
 ╚════════════════════════════════════
 ```
 
-(The `page i/n` lines appear only when the kind's menu pages — single-page
-kinds omit them. The `menu:` block always shows the FULL legal menu. The
-`extend ask` line appears only on a checkpoint opened at budget exhaustion —
-budgets otherwise settle at run start from the manifest; see "Budget:
-run-start configuration + exhaustion extend".)
+(The 预算已耗尽 line appears only on a checkpoint opened at budget
+exhaustion — budgets otherwise settle at run start from the manifest; see
+"Budget: run-start configuration + exhaustion extend". The `review retry`
+line appears only on a checkpoint that offers a funded same-envelope retry.
+A kind whose menu fits one page prints a hint without the `more:` cue.
+Change-confirm, recovery, review-result and review-debt checkpoints have no
+submission: their 结论 block is `║   {note}` under a plain `║ ▶ 结论`.)
 
 Field rules:
 
 | Field | Rule |
 |-------|------|
 | `{id}` / `{nonce}` | Mandatory, from the render. The nonce binds every decision to THIS checkpoint; a question without it is rejected. |
-| `{kind}` | `PHASE` \| `CHANGE_CONFIRM` \| `RECOVERY` \| `REVIEW_RESULT`. |
-| `note` | The submitted phase summary (or, for REVIEW_RESULT, `COMPLETED PASS` / `COMPLETED NEEDS-FIX` / `BLOCKED {reason}` / `FAILED {problem}`). |
-| `criteria` | The exact criterion list the user is accepting or rejecting — never trimmed, never invented. |
-| `artifacts` | The checkpoint-frozen versions; artifacts changing after this invalidate reviews of them. |
-| `menu` | Exactly the legal options for the kind (below), in the binary's order — the FULL menu, always visible. |
-| `paged ask` | The persisted page projection (`menu_pages` in run state): pages of ≤4 options, each page anchoring `continue`+`stop` plus two kind-relevant actions; `more:`/`back:` are navigation labels, not options. |
-| `extend ask` | The exhaustion offer: delta = the current limit per set axis, plus its two pointer options. Present only on checkpoints opened at exhaustion. |
+| `{kind}` | `PHASE` \| `CHANGE_CONFIRM` \| `RECOVERY` \| `REVIEW_RESULT` \| `REVIEW_DEBT`. |
+| `经过` | The run's settled phase visits, oldest first — how each was settled and its conclusion — so a checkpoint can be read without the conversation. Capped at 6 lines; the overflow is counted, never dropped. |
+| `结论` | The phase's structured conclusion (below), in the fixed inner order. An omitted outcome reads 未查清; every missing part reads 未提供 — a hole is never hidden by omission. |
+| `请决定` | Page 1 of the persisted menu, verbatim — exactly the labels the first decision question offers — plus the nonce and ONE navigation hint. |
+| navigation hint | Names the `more:` cue (multi-page kinds only) and points at `summoner-status` for everything the render left out. The only model-facing line the render carries. |
 
-Example (fix, diagnosis submitted):
+Example (fix, diagnosis submitted with an unclear conclusion):
 
 ```
 ╔═ ⚡ SUMMONER CHECKPOINT cp-2 — nonce 1a2b3c4d — PHASE ══════════
-║ run: fix-a1b2 · workflow: fix · requirements v1
-║ phase: diagnosis
+║ run: fix-a1b2 · workflow: fix · phase: diagnosis · requirements v1
 ║
-║ ▶ 本阶段结果
-║   note: root cause located: TaskModule.handle() dereferences player.SubTask without a nil check
+║ ▶ 经过
+║   context ✓ 已验收: Go 1.16 monorepo, entry cmd/server
 ║
-║ ▶ 验收标准
-║   crit-evid [mechanical · required]
-║     goal: 复现证据链完整
-║     expected: repro.log + 定位文件
-║   crit-root [judgment · required]
-║     goal: 根因唯一且已证实
+║ ▶ 结论 — 未查清
+║   任务列表加载时对已完成的子任务解引用，未判空
+║   证据:
+║     - task/module.go:88 — player.SubTask 直接取值
+║     - task/module_test.go:41 — 复现用例
+║   怎么查的: 从报错栈回溯调用链，再用现有用例复现
+║   没查清 · 需要你判断:
+║     - team 模式下英雄禁用规则是否应该作用于子任务
+║   影响: 只影响 team 模式的任务列表加载
 ║
-║ ▶ 产物（版本已冻结）
-║   docs/reviews/2026-11-10-task-npe.md @ 5f4a3b2c1d0e
-║
-║ ▶ 验证环境
-║   tier=L2 os=darwin arch=amd64 runtime=claude-code-hooks defaults=unobserved
-║
-║ ▶ 预算
-║   limits phase_tool_calls=40,failed_checks=3,run_rework=2,delegations=5 · counters phase_tool_calls=4,failed_checks=0,run_rework=0,delegations=1
-║
-╠═ 下一轮裁决 — AskUserQuestion（选项须与一页菜单完全一致）
-║ menu:
+╠═ 请决定 — AskUserQuestion（选项须与本页完全一致）
 ║   continue: 继续下一阶段
 ║   skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）
 ║   done: 完成——进入收尾（post-game）
-║   recall: 回城——回到指定历史阶段重做
-║   review: [v] 对本阶段产物发起独立审查
 ║   stop: 停止——保留状态退出
-║   page 1/2: continue: 继续下一阶段 · skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS） · done: 完成——进入收尾（post-game） · stop: 停止——保留状态退出 — more: 查看其余选项
-║   page 2/2: continue: 继续下一阶段 · recall: 回城——回到指定历史阶段重做 · review: [v] 对本阶段产物发起独立审查 · stop: 停止——保留状态退出 — back: 返回上一页
-║ decide on the NEXT turn with an AskUserQuestion whose question carries nonce 1a2b3c4d and whose options equal one menu page exactly.
+║ nonce 1a2b3c4d · 其余选项（recall / review / 回城目标）回复 more: 翻页 · 验收标准与产物全文见 summoner-status
 ╚════════════════════════════════════
 ```
+
+## The structured conclusion (phase-submit payload)
+
+A phase submission (`skills/phase-submit/SKILL.md`) states what it
+established:
+
+```json
+{
+  "phase_id": "diagnosis",
+  "summary": "nil deref in the task loader",
+  "outcome": "confirmed | failed | unclear",
+  "conclusion": {
+    "summary": "TaskModule.handle() dereferences player.SubTask without a nil check",
+    "evidence": ["task/module.go:88", "task/module_test.go:41 reproduces"],
+    "approach": "read the call chain from the error site, then ran the existing test",
+    "open_questions": [],
+    "impact": "every task-list load for a player with a completed sub-task"
+  }
+}
+```
+
+- `summary` (top level) is the short title of the acceptance record and of
+  the `经过` line in later checkpoints. The checkpoint body shows the
+  **conclusion**, not the summary.
+- `outcome` — `confirmed` (established, on evidence), `failed` (the phase's
+  goal was not met), `unclear` (holes remain). Omitted = `unclear`.
+- **Open questions force `unclear`**: a submission that lists
+  `open_questions` cannot claim `confirmed` — the stored outcome is
+  `unclear` and the checkpoint asks instead of asserting.
+- **Diagnosis must state its conclusion**: a diagnosis submission without
+  `conclusion.summary` (the root cause, as a conclusion) or
+  `conclusion.approach` (how it was established) is rejected before any
+  effect and names the missing field. Every other phase may submit
+  conclusion-free; the checkpoint then shows what is missing.
+- **Caps (render only)**: summary and approach ≤ 200 runes; impact, one
+  evidence item and one open question ≤ 120; evidence ≤ 4 items, open
+  questions ≤ 3. What a cap rolls off is counted in the render
+  (`…另 N 条，见 summoner-status`) and shown in full in the detail view.
+- **Display-bound**: the conclusion and outcome are checkpoint content —
+  the Stop hook's display binding covers them, so a conclusion edited after
+  display never keeps its binding.
+- An outcome outside the three values is a malformed payload: denied,
+  naming the legal values.
+
+## The detail view (what the render leaves out)
+
+`summoner-status` (default view, or `/summoner:status`) prints a
+`checkpoint detail (…)` block right before the checkpoint message. It is
+the reference view and it is complete and uncapped:
+
+- the conclusion in full — every part, every item;
+- the complete acceptance criteria with their meaning (including the
+  default review axes the fix/new/review/ship routes merge into every
+  acceptance);
+- the frozen artifact versions, the requirement snapshot, the planned scope;
+- the verification environment;
+- the menu page projection with the `more:` / `back:` labels;
+- every recall target; a pending review retry; an exhaustion extend offer;
+- `model:` — the one-line instruction for asking the decision question.
+
+The status lines above it keep the live budget (`budget: …`), the route,
+the visits and who is awaited.
 
 ## The decision channel (AskUserQuestion) — TWO-TURN by construction
 

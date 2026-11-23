@@ -1,25 +1,41 @@
 package shared
 
 // render.go — the ONE canonical checkpoint renderer (final-fix wave C4,
-// adjudication §2). Every consumer of checkpoint display bytes uses
-// RenderCheckpointMessage: the read-only status view:checkpoint output, and
-// the Stop hook's whole-message display binding. There is no second
-// renderer, so "what the user saw" and "what the hooks bound" cannot drift.
+// adjudication §2; rewritten for 0.7.0 D1). Every consumer of checkpoint
+// display bytes uses RenderCheckpointMessage: the read-only status
+// view:checkpoint output, and the Stop hook's display binding. There is no
+// second renderer, so "what the user saw" and "what the hooks bound" cannot
+// drift.
+//
+// The render is the user's DECISION SURFACE, and it leads with the
+// conclusion. Incident review 2026-11-23 (run df0ed2e6): five checkpoints
+// whose render carried sixty lines of mechanism — criteria tables, artifact
+// digests, environment, budget counters, a page projection — and never said
+// what the bug was or how it was looked for. So the order is fixed:
+//
+//	经过   the run's settled phases, each with its conclusion (the user can
+//	       read any checkpoint without the conversation)
+//	结论   what this phase established: summary → evidence → how → what is
+//	       still open → impact (every missing part reads 未提供)
+//	 rides  only what the decision cannot do without: an exhaustion extend
+//	       offer, a pending review retry
+//	请决定 page 1 of the options, the nonce, and ONE navigation hint
+//
+// Everything mechanical moved to the summoner-status default view
+// (CheckpointDetail): complete criteria, artifact digests, requirement
+// snapshot, environment, page projection, every recall target.
 //
 // The message is deterministic from run state: same state in, same bytes
-// out. Scalar strings (notes, goals, labels, paths) are escaped so control
-// characters, bidirectional overrides and reserved delimiters can never
-// forge or hide structure. The comparison contract: normalize with
-// NormalizePrompt (CRLF→LF, at most one trailing LF), then compare the
-// ENTIRE message — a correct block plus false prose fails.
+// out. Scalar strings (notes, conclusions, labels, paths) are escaped so
+// control characters, bidirectional overrides and reserved delimiters can
+// never forge or hide structure; conclusion prose is folded to one line
+// before it is capped, so a paragraph can never open a second rail line.
 //
 // Layout (user ruling 2026-11-19): a LEFT-RAIL structured frame — ╔ header,
 // ║ rails with ▶ section heads, ╠ decision divider, ╚ tail. The rail is
 // deliberately left-only: no right edge means no CJK/full-width alignment
 // math and no runewidth dependency, so the bytes stay deterministic on every
-// terminal while the frame still gives the checkpoint its table readability
-// back. The inner header signature (id — nonce — kind) and every field text
-// are kept verbatim from the pre-frame render; only the layout changed.
+// terminal while the frame still gives the checkpoint its table readability.
 
 import (
 	"fmt"
@@ -27,10 +43,28 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // renderFrameTail closes the frame; fixed width, never content-dependent.
 const renderFrameTail = "╚════════════════════════════════════\n"
+
+// Display caps (0.7.0 D1). The checkpoint render stays under renderLineCap
+// lines on the largest legal submission (pinned by
+// TestRenderMaxLegalSubmissionStaysUnderLineCap); what a cap rolls off is
+// COUNTED in the render and read in full in the summoner-status view.
+const (
+	// renderLineCap counts newlines of the canonical render.
+	renderLineCap = 42
+	// capConclusionText bounds the summary and the approach (runes).
+	capConclusionText = 200
+	// capConclusionShort bounds the impact, one evidence item, one open
+	// question and one 经过 entry (runes).
+	capConclusionShort   = 120
+	capEvidenceItems     = 4
+	capOpenQuestionItems = 3
+	capJourneyLines      = 6
+)
 
 // railf writes one railed content line: "║ " + the formatted text.
 func railf(b *strings.Builder, format string, args ...interface{}) {
@@ -48,173 +82,45 @@ func railSection(b *strings.Builder, name string) { railf(b, "▶ %s\n", name) }
 // run's CURRENT open checkpoint. Pure: reads only the given state.
 func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "╔═ ⚡ SUMMONER CHECKPOINT %s — nonce %s — %s ══════════\n", escapeScalar(cp.ID), escapeScalar(cp.Nonce), escapeScalar(string(cp.Kind)))
 	phase := cp.PhaseID
 	if phase == "" {
 		phase = "—"
 	}
-	railf(&b, "run: %s · workflow: %s · requirements v%d\n", escapeScalar(run.RunID), escapeScalar(run.Workflow), run.RequirementsVersion)
-	railf(&b, "phase: %s\n", escapeScalar(phase))
+	fmt.Fprintf(&b, "╔═ ⚡ SUMMONER CHECKPOINT %s — nonce %s — %s ══════════\n", escapeScalar(cp.ID), escapeScalar(cp.Nonce), escapeScalar(string(cp.Kind)))
+	railf(&b, "run: %s · workflow: %s · phase: %s · requirements v%d\n",
+		escapeScalar(run.RunID), escapeScalar(run.Workflow), escapeScalar(phase), run.RequirementsVersion)
 
-	// ▶ 本阶段结果 — the submitted phase summary.
-	railBlank(&b)
-	railSection(&b, "本阶段结果")
-	note := cp.Note
-	if note == "" {
-		note = "—"
-	}
-	railf(&b, "  note: %s\n", escapeScalar(note))
-
-	// ▶ 验收标准 — complete criterion meaning, never bare ids. The staged
-	// snapshot's criteria carry goal/expected/scope/method/required; ids
-	// without staged meaning are listed honestly as pending-meaning ids.
-	railBlank(&b)
-	railSection(&b, "验收标准")
-	byID := make(map[string]Criterion, len(cp.Snapshot.Criteria))
-	for _, c := range cp.Snapshot.Criteria {
-		byID[c.ID] = c
-	}
-	ids := append([]string(nil), cp.CriteriaIDs...)
-	for _, c := range cp.Snapshot.Criteria {
-		if !containsID(ids, c.ID) {
-			ids = append(ids, c.ID)
-		}
-	}
-	sort.Strings(ids)
-	if len(ids) == 0 {
-		railf(&b, "  —\n")
-	}
-	for _, id := range ids {
-		c, ok := byID[id]
-		if !ok {
-			railf(&b, "  %s (no staged meaning; judged at acceptance)\n", escapeScalar(id))
-			continue
-		}
-		required := "optional"
-		if c.Required {
-			required = "required"
-		}
-		railf(&b, "  %s [%s · %s]\n", escapeScalar(c.ID), escapeScalar(string(c.Method)), required)
-		if c.Goal != "" {
-			railf(&b, "    goal: %s\n", escapeScalar(c.Goal))
-		}
-		if c.Expected != "" {
-			railf(&b, "    expected: %s\n", escapeScalar(c.Expected))
-		}
-		if c.Scope != "" {
-			railf(&b, "    scope: %s\n", escapeScalar(c.Scope))
-		}
-		if c.CheckID != "" {
-			railf(&b, "    check: %s\n", escapeScalar(c.CheckID))
-		}
-		if c.Rubric != "" {
-			railf(&b, "    rubric: %s\n", escapeScalar(c.Rubric))
+	// ▶ 经过 — the conclusions the user already has.
+	if journey := JourneyLines(run); len(journey) > 0 {
+		railBlank(&b)
+		railSection(&b, "经过")
+		for _, ln := range journey {
+			railf(&b, "  %s\n", ln)
 		}
 	}
 
-	// ▶ 产物（版本已冻结）— versioned artifact digests: the pinned bytes a
-	// decision accepts.
+	// ▶ 结论 — what this phase established.
 	railBlank(&b)
-	railSection(&b, "产物（版本已冻结）")
-	paths := make([]string, 0, len(cp.ArtifactVersions))
-	for p := range cp.ArtifactVersions {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	if len(paths) == 0 {
-		railf(&b, "  —\n")
+	if cp.Kind == CheckpointPhase {
+		railSection(&b, "结论 — "+conclusionLabel(cp.Outcome))
+		writeConclusion(&b, cp)
 	} else {
-		for _, p := range paths {
-			railf(&b, "  %s @ %s\n", escapeScalar(p), escapeScalar(cp.ArtifactVersions[p]))
-		}
+		// Change-confirm, recovery, review-result and review-debt carry
+		// their meaning in the note (the delta, the probe outcomes, the
+		// verdict) — there is no submission to structure.
+		railSection(&b, "结论")
+		railf(&b, "  %s\n", conclusionText(cp.Note, capConclusionText))
 	}
 
-	// ▶ 需求快照 — requirement meaning staged for this acceptance.
-	if len(cp.Snapshot.Requirements) > 0 {
+	// Rides the decision cannot do without.
+	if cp.ExtendAsk != nil || cp.ReviewRetry != nil {
 		railBlank(&b)
-		railSection(&b, "需求快照")
-		for _, fr := range cp.Snapshot.Requirements {
-			content := fr.Content
-			if content == "" {
-				content = "—"
-			}
-			ver := ""
-			if fr.Version > 0 {
-				ver = fmt.Sprintf(" v%d", fr.Version)
-			}
-			railf(&b, "  %s%s: %s\n", escapeScalar(fr.ID), ver, escapeScalar(content))
-			if len(fr.CriteriaIDs) > 0 {
-				crit := append([]string(nil), fr.CriteriaIDs...)
-				sort.Strings(crit)
-				railf(&b, "    criteria: %s\n", escapeScalar(strings.Join(crit, ", ")))
-			}
-		}
 	}
-
-	// ▶ 计划范围（尚未落地）— the staged planned scope of the snapshot.
-	if planned := cp.Snapshot.PlannedScopeOf(); len(planned) > 0 {
-		sort.Strings(planned)
-		railBlank(&b)
-		railSection(&b, "计划范围（尚未落地）")
-		railf(&b, "  %s\n", escapeScalar(strings.Join(planned, ", ")))
-	}
-
-	// ▶ 验证环境 — verification environment/tier (observed facts only).
-	env := cp.Snapshot.Environment
-	railBlank(&b)
-	railSection(&b, "验证环境")
-	railf(&b, "  tier=%s os=%s arch=%s runtime=%s defaults=%s\n",
-		escapeScalar(firstNonEmpty(env.Tier, "unobserved")),
-		escapeScalar(firstNonEmpty(env.OS, "unobserved")),
-		escapeScalar(firstNonEmpty(env.Arch, "unobserved")),
-		escapeScalar(firstNonEmpty(env.Runtime, "unobserved")),
-		escapeScalar(shortDigestOr(env.DefaultsDigest, "unobserved")))
-
-	// ▶ 预算 — applied limits and counters, plus any persisted digest-bound
-	// offer.
-	railBlank(&b)
-	railSection(&b, "预算")
-	railf(&b, "  limits %s · counters %s\n", budgetLimitsKey(run.Limits), budgetCountersKey(run.Counters))
-	// 0.6.1: the run-start budget ask no longer renders — budgets are
-	// manifest-authored (suggested_budgets applies at run start) or
-	// unlimited; the status render's budget line carries the live view.
 	if cp.ExtendAsk != nil {
-		railf(&b, "  extend ask (budget exhausted): extend=\"%s\" hold=\"%s\" delta %s\n",
+		railf(&b, "预算已耗尽 · 本次裁决可顺带追加: %s / %s（追加 %s）\n",
 			escapeScalar(cp.ExtendAsk.ExtendLabel), escapeScalar(cp.ExtendAsk.HoldLabel),
-			budgetLimitsKey(cp.ExtendAsk.Delta))
+			escapeScalar(extendOfferKey(cp.ExtendAsk.Delta)))
 	}
-
-	// The decision divider: everything above is state, everything below is
-	// the ask. The full legal menu follows (labels as persisted; pages too).
-	b.WriteString("╠═ 下一轮裁决 — AskUserQuestion（选项须与一页菜单完全一致）\n")
-	b.WriteString("║ menu:\n")
-	for _, opt := range DecisionMenuLabels(cp.Kind) {
-		b.WriteString("║   ")
-		b.WriteString(escapeScalar(opt))
-		b.WriteString("\n")
-	}
-	if len(cp.MenuPages) > 1 {
-		for i, pg := range cp.MenuPages {
-			nav := ""
-			if pg.NavNext != "" {
-				nav += " — " + pg.NavNext
-			}
-			if pg.NavPrev != "" {
-				nav += " — " + pg.NavPrev
-			}
-			railf(&b, "  page %d/%d: %s%s\n", i+1, len(cp.MenuPages), escapeScalar(strings.Join(pg.Labels, " · ")), escapeScalar(nav))
-		}
-	}
-
-	// Recall targets actually offered at this checkpoint.
-	if len(cp.RecallTargets) > 0 {
-		b.WriteString("║ recall targets:\n")
-		for _, t := range cp.RecallTargets {
-			railf(&b, "  - %s (phase %s, visit %s)\n", escapeScalar(t.Label), escapeScalar(t.PhaseID), escapeScalar(t.VisitID))
-		}
-	}
-
-	// A pending funded same-envelope retry offer.
 	if cp.ReviewRetry != nil {
 		railf(&b, "review retry: review %s attempt %s — resume %s · retry=\"%s\" skip=\"%s\"\n",
 			escapeScalar(cp.ReviewRetry.ReviewID), escapeScalar(cp.ReviewRetry.AttemptID),
@@ -222,9 +128,203 @@ func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 			escapeScalar(cp.ReviewRetry.SkipLabel))
 	}
 
-	railf(&b, "decide on the NEXT turn with an AskUserQuestion whose question carries nonce %s and whose options equal one menu page exactly.\n", escapeScalar(cp.Nonce))
+	// The decision divider: page 1 of the options, the nonce, one hint.
+	b.WriteString("╠═ 请决定 — AskUserQuestion（选项须与本页完全一致）\n")
+	for _, label := range DecisionPage(cp) {
+		b.WriteString("║   ")
+		b.WriteString(escapeScalar(label))
+		b.WriteString("\n")
+	}
+	railf(&b, "nonce %s · %s\n", escapeScalar(cp.Nonce), navigationHint(cp))
 	b.WriteString(renderFrameTail)
 	return b.String()
+}
+
+// DecisionPage returns page 1 of the checkpoint's persisted option pages —
+// the labels the render prints and the first decision question must offer
+// verbatim. State that predates the paged menu (no projection) falls back to
+// the kind's full menu: the gate refuses to admit a question against such a
+// checkpoint anyway, and the render must never be the thing that hides it.
+func DecisionPage(cp CheckpointState) []string {
+	if len(cp.MenuPages) > 0 {
+		return cp.MenuPages[0].Labels
+	}
+	return DecisionMenuLabels(cp.Kind)
+}
+
+// navigationHint is the ONE line that keeps the rest reachable: how to see
+// the other option pages, and where the mechanism the render left out lives.
+func navigationHint(cp CheckpointState) string {
+	if len(cp.MenuPages) > 1 {
+		return "其余选项（recall / review / 回城目标）回复 more: 翻页 · 验收标准与产物全文见 summoner-status"
+	}
+	return "选项已全部列出 · 验收标准与产物全文见 summoner-status"
+}
+
+// conclusionLabel names what the phase established. An omitted outcome (every
+// pre-0.7.0 checkpoint, a conclusion-free submission) reads unclear: nothing
+// was claimed.
+func conclusionLabel(outcome string) string {
+	switch outcome {
+	case ConclusionConfirmed:
+		return "已确认"
+	case ConclusionFailed:
+		return "未达成"
+	default:
+		return "未查清"
+	}
+}
+
+// writeConclusion renders a phase checkpoint's conclusion in its fixed inner
+// order. A submission without one is never silently blank: the phase summary
+// stands in as the conclusion and every missing part reads 未提供.
+func writeConclusion(b *strings.Builder, cp CheckpointState) {
+	var c Conclusion
+	if cp.Conclusion != nil {
+		c = *cp.Conclusion
+	}
+	summary := c.Summary
+	if strings.TrimSpace(summary) == "" {
+		summary = cp.Note
+	}
+	railf(b, "  %s\n", conclusionText(summary, capConclusionText))
+
+	if len(c.Evidence) == 0 {
+		railf(b, "  证据: 未提供\n")
+	} else {
+		railf(b, "  证据:\n")
+		writeCappedList(b, c.Evidence, capEvidenceItems)
+	}
+	railf(b, "  %s: %s\n", approachLabel(cp.PhaseID), conclusionText(c.Approach, capConclusionText))
+	if cp.Outcome != ConclusionConfirmed && cp.Outcome != ConclusionFailed {
+		// Unclear — stated or merely unclaimed: the user is the one who
+		// judges, and an unlisted hole is still a hole.
+		railf(b, "  没查清 · 需要你判断:\n")
+		if len(c.OpenQuestions) == 0 {
+			railf(b, "    未提供\n")
+		} else {
+			writeCappedList(b, c.OpenQuestions, capOpenQuestionItems)
+		}
+	}
+	railf(b, "  影响: %s\n", conclusionText(c.Impact, capConclusionShort))
+}
+
+// writeCappedList writes at most cap items of a conclusion list and COUNTS
+// what rolled off — a cap never silently drops a reason.
+func writeCappedList(b *strings.Builder, items []string, cap int) {
+	for i, it := range items {
+		if i == cap {
+			railf(b, "    …另 %d 条，见 summoner-status\n", len(items)-i)
+			return
+		}
+		railf(b, "    - %s\n", conclusionText(it, capConclusionShort))
+	}
+}
+
+// conclusionText folds one conclusion scalar to a single railed line's worth:
+// whitespace-collapsed, capped in runes (an overflow ends in …), escaped,
+// and 未提供 when there is nothing to show.
+func conclusionText(s string, cap int) string {
+	s = clipRunes(singleLine(s), cap)
+	if s == "" {
+		return "未提供"
+	}
+	return escapeScalar(s)
+}
+
+// approachLabel names the "how" line the way the phase works: investigative
+// phases say how it was LOOKED FOR, building phases how it was DONE.
+func approachLabel(phaseID string) string {
+	switch phaseID {
+	case "context", "diagnosis", "reproduce", "verify", "regression", "review", "prepare":
+		return "怎么查的"
+	default:
+		return "怎么做的"
+	}
+}
+
+// JourneyLines renders the run's settled phase visits oldest first — how each
+// was settled (accepted, auto-passed, skipped, recalled) and its conclusion
+// — capped at capJourneyLines with the overflow counted. A phase visited more
+// than once is named by its visit id. Already escaped for the rail.
+func JourneyLines(run *RunState) []string {
+	visits := make(map[string]int, len(run.Phases))
+	for _, p := range run.Phases {
+		visits[p.ID]++
+	}
+	var lines []string
+	for _, p := range run.Phases {
+		mark := ""
+		switch p.Outcome {
+		case "accepted":
+			mark = "✓ 已验收"
+		case "skipped":
+			mark = "— 已跳过"
+		case "recalled":
+			mark = "↩ 已回城"
+		default:
+			continue // open or undecided: not history yet
+		}
+		title := ""
+		for i := range run.Checkpoints {
+			if cp := &run.Checkpoints[i]; cp.ID == p.CheckpointID {
+				title = strings.TrimSpace(cp.Note)
+				if title == "" && cp.Conclusion != nil {
+					title = strings.TrimSpace(cp.Conclusion.Summary)
+				}
+				if p.Outcome == "accepted" && cp.Decision == DecisionAutoPass {
+					mark = "✓ 自动通过"
+				}
+				break
+			}
+		}
+		if title == "" {
+			title = "（未提供结论）"
+		}
+		name := p.ID
+		if visits[p.ID] > 1 {
+			name = p.VisitID
+		}
+		prefix := escapeScalar(name) + " " + mark + ": "
+		lines = append(lines, prefix+escapeScalar(clipRunes(singleLine(title), capConclusionShort-utf8.RuneCountInString(prefix))))
+	}
+	if len(lines) > capJourneyLines {
+		rolled := len(lines) - (capJourneyLines - 1)
+		overflow := "…另 " + strconv.Itoa(rolled) + " 个阶段，见 summoner-status"
+		lines = append([]string{overflow}, lines[rolled:]...)
+	}
+	return lines
+}
+
+// extendOfferKey names only the SET axes of an extension offer — the ones
+// the answer would actually add.
+func extendOfferKey(l BudgetLimits) string {
+	var axes []string
+	if l.PhaseToolCalls > 0 {
+		axes = append(axes, "phase_tool_calls +"+strconv.Itoa(l.PhaseToolCalls))
+	}
+	if l.FailedChecks > 0 {
+		axes = append(axes, "failed_checks +"+strconv.Itoa(l.FailedChecks))
+	}
+	if l.RunRework > 0 {
+		axes = append(axes, "run_rework +"+strconv.Itoa(l.RunRework))
+	}
+	if l.Delegations > 0 {
+		axes = append(axes, "delegations +"+strconv.Itoa(l.Delegations))
+	}
+	if len(axes) == 0 {
+		return "（无）"
+	}
+	return strings.Join(axes, ", ")
+}
+
+// VerifyDisplayMessage is the whole-message display binding (C4): the
+// normalized last_assistant_message must equal the normalized canonical
+// render of the CURRENT checkpoint, ENTIRELY. Two substrings, a correct
+// block plus false prose, or a stale render all fail.
+func VerifyDisplayMessage(run *RunState, cp CheckpointState, message string) bool {
+	want := RenderCheckpointMessage(run, cp)
+	return NormalizePrompt(message) == NormalizePrompt(want)
 }
 
 // PlannedScopeOf projects the staged planned scope from the snapshot. Kept as
@@ -237,19 +337,53 @@ func (v FrozenView) PlannedScopeOf() []string {
 	return out
 }
 
-// VerifyDisplayMessage is the whole-message display binding (C4): the
-// normalized last_assistant_message must equal the normalized canonical
-// render of the CURRENT checkpoint, ENTIRELY. Two substrings, a correct
-// block plus false prose, or a stale render all fail.
-func VerifyDisplayMessage(run *RunState, cp CheckpointState, message string) bool {
-	want := RenderCheckpointMessage(run, cp)
-	return NormalizePrompt(message) == NormalizePrompt(want)
+// CheckpointCriteriaIDs returns every criterion the checkpoint's acceptance
+// covers: the submitted ids plus the staged set, sorted — the list the
+// status view prints and the acceptance freezes.
+func CheckpointCriteriaIDs(cp CheckpointState) []string {
+	byID := make(map[string]Criterion, len(cp.Snapshot.Criteria))
+	for _, c := range cp.Snapshot.Criteria {
+		byID[c.ID] = c
+	}
+	ids := append([]string(nil), cp.CriteriaIDs...)
+	for _, c := range cp.Snapshot.Criteria {
+		if !containsID(ids, c.ID) {
+			ids = append(ids, c.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
-// budgetCountersKey is the canonical one-line form of BudgetCounters.
-func budgetCountersKey(c BudgetCounters) string {
-	return fmt.Sprintf("phase_tool_calls=%d,failed_checks=%d,run_rework=%d,delegations=%d",
-		c.PhaseToolCalls, c.FailedChecks, c.RunRework, c.Delegations)
+// singleLine folds all whitespace runs (newlines included) into single
+// spaces.
+func singleLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// clipRunes keeps the first max runes; an overflow ends in an ellipsis that
+// replaces the last kept rune, so the result is exactly max runes. Counts
+// RUNES, never bytes: the range variable's first value is a byte offset, and
+// on CJK text (3 bytes a rune) an offset used as a count both over-runs and
+// stops early.
+func clipRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	if max < 1 {
+		return ""
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == max-1 {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 func firstNonEmpty(vals ...string) string {

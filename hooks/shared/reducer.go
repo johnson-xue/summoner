@@ -578,7 +578,11 @@ func (r *RunState) removeStale(id string) {
 // budget/extension OFFERS (the displayed proposal and deltas are bound
 // content; a changed offer after display invalidates the binding, while the
 // APPLIED Limits/Counters are deliberately excluded — approving them must not
-// re-render the checkpoint). MarkDisplayed binds exactly this;
+// re-render the checkpoint). Since 0.7.0 (D1) the structured conclusion and
+// its outcome are bound content too: the checkpoint leads with them, so a
+// conclusion edited after display must never keep its binding. A checkpoint
+// carrying neither (every pre-0.7.0 checkpoint) hashes exactly as before.
+// MarkDisplayed binds exactly this;
 // RecordDecision re-computes it and refuses any decision whose checkpoint
 // content drifted from what was displayed (task-2.5 B1) — a render of a stale
 // or altered checkpoint can never produce it, so "展示版本错配" fails closed.
@@ -604,6 +608,13 @@ func CheckpointContentDigest(cp CheckpointState, requirementsVersion int) string
 	}
 	if cp.ExtendAsk != nil {
 		fmt.Fprintf(h, "extend_ask=%s\n", budgetLimitsKey(cp.ExtendAsk.Delta))
+	}
+	// 0.7.0 D1: the conclusion is display-bound content. Written only when
+	// something is there, so a pre-0.7.0 checkpoint keeps its digest.
+	if cp.Outcome != "" || cp.Conclusion != nil {
+		if b, err := json.Marshal(cp.Conclusion); err == nil {
+			fmt.Fprintf(h, "outcome=%s\nconclusion=%s\n", cp.Outcome, b)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -696,6 +707,10 @@ func (r *RunState) SubmitPhase(sub PhaseSubmission, staged *StagedSnapshot) (Che
 			return err
 		}
 		ph.CheckpointID = added.ID
+		// 0.7.0 D1: the structured conclusion is checkpoint content — stored in
+		// its normalized form (a direct reducer caller gets the same
+		// conservative shape the gate would have stored).
+		added.Outcome, added.Conclusion = NormalizedConclusion(sub.Outcome, sub.Conclusion)
 		added.Snapshot = s.buildPendingSnapshot(ph, &added, sub, staged)
 		s.Checkpoints[len(s.Checkpoints)-1] = added
 		s.Status = StatusWaitUser
@@ -799,6 +814,11 @@ func requirementsFromProposal(proposed []ProposedRequirement, ph *PhaseState, su
 		content := p.Content
 		if content == "" {
 			content = sub.Summary
+		}
+		if content == "" && sub.Conclusion != nil {
+			// 0.7.0 D1: a submission may state its meaning only as the
+			// conclusion — the acceptance record must not lose it.
+			content = sub.Conclusion.Summary
 		}
 		ids := p.CriteriaIDs
 		if len(ids) == 0 {
@@ -1733,6 +1753,10 @@ func (r *RunState) rerenderCheckpoint() bool {
 		ArtifactVersions: copyArtifactVersions(src.ArtifactVersions),
 		CriteriaIDs:      append([]string(nil), src.CriteriaIDs...),
 		MenuPages:        MenuProjection(src.Kind),
+		// 0.7.0 D1: the interrupted question is re-asked against the new
+		// baseline — the conclusion the user is asked to judge travels with it.
+		Outcome:    src.Outcome,
+		Conclusion: cloneConclusion(src.Conclusion),
 	}
 	// T18 (0.6.1): a superseded checkpoint's budget ask is INERT legacy state —
 	// no new ask is ever created, and the render no longer displays one. The

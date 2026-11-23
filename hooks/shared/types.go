@@ -37,6 +37,13 @@ const (
 	DecisionStop                    Decision = "STOP"
 	DecisionReviewOnDemand          Decision = "REVIEW_ON_DEMAND"
 	DecisionAcceptRequirementChange Decision = "ACCEPT_REQUIREMENT_CHANGE"
+
+	// DecisionAutoPass is NOT a recordable decision: no platform answer ever
+	// produces it (RecordDecision refuses it — it is outside validDecision).
+	// It marks the checkpoint the framework accepted itself through
+	// AutoPassCheckpoint (0.7.0 D3), so the history can tell an auto-pass
+	// from a human acceptance — never the two confused.
+	DecisionAutoPass Decision = "AUTO_PASS"
 )
 
 // ReviewState is the ⑤ review lifecycle (spec §3 崩溃恢复).
@@ -334,29 +341,36 @@ type CriteriaDropReceipt struct {
 // replaced: it is no longer current or decidable — its re-rendered successor
 // is (task-2.5 M2).
 type CheckpointState struct {
-	RunID             string            `json:"run_id,omitempty"`
-	Snapshot          FrozenView        `json:"snapshot"`
-	Limits            BudgetLimits      `json:"limits"`
-	Counters          BudgetCounters    `json:"counters"`
-	RecallTargets     []RecallTarget    `json:"recall_targets,omitempty"`
-	ReviewRetry       *ReviewRetry      `json:"review_retry,omitempty"`
-	ReviewID          string            `json:"review_id,omitempty"`
-	ReviewDisposition string            `json:"review_disposition,omitempty"`
-	ID                string            `json:"id"`
-	Kind              CheckpointKind    `json:"kind"`
-	PhaseID           string            `json:"phase_id,omitempty"`
-	Note              string            `json:"note,omitempty"`
-	Nonce             string            `json:"nonce"`
-	ArtifactVersions  map[string]string `json:"artifact_versions,omitempty"`
-	CriteriaIDs       []string          `json:"criteria_ids,omitempty"`
-	OpenedAt          string            `json:"opened_at,omitempty"`
-	Displayed         bool              `json:"displayed"`
-	DisplayDigest     string            `json:"display_digest,omitempty"`
-	DisplayedAt       string            `json:"displayed_at,omitempty"`
-	Decided           bool              `json:"decided"`
-	Superseded        bool              `json:"superseded,omitempty"`
-	Decision          Decision          `json:"decision,omitempty"`
-	DecidedAt         string            `json:"decided_at,omitempty"`
+	RunID             string         `json:"run_id,omitempty"`
+	Snapshot          FrozenView     `json:"snapshot"`
+	Limits            BudgetLimits   `json:"limits"`
+	Counters          BudgetCounters `json:"counters"`
+	RecallTargets     []RecallTarget `json:"recall_targets,omitempty"`
+	ReviewRetry       *ReviewRetry   `json:"review_retry,omitempty"`
+	ReviewID          string         `json:"review_id,omitempty"`
+	ReviewDisposition string         `json:"review_disposition,omitempty"`
+	ID                string         `json:"id"`
+	Kind              CheckpointKind `json:"kind"`
+	PhaseID           string         `json:"phase_id,omitempty"`
+	Note              string         `json:"note,omitempty"`
+	// Outcome / Conclusion (0.7.0 D1) are the phase's structured conclusion —
+	// model-authored CONTENT the hooks validate, store and bind into the
+	// display digest. Empty on every checkpoint written before 0.7.0 and on
+	// the non-submission kinds (change-confirm, recovery, review-result,
+	// review-debt carry their meaning in Note).
+	Outcome          string            `json:"outcome,omitempty"`
+	Conclusion       *Conclusion       `json:"conclusion,omitempty"`
+	Nonce            string            `json:"nonce"`
+	ArtifactVersions map[string]string `json:"artifact_versions,omitempty"`
+	CriteriaIDs      []string          `json:"criteria_ids,omitempty"`
+	OpenedAt         string            `json:"opened_at,omitempty"`
+	Displayed        bool              `json:"displayed"`
+	DisplayDigest    string            `json:"display_digest,omitempty"`
+	DisplayedAt      string            `json:"displayed_at,omitempty"`
+	Decided          bool              `json:"decided"`
+	Superseded       bool              `json:"superseded,omitempty"`
+	Decision         Decision          `json:"decision,omitempty"`
+	DecidedAt        string            `json:"decided_at,omitempty"`
 	// DecisionToolUseID binds the decision to the platform AskUserQuestion
 	// call whose injected tool_response carried it (spec §7 平台关联键): the
 	// replay-idempotency key of RecordDecision — a replayed callback with the
@@ -659,6 +673,12 @@ type PhaseSubmission struct {
 	Artifacts   []ArtifactRef `json:"artifacts,omitempty"`
 	CriteriaIDs []string      `json:"criteria_ids,omitempty"`
 	CheckRefs   []string      `json:"check_refs,omitempty"`
+	// Outcome / Conclusion (0.7.0 D1): what the phase established. `summary`
+	// stays the short title of the acceptance record; the conclusion is what
+	// the checkpoint leads with. Optional everywhere except diagnosis (the
+	// root cause and how it was reached are not negotiable).
+	Outcome    string      `json:"outcome,omitempty"`
+	Conclusion *Conclusion `json:"conclusion,omitempty"`
 	// Proposed semantics (final-fix wave): the model PROPOSES meaning; hooks
 	// validate/normalize it and hash CURRENT artifact bytes. Digests arriving
 	// here are advisory only — the hook recomputes from disk.
@@ -695,3 +715,24 @@ type ProposedRequirement struct {
 	CriteriaIDs []string `json:"criteria_ids,omitempty"`
 	Artifacts   []string `json:"artifacts,omitempty"`
 }
+
+// Conclusion is the structured conclusion of one phase submission (0.7.0 D1):
+// what was found, on what evidence, how, what remains open and what it
+// affects. The checkpoint leads with it — the user reads the conclusion
+// first and the mechanism never; every field is free model-authored content
+// that the hooks validate for shape, store verbatim and render with caps.
+type Conclusion struct {
+	Summary       string   `json:"summary"`
+	Evidence      []string `json:"evidence,omitempty"`
+	Approach      string   `json:"approach,omitempty"`
+	OpenQuestions []string `json:"open_questions,omitempty"`
+	Impact        string   `json:"impact,omitempty"`
+}
+
+// The conclusion outcome (0.7.0 D1): a separate axis from the OUTCOME_UNKNOWN
+// probe verdicts above — this one states what the PHASE established.
+const (
+	ConclusionConfirmed = "confirmed"
+	ConclusionFailed    = "failed"
+	ConclusionUnclear   = "unclear"
+)
