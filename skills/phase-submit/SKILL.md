@@ -60,6 +60,13 @@ contract). Write it for someone who never saw the search:
   (the phase's goal was not met), `unclear` (holes remain). Omitted reads
   `unclear`. A listed open question stores `unclear` whatever was claimed.
 
+**Length**: on the checkpoint `conclusion.summary` and `conclusion.approach`
+are one line of up to 200 runes each; evidence items and `impact` 120 each.
+A longer text is cut after its last full sentence and the full text stays
+in the status detail view — so lead with the cause, and put scope and
+exclusions in `impact` rather than at the end of the summary. The
+checkpoint shows the first 4 evidence items and 3 open questions.
+
 Done means: a reader who sees only the `结论` block can say what was found,
 why it is believed, and what is still undecided.
 

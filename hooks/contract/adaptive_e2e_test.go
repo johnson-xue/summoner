@@ -8,6 +8,7 @@ package contract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -500,5 +501,75 @@ func TestAdaptiveContinuationAfterHumanDecisionOverBinaries(t *testing.T) {
 	}
 	if out = stop("later", "开始诊断。"); strings.Contains(out, "block") {
 		t.Fatalf("with the next phase started the stop is silent, got %q", out)
+	}
+}
+
+// TestAdaptiveOverCapConclusionOverBinaries — ship review round 1: the
+// at-cap e2e never clipped anything, so the caps were pinned at the shared
+// seam only. Over the real binaries with an over-cap conclusion: the
+// checkpoint stays ≤ 42 lines, lists roll off with a counted cue, the
+// summary is cut after a full sentence and ends with the full-text cue, and
+// the status detail carries everything.
+func TestAdaptiveOverCapConclusionOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-wide", "fix")
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun("run-wide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderAndDecide(t, "run-wide", "tu-ask-1", run.CurrentCheckpoint(), 0,
+		func(labels []string) string { return firstLabelWithKeyword(labels, "continue") })
+
+	sentence := "竞技场战斗在结算阶段返回错误的根因是会话结算时读取了空的胜者字段。"
+	evidence := make([]string, 9)
+	for i := range evidence {
+		evidence[i] = fmt.Sprintf("arena/battle_session.go:%d — 第 %d 条证据", 400+i, i+1)
+	}
+	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-ps-2", map[string]interface{}{
+		"skill": "summoner:phase-submit",
+		"args": mustJSON(t, shared.PhaseSubmission{
+			PhaseID: "diagnosis", Summary: "nil deref in the task loader",
+			Outcome: shared.ConclusionUnclear,
+			Conclusion: &shared.Conclusion{
+				Summary:       strings.Repeat(sentence, 8),
+				Evidence:      evidence,
+				Approach:      "从报错栈回溯调用链",
+				OpenQuestions: []string{"forfeit 队伍的默认胜者应取剩余队伍还是判为平局？", "跨服模式是否还有其他依赖 winner 非空的结算路径？"},
+			},
+		}),
+	}), nil)
+	if code != 0 {
+		t.Fatalf("phase-submit(diagnosis): exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	view := statusView(t, `{"session_id":"`+contractSession+`","view":"checkpoint"}`)
+	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+	if len(lines) > 42 {
+		t.Fatalf("an over-cap diagnosis renders %d lines, over the cap 42:\n%s", len(lines), view)
+	}
+	for _, want := range []string{"…另 5 条，见 summoner-status", "…（全文见 summoner-status）", "第 4 条证据"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the checkpoint lost %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "第 5 条证据") {
+		t.Errorf("only the first 4 evidence items belong in the checkpoint:\n%s", view)
+	}
+	// The cut kept whole sentences and stays inside the cap.
+	for _, ln := range lines {
+		if !strings.Contains(ln, "…（全文见 summoner-status）") || !strings.Contains(ln, sentence) {
+			continue
+		}
+		body := strings.TrimSuffix(strings.TrimPrefix(ln, "║   "), "…（全文见 summoner-status）")
+		if !strings.HasSuffix(body, "。") || utf8.RuneCountInString(strings.TrimPrefix(ln, "║   ")) > 200 {
+			t.Errorf("the summary was cut mid-sentence or over the cap: %q", ln)
+		}
+	}
+	// The status detail carries the whole conclusion.
+	full := statusView(t, `{"session_id":"`+contractSession+`"}`)
+	for _, want := range []string{"evidence (9):", "第 9 条证据", strings.Repeat(sentence, 8)} {
+		if !strings.Contains(full, want) {
+			t.Errorf("the status detail lost %q", want)
+		}
 	}
 }

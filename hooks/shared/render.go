@@ -168,7 +168,7 @@ func DecisionPage(cp CheckpointState) []string {
 // the other option pages, and where the mechanism the render left out lives.
 func navigationHint(cp CheckpointState) string {
 	if len(cp.MenuPages) > 1 {
-		return "其余选项（recall / review / 回城目标）回复 more: 翻页 · 验收标准与产物全文见 summoner-status"
+		return "其余选项（recall / review / 回城目标）回复 more: 翻页 · 被截断的结论、验收标准与产物全文见 summoner-status"
 	}
 	return "选项已全部列出 · 验收标准与产物全文见 summoner-status"
 }
@@ -233,15 +233,68 @@ func writeCappedList(b *strings.Builder, items []string, cap int) {
 	}
 }
 
-// conclusionText folds one conclusion scalar to a single railed line's worth:
-// whitespace-collapsed, capped in runes (an overflow ends in …), escaped,
-// and 未提供 when there is nothing to show.
+// clippedTextCue ends a conclusion scalar that did not fit: it says that
+// the text was cut and where the whole of it is. A bare "…" left the user
+// with a sentence that stopped mid-way and no pointer (ship review round 1).
+const clippedTextCue = "…（全文见 summoner-status）"
+
+// conclusionText folds one conclusion scalar to a single railed line of at
+// most cap runes: whitespace-collapsed, escaped, and — when it does not
+// fit — clipped after its last complete sentence with the full-text cue.
+// The budget is taken on the ESCAPED text, which is what the user reads: a
+// format character costs six runes once escaped, so clipping first and
+// escaping after let 50 joiners grow into 350. 未提供 when there is nothing
+// to show.
 func conclusionText(s string, cap int) string {
-	s = clipRunes(singleLine(s), cap)
+	s = singleLine(s)
 	if s == "" {
 		return "未提供"
 	}
-	return escapeScalar(s)
+	escaped := escapeScalar(s)
+	if utf8.RuneCountInString(escaped) <= cap {
+		return escaped
+	}
+	return clipEscaped(s, cap-utf8.RuneCountInString(clippedTextCue)) + clippedTextCue
+}
+
+// clipEscaped escapes s rune by rune and keeps at most budget escaped
+// runes. It prefers to stop right after a sentence end (。；！？ and their
+// ASCII forms, or a period followed by a space) once at least half the
+// budget is used; otherwise it stops wherever the budget runs out.
+func clipEscaped(s string, budget int) string {
+	runes := []rune(s)
+	var out strings.Builder
+	n := 0
+	atSentenceEnd := ""
+	for i, r := range runes {
+		e := escapeScalar(string(r))
+		k := utf8.RuneCountInString(e)
+		if n+k > budget {
+			break
+		}
+		out.WriteString(e)
+		n += k
+		if isSentenceEnd(runes, i) && n*2 >= budget {
+			atSentenceEnd = out.String()
+		}
+	}
+	if atSentenceEnd != "" {
+		return atSentenceEnd
+	}
+	return out.String()
+}
+
+// isSentenceEnd reports whether runes[i] closes a sentence.
+func isSentenceEnd(runes []rune, i int) bool {
+	switch runes[i] {
+	case '。', '；', '！', '？', ';', '!', '?':
+		return true
+	case '.':
+		// "go1.16" is not a sentence end; a period before a space or the
+		// end of the text is.
+		return i+1 >= len(runes) || unicode.IsSpace(runes[i+1])
+	}
+	return false
 }
 
 // approachLabel names the "how" line the way the phase works: investigative
@@ -298,7 +351,7 @@ func JourneyLines(run *RunState) []string {
 			name = p.VisitID
 		}
 		prefix := escapeScalar(name) + " " + mark + ": "
-		lines = append(lines, prefix+escapeScalar(clipRunes(singleLine(title), capConclusionShort-utf8.RuneCountInString(prefix))))
+		lines = append(lines, prefix+conclusionText(title, capConclusionShort-utf8.RuneCountInString(prefix)))
 	}
 	if len(lines) > capJourneyLines {
 		rolled := len(lines) - (capJourneyLines - 1)
@@ -384,31 +437,6 @@ func singleLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// clipRunes keeps the first max runes; an overflow ends in an ellipsis that
-// replaces the last kept rune, so the result is exactly max runes. Counts
-// RUNES, never bytes: the range variable's first value is a byte offset, and
-// on CJK text (3 bytes a rune) an offset used as a count both over-runs and
-// stops early.
-func clipRunes(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	if max < 1 {
-		return ""
-	}
-	var b strings.Builder
-	n := 0
-	for _, r := range s {
-		if n == max-1 {
-			b.WriteString("…")
-			break
-		}
-		b.WriteRune(r)
-		n++
-	}
-	return b.String()
-}
-
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
@@ -442,6 +470,10 @@ func escapeScalar(s string) string {
 			b.WriteString("\\r")
 		case r == '\t':
 			b.WriteString("\\t")
+		case r == '║', r == '╔', r == '╠', r == '╚', r == '▶':
+			// The frame's own glyphs: a scalar must not draw rails, a
+			// divider or a section head inside a line.
+			fmt.Fprintf(&b, "\\u%04x", r)
 		case unicode.IsControl(r), unicode.Is(unicode.Bidi_Control, r), unicode.Is(unicode.Cf, r):
 			fmt.Fprintf(&b, "\\u%04x", r)
 		default:
