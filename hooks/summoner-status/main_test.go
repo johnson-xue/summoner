@@ -997,8 +997,8 @@ func TestStatusResolvesTheSessionFromTheEnvironment(t *testing.T) {
 	if strings.Contains(out, "ambiguous") || strings.Contains(out, "naming them, rendering none") {
 		t.Fatalf("with the exported session id there is nothing ambiguous:\n%s", out)
 	}
-	if !strings.Contains(out, "other live runs in this project (other sessions): run-b (ACTIVE)") {
-		t.Fatalf("the other session's live run must be named:\n%s", out)
+	if !strings.Contains(out, "other live runs in this project: run-b (ACTIVE) — this view is scoped to session sess-a (SUMMONER_SESSION_ID); if one of them is yours, pass its session id") {
+		t.Fatalf("the project's other live runs must be named, without claiming which session is yours:\n%s", out)
 	}
 }
 
@@ -1051,5 +1051,85 @@ func TestCheckpointViewIgnoresTheEnvironment(t *testing.T) {
 	}
 	if out != shared.RenderCheckpointMessage(run, cp) {
 		t.Fatalf("view:checkpoint must be exactly the canonical message, got:\n%s", out)
+	}
+}
+
+// TestRenderAutoPassNotTakenLine (ship review round 1): a confirmed
+// submission that did NOT auto-pass says why. The gate prints the reason on
+// stderr with exit 0 — the model never sees it, so it could never learn
+// what a passing submission needs.
+func TestRenderAutoPassNotTakenLine(t *testing.T) {
+	park := func(t *testing.T, phaseID string, outcome string, evidence []string) *shared.RunState {
+		t.Helper()
+		useStatusEnv(t) // a fresh project for every shape
+		r := newRun(t)
+		if err := r.OpenPhase(phaseID); err != nil {
+			t.Fatal(err)
+		}
+		_, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
+			PhaseID: phaseID, Outcome: outcome,
+			Conclusion: &shared.Conclusion{Summary: "a conclusion", Evidence: evidence, Approach: "how"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	out := renderStatus(park(t, "context", shared.ConclusionConfirmed, []string{" ", ""}), "L1（未配置沙箱）")
+	if !strings.Contains(out, "auto-pass not taken: 阶段 context 留给你裁决 — a confirmed submission needs evidence") {
+		t.Errorf("a confirmed submission without real evidence must say why it stayed:\n%s", out)
+	}
+	out = renderStatus(park(t, "context", shared.ConclusionUnclear, []string{"e"}), "L1（未配置沙箱）")
+	if !strings.Contains(out, "auto-pass not taken: 阶段 context 留给你裁决 — the submission is not confirmed") {
+		t.Errorf("an unclear submission must say why it stayed:\n%s", out)
+	}
+	// Once the user has seen the checkpoint, "why it stayed" is no longer
+	// the question; and phases that never auto-pass carry no such line.
+	r := park(t, "context", shared.ConclusionUnclear, []string{"e"})
+	cur := r.CurrentCheckpoint()
+	if err := r.MarkDisplayed(cur.ID, shared.CheckpointContentDigest(*cur, r.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if out = renderStatus(r, "L1（未配置沙箱）"); strings.Contains(out, "auto-pass not taken") {
+		t.Errorf("a displayed checkpoint is simply owed:\n%s", out)
+	}
+	if out = renderStatus(park(t, "diagnosis", shared.ConclusionConfirmed, []string{"e"}), "L1（未配置沙箱）"); strings.Contains(out, "auto-pass not taken") {
+		t.Errorf("diagnosis never auto-passes — nothing to explain:\n%s", out)
+	}
+}
+
+// TestStatusExportedSessionWithoutLiveRunFallsBack (ship review round 1):
+// an exported session id can be STALE — left by an earlier session of this
+// project. It must not yield a confident "No active run" (or another
+// session's run) while live runs exist: with no run under the exported
+// session the viewer falls back to the project-wide scan and its honest
+// ambiguity listing.
+func TestStatusExportedSessionWithoutLiveRunFallsBack(t *testing.T) {
+	useStatusEnv(t)
+	twoSessions(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-gone") // stale: nothing live there
+
+	code, out, stderr := callStatus(t, `{}`)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if strings.Contains(out, "No active Summoner run") || strings.Contains(out, "scoped to session") {
+		t.Fatalf("a stale exported session id must not hide the project's live runs:\n%s", out)
+	}
+	if !strings.Contains(out, "2 live Summoner runs — ambiguous") {
+		t.Fatalf("with nothing live under the exported session the project-wide fallback stands:\n%s", out)
+	}
+
+	// Exactly one other live run: the fallback renders it, as before 0.7.0.
+	useStatusEnv(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-gone")
+	r := newRun(t)
+	_ = r
+	code, out, _ = callStatus(t, `{}`)
+	if code != 0 || !strings.Contains(out, "⚡ SUMMONER STATUS — run run-1") {
+		t.Fatalf("the fallback must render the project's single live run:\n%s", out)
+	}
+	if strings.Contains(out, "other live runs") || strings.Contains(out, "scoped to session") {
+		t.Fatalf("the fallback is not session-scoped:\n%s", out)
 	}
 }

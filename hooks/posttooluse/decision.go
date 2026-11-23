@@ -20,6 +20,7 @@ import (
 	"io"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
 )
@@ -133,6 +134,20 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	if hasAnswers {
 		if problem := validateDropAnswers(drops, answers); problem != "" {
 			return reject(problem)
+		}
+	}
+
+	// 4.55 Paging feedback typed as the decision answer: `more:` / `back:`
+	// is navigation, not a decision and not a failed one. Nothing is
+	// recorded — no rejection, no ride-along effect — and the block names
+	// the page to re-ask with (ship review round 1: it used to be traced as
+	// a rejected decision and answered with "re-ask page 1").
+	if hasAnswers && q != nil {
+		if ans, _ := answers[q.text].(string); ans != "" {
+			if dir, ok := navigationDirection(ans); ok {
+				emitNavigation(outW, cp, q, dir, ans)
+				return 0
+			}
 		}
 	}
 
@@ -698,10 +713,20 @@ func countNonEmpty(parts []string) int {
 	return n
 }
 
-// truncate keeps a trace payload reason bounded (cosmetic byte cut).
+// truncate keeps a reason line bounded. It counts RUNES: a byte cut broke
+// every CJK answer longer than 26 characters into invalid UTF-8
+// ("\xe6\x9c…"), which then reached the model and the trace payload
+// (ship review round 1). The user's own words deserve the full bound.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	cut := 0
+	for i := range s {
+		if i > 0 && utf8.RuneCountInString(s[:i]) == n {
+			cut = i
+			break
+		}
+	}
+	return s[:cut] + "…"
 }

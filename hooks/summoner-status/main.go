@@ -105,6 +105,13 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 	// it the project-wide fallback stands (and names its own ambiguity).
 	sessionID, fromEnv := resolveSession(in.SessionID)
 	runs, err := liveRunsFor(sessionID)
+	if err == nil && fromEnv && len(runs) == 0 {
+		// The exported id can be stale (an earlier session of this project,
+		// and no SessionStart ran for this one). Nothing live under it must
+		// not read as "no active run": the project-wide fallback stands.
+		fromEnv = false
+		runs, err = liveRunsFor("")
+	}
 	if err != nil {
 		// Unreadable state is not an input error: surface it, stay exit 0.
 		fmt.Fprintf(errW, "summoner-status: run state unreadable — %v\n", err)
@@ -179,9 +186,11 @@ func resolveSession(payloadID string) (string, bool) {
 	return exported, true
 }
 
-// otherLiveRunsLine names the project's live runs that belong to OTHER
-// sessions — the runs a project-wide scan would have mixed with this one.
-// "" when the view is not environment-scoped or nothing else is live.
+// otherLiveRunsLine names the project's live runs outside the session the
+// view is scoped to — the runs a project-wide scan would have mixed with
+// this one. It states the scope and how to change it rather than claiming
+// which session is the caller's. "" when the view is not environment-scoped
+// or nothing else is live.
 func otherLiveRunsLine(sessionID string, fromEnv bool) string {
 	if !fromEnv {
 		return ""
@@ -211,7 +220,8 @@ func otherLiveRunsLine(sessionID string, fromEnv bool) string {
 		return ""
 	}
 	sort.Strings(others)
-	return "other live runs in this project (other sessions): " + strings.Join(others, ", ") + " — this view is scoped to this session's run\n"
+	return "other live runs in this project: " + strings.Join(others, ", ") +
+		" — this view is scoped to session " + sessionID + " (" + sessionIDEnvVar + "); if one of them is yours, pass its session id\n"
 }
 
 // reviewView serves the read-only review surface: for each review record its
@@ -370,6 +380,7 @@ func renderStatusWith(run *shared.RunState, sandbox, note string) string {
 	b.WriteString(routeLine(run))
 	b.WriteString(visitLines(run))
 	b.WriteString(autoPassLine(run))
+	b.WriteString(autoPassNotTakenLine(run))
 	b.WriteString(artifactLines(run))
 	b.WriteString(unmetLines(run))
 	b.WriteString(changeLines(run))
@@ -430,6 +441,52 @@ func decidedByAutoPass(run *shared.RunState, checkpointID string) bool {
 	for _, cp := range run.Checkpoints {
 		if cp.ID == checkpointID {
 			return cp.Decision == shared.DecisionAutoPass
+		}
+	}
+	return false
+}
+
+// autoPassNotTakenLine explains, on an auto-passable phase that stopped for
+// the user anyway, what the submission lacked. The gate reports the reason
+// on stderr with exit 0 — invisible to the model — so without this line it
+// could never learn what a passing submission needs (ship review round 1).
+// Shown only while the checkpoint is still to be shown: once the user has
+// seen it, it is simply owed.
+func autoPassNotTakenLine(run *shared.RunState) string {
+	if run.Status != shared.StatusWaitUser {
+		return ""
+	}
+	cp := run.CurrentCheckpoint()
+	if cp == nil || cp.Kind != shared.CheckpointPhase || !shared.AutoPassablePhase(cp.PhaseID) || cp.Displayed {
+		return ""
+	}
+	asSubmitted := *cp // judged as the gate judged it: before any display
+	asSubmitted.Displayed = false
+	reason := shared.AutoPassBlocker(run, asSubmitted, checkFailedSinceOpen(run, cp))
+	if reason == "" {
+		return ""
+	}
+	return fmt.Sprintf("auto-pass not taken: 阶段 %s 留给你裁决 — %s\n", cp.PhaseID, reason)
+}
+
+// checkFailedSinceOpen reports whether a mechanical check of THIS
+// submission failed on the trace after its checkpoint opened.
+func checkFailedSinceOpen(run *shared.RunState, cp *shared.CheckpointState) bool {
+	evs, err := shared.LoadRunEvents(run.RunID)
+	if err != nil {
+		return false
+	}
+	opened := -1
+	for i := range evs {
+		if evs[i].Type == shared.EventCheckpointOpened && evs[i].Payload["checkpoint_id"] == cp.ID {
+			opened = i
+		}
+	}
+	for i := opened + 1; i >= 0 && i < len(evs); i++ {
+		if evs[i].Type == shared.EventCheckResult {
+			if status, _ := evs[i].Payload["status"].(string); status == shared.CheckStatusFail {
+				return true
+			}
 		}
 	}
 	return false

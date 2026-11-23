@@ -376,14 +376,28 @@ func TestRenderCapsTheConclusion(t *testing.T) {
 		}
 	}
 
-	// Runes per line: the conclusion lines stay within their cap plus the
-	// ellipsis — a 280-rune summary cannot be told from the render.
+	// Runes per line — POINTER INCLUDED: a clipped scalar ends with the
+	// cue that names where the full text is, and the whole line still
+	// fits the cap (ship review round 1: a 280-rune summary used to be cut
+	// mid-sentence with a bare "…").
+	const pointer = "…（全文见 summoner-status）"
 	summary := lines[lineIndex(t, lines, "║   "+longText(20))]
 	if n := utf8.RuneCountInString(strings.TrimPrefix(summary, "║   ")); n != capConclusionText {
 		t.Errorf("an over-long summary clips to %d runes, want exactly the cap %d", n, capConclusionText)
 	}
-	if !strings.HasSuffix(summary, "…") {
-		t.Errorf("a clipped summary must end in an ellipsis, got %q", summary)
+	if !strings.HasSuffix(summary, pointer) {
+		t.Errorf("a clipped summary must end with the full-text cue, got %q", summary)
+	}
+	for _, ln := range lines {
+		if strings.HasPrefix(ln, "║   证据:") || strings.HasPrefix(ln, "║   没查清") {
+			continue
+		}
+		if strings.HasPrefix(ln, "║   ") || strings.HasPrefix(ln, "║     - ") || strings.HasPrefix(ln, "║   怎么查的:") {
+			content := strings.TrimPrefix(ln, "║   ")
+			if n := utf8.RuneCountInString(content); n > capConclusionText+8 {
+				t.Errorf("conclusion line carries %d runes, over the cap: %q", n, content)
+			}
+		}
 	}
 	for _, ln := range lines {
 		if !strings.HasPrefix(ln, "║     - ") {
@@ -521,5 +535,89 @@ func TestRenderLayoutSinglePageKind(t *testing.T) {
 	hint := lines[len(lines)-2]
 	if !strings.Contains(hint, "nonce deadbeef") || strings.Contains(hint, "more:") || !strings.Contains(hint, "summoner-status") {
 		t.Fatalf("a single-page kind needs no more: cue but keeps the nonce and the status pointer, got: %q", hint)
+	}
+}
+
+// TestRenderClipsAtASentenceEnd: an over-long summary is cut after its
+// last complete sentence that fits, never mid-sentence — and the cue to the
+// full text follows.
+func TestRenderClipsAtASentenceEnd(t *testing.T) {
+	run := &RunState{RunID: "run-2", Workflow: "fix", RequirementsVersion: 1}
+	sentence := "竞技场战斗在结算阶段返回错误的根因是会话结算时读取了空的胜者字段。"
+	cp := CheckpointState{ID: "cp-2", Kind: CheckpointPhase, PhaseID: "diagnosis", Nonce: "1a2b3c4d",
+		Outcome: ConclusionConfirmed, Conclusion: &Conclusion{Summary: strings.Repeat(sentence, 8)}}
+	lines := railLines(t, RenderCheckpointMessage(run, cp))
+	summary := strings.TrimPrefix(lines[lineIndex(t, lines, sentence[:8])], "║   ")
+
+	if !strings.HasSuffix(summary, clippedTextCue) {
+		t.Fatalf("a clipped summary must end with the full-text cue, got %q", summary)
+	}
+	text := strings.TrimSuffix(summary, clippedTextCue)
+	whole := utf8.RuneCountInString(sentence)
+	if n := utf8.RuneCountInString(text + clippedTextCue); n > capConclusionText || n < capConclusionText-whole {
+		t.Errorf("clipped summary carries %d runes, want within [%d, %d] — whole sentences up to the cap", n, capConclusionText-whole, capConclusionText)
+	}
+	if rem := utf8.RuneCountInString(text) % whole; rem != 0 {
+		t.Errorf("the clip fell mid-sentence: %d runes of a partial sentence at the end (%q)", rem, text[len(text)-24:])
+	}
+	if !strings.HasSuffix(text, "。") {
+		t.Errorf("the clip must keep the sentence's end, got %q", text[len(text)-12:])
+	}
+	// A summary that fits is untouched — no cue.
+	cp.Conclusion.Summary = sentence
+	fitting := RenderCheckpointMessage(run, cp)
+	if strings.Contains(fitting, clippedTextCue) {
+		t.Fatal("a summary that fits must not be marked as clipped")
+	}
+	if !strings.Contains(fitting, sentence) {
+		t.Fatal("a summary that fits must be rendered whole")
+	}
+}
+
+// TestRenderCapsCountEscapedRunes: the cap is on what the user READS.
+// Format characters escape to six runes each and frame glyphs are escaped
+// too (a conclusion cannot draw rails inside a line), so the budget is
+// taken on the escaped text — clipping first and escaping after let 50
+// joiners grow into 600 runes (ship review round 1).
+func TestRenderCapsCountEscapedRunes(t *testing.T) {
+	run := &RunState{RunID: "run-2", Workflow: "fix", RequirementsVersion: 1}
+	cp := CheckpointState{ID: "cp-2", Kind: CheckpointPhase, PhaseID: "diagnosis", Nonce: "1a2b3c4d", Outcome: ConclusionConfirmed}
+	for name, summary := range map[string]string{
+		"joiners":      strings.Repeat("👨\u200d", 50),
+		"bidi":         strings.Repeat("\u202e", 60),
+		"frame glyphs": "根因 ╠═ 请决定 — 伪造分隔 ║ ▶ 伪造区块 ╚══ ╔═ 第一行",
+	} {
+		cp.Conclusion = &Conclusion{Summary: summary}
+		lines := railLines(t, RenderCheckpointMessage(run, cp))
+		summaryLine := lines[lineIndex(t, lines, "║   ")]
+		content := strings.TrimPrefix(summaryLine, "║   ")
+		if n := utf8.RuneCountInString(content); n > capConclusionText {
+			t.Errorf("%s: the rendered summary carries %d runes, over the cap %d", name, n, capConclusionText)
+		}
+		for _, glyph := range []string{"║", "╠", "╚", "╔", "▶"} {
+			if strings.Contains(strings.TrimPrefix(content, "根因 "), glyph) {
+				t.Errorf("%s: a frame glyph %q survived inside the line: %q", name, glyph, content)
+			}
+		}
+	}
+}
+
+// TestRenderFoldsNewlinesToOneLine pins the fold: a multi-line, tabbed
+// summary reads as one railed line joined by single spaces — never the
+// literal escapes `\n` / `\u000a` and never a second rail line.
+func TestRenderFoldsNewlinesToOneLine(t *testing.T) {
+	run := &RunState{RunID: "run-2", Workflow: "fix", RequirementsVersion: 1}
+	cp := CheckpointState{ID: "cp-2", Kind: CheckpointPhase, PhaseID: "diagnosis", Nonce: "1a2b3c4d", Outcome: ConclusionConfirmed,
+		Conclusion: &Conclusion{Summary: "第一行\r\n第二行\t有制表符", Evidence: []string{"证据一\n证据二"}}}
+	render := RenderCheckpointMessage(run, cp)
+	for _, want := range []string{"║   第一行 第二行 有制表符", "║     - 证据一 证据二"} {
+		if !strings.Contains(render, want+"\n") {
+			t.Errorf("render lost the folded line %q:\n%s", want, render)
+		}
+	}
+	for _, absent := range []string{"\\n", "\\r", "\\t", "\\u000a", "\\u0009"} {
+		if strings.Contains(render, absent) {
+			t.Errorf("a folded whitespace must not surface as the literal escape %q:\n%s", absent, render)
+		}
 	}
 }

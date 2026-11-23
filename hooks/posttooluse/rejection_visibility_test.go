@@ -12,9 +12,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
 )
@@ -224,5 +226,101 @@ func TestRecordedDecisionEmitsNothing(t *testing.T) {
 	}
 	if !checkpointByID(t, reloadRun(t, "run-1"), cp.ID).Decided {
 		t.Fatal("the decision must have been recorded")
+	}
+}
+
+// TestNavigationAnswerIsNotARejection (ship review round 1): `more:` /
+// `back:` typed as the decision answer is paging feedback — not a failed
+// decision. Nothing is recorded (no checkpoint.decision_rejected), and the
+// block names the TARGET page's labels to re-ask with.
+func TestNavigationAnswerIsNotARejection(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp := openDisplayedCheckpoint(t, r, "diagnosis")
+	if len(cp.MenuPages) < 2 {
+		t.Fatalf("fixture: a PHASE checkpoint must have several pages, got %d", len(cp.MenuPages))
+	}
+	page1, page2 := cp.MenuPages[0].Labels, cp.MenuPages[1].Labels
+
+	ask := func(id, answer string, labels []string) (int, string) {
+		t.Helper()
+		q, qtext := cpQuestion(cp.Nonce, false, labels...)
+		code, stdout, stderr := callHookOut(t, askDecision(t, id, q, qtext, answer, nil))
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		return code, stdout
+	}
+	assertNavigation := func(name, stdout string, labels []string) {
+		t.Helper()
+		obj := wholeStdoutObject(t, stdout)
+		if obj["decision"] != "block" {
+			t.Fatalf("%s: decision = %v, want block", name, obj["decision"])
+		}
+		reason, _ := obj["reason"].(string)
+		for _, want := range append([]string{"翻页", cp.Nonce}, labels...) {
+			if !strings.Contains(reason, want) {
+				t.Errorf("%s: the navigation block lost %q:\n%s", name, want, reason)
+			}
+		}
+		if strings.Contains(reason, "本次裁决未记录") {
+			t.Errorf("%s: paging feedback is not a rejected decision:\n%s", name, reason)
+		}
+	}
+
+	_, stdout := ask("tu-ask-1", "more: 查看其余选项", page1)
+	assertNavigation("more from page 1", stdout, page2)
+	_, stdout = ask("tu-ask-2", "back: 返回上一页", page2)
+	assertNavigation("back from page 2", stdout, page1)
+
+	// Already on the last page: say so and repeat it.
+	last := cp.MenuPages[len(cp.MenuPages)-1].Labels
+	_, stdout = ask("tu-ask-3", "more:", last)
+	assertNavigation("more on the last page", stdout, last)
+	if !strings.Contains(stdout, "最后一页") {
+		t.Errorf("more on the last page must say so:\n%s", stdout)
+	}
+
+	// Nothing was recorded: no rejection, no decision, rides untouched.
+	for _, ev := range readHookTrace(t, "run-1") {
+		if ev.Type == shared.EventCheckpointDecisionRejected {
+			t.Errorf("a navigation answer must not be traced as a rejected decision: %+v", ev)
+		}
+	}
+	after := reloadRun(t, "run-1")
+	if after.Status != shared.StatusWaitUser || checkpointByID(t, after, cp.ID).Decided {
+		t.Fatal("nothing may be decided by a navigation answer")
+	}
+}
+
+// TestRejectionKeepsTheUsersWordsWhole: a CJK answer longer than the
+// truncation bound used to be cut at a BYTE boundary and reached the model
+// (and the trace) as broken UTF-8 ("\xe6\x9c…").
+func TestRejectionKeepsTheUsersWordsWhole(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp := openDisplayedCheckpoint(t, r, "diagnosis")
+	page := shared.DecisionPage(cp)
+	q, qtext := cpQuestion(cp.Nonce, false, page...)
+	typed := "为什么会禁用英雄，先解释，另外修复方案要覆盖跨服和本服两条路径，还要给出回归范围和上线步骤的说明，谢谢"
+
+	code, stdout, stderr := callHookOut(t, askDecision(t, "tu-ask-1", q, qtext, typed, nil))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	reason := blockReason(t, stdout)
+	if !strings.Contains(reason, typed) {
+		t.Errorf("the user's words must reach the model whole, got:\n%s", reason)
+	}
+	if !utf8.ValidString(reason) {
+		t.Error("the block reason is not valid UTF-8")
+	}
+	if strings.Contains(reason, `\x`) {
+		t.Errorf("a byte-boundary cut leaked into the reason:\n%s", reason)
+	}
+	for _, ev := range readHookTrace(t, "run-1") {
+		if ev.Type == shared.EventCheckpointDecisionRejected && !utf8.ValidString(fmt.Sprint(ev.Payload["reason"])) {
+			t.Errorf("the trace payload is not valid UTF-8: %+v", ev)
+		}
 	}
 }
