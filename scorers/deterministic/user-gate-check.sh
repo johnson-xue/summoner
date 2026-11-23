@@ -95,6 +95,7 @@ resumed_cps = set()
 drops = []       # (seq, checkpoint_id, criterion_id, tool_use_id)
 budget_confirmed = []
 budget_extended = []
+check_fails = [] # seqs of FAIL check.results (the submission's own mechanical checks)
 for seq, ev in events:
     typ = ev.get("type")
     pl = payload(ev)
@@ -138,6 +139,8 @@ for seq, ev in events:
     elif typ == "budget.extended":
         budget_extended.append((seq, pl.get("checkpoint_id"),
                                 ev.get("tool_use_id")))
+    elif typ == "check.result" and pl.get("status") == "fail":
+        check_fails.append(seq)
 
 if not decided and not opened and not displayed and not autos:
     print("N/A — no checkpoint decisions, openings or displays recorded: "
@@ -188,6 +191,11 @@ for seq, cid, phase, outcome, tool_id in autos:
         fail(f"checkpoint.auto at event #{seq} rides tool_use_id {tool_id!r}, "
              "an AskUserQuestion call — that id belongs to a human answer; "
              "an auto-pass is the framework's own act")
+    if any(oseq < fseq < seq for fseq in check_fails):
+        fail(f"checkpoint.auto at event #{seq} follows a FAIL check.result "
+             f"between its open (event #{oseq}) and the auto — a failed "
+             "mechanical check owes the human gate (the reducer refuses this "
+             "auto-pass; a trace carrying it is not a legal auto-pass)")
     if prev_auto_seq is not None and not any(
             prev_auto_seq < ps < seq for ps in phase_started_seqs):
         fail(f"checkpoint.auto at event #{seq} follows another auto-pass "
