@@ -1,5 +1,24 @@
 # Summoner Changelog
 
+## [0.6.1] - 2026-11-23
+
+### 🐛 Bug Fixes
+- fix(fixtures): regenerate the generator golden for none-defaults; AGENTS.md rule 2 (dfa4075)
+- fix(budget): round-1 Important + cleanup — dead confirm path, stale wording, generator defaults (8514061)
+- fix(gate): close the Monitor Bash bypass; declarations admit MCP tools only (ship round-1 Critical) (abbccbb)
+- fix(gate): admit harness read-only tools during a live run; actionable MCP denial (813acd8)
+- fix(release): round-2 cosmetics from the 0.6.0 ship review (f0a28d2)
+
+### Other
+- build(hooks): rebuild binaries for the round-1 fixes (b5b3d4e)
+- build(hooks): rebuild binaries for the run-start budget settlement (26a1bf5)
+
+### 📝 Documentation
+- docs(manifest-spec): tool_scope per-tool semantics, harness read-only set, no annotation channel (996821a)
+
+### ✨ Features
+- feat(budget): budgets settle at run start, no checkpoint ask (0.6.1 T18 rev) (0194996)
+
 ## [0.6.0] - 2026-11-23
 
 ### 🐛 Bug Fixes
