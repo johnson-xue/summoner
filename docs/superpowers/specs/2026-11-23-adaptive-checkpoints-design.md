@@ -1,7 +1,8 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev7（S0–S6 已实现；ship 审查第 1 轮四路均 NEEDS-FIX，已逐项
-  修复并补接缝测试，见 §9；等第 2 轮。rev5 = 评审闭合 + D5.5 已裁决）
+- 状态: rev8（S0–S6 已实现；ship 审查第 1 轮四路 NEEDS-FIX、第 2 轮
+  协议 GO + 三路 NEEDS-FIX，均已逐项修复并补测试，见 §9、§10；等第 3 轮
+  收口审查。rev5 = 评审闭合 + D5.5 已裁决）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -444,3 +445,25 @@ F7、F11 两个编号，其余行按发现内容列出。
 副本里逐个破坏对应实现（摘要折叠所有 outcome、不归一化枚举、不导出会话
 id、不做过期回退、不校验结论、评分器放行 diagnosis、Go 策略放行全部），
 每条测试只在对应破坏下变红。绿。
+
+## 10. Ship 审查第 2 轮（rev8）
+
+冻结基线 `b6c33ba`；四路各自一份 detached worktree（上一轮共用副本互相干扰的
+教训）。结论：协议 GO（1 条 Important 为 0.6.1 起的既有缺陷），分类器/
+交互/兼容均 NEEDS-FIX。每条先复现再修；复现出的绕过与误拒全部成了回归
+用例（`writeclass_r2_test.go` 74 行、`round2_decision_test.go`、
+`stopack_test.go` 新增语表、`TestAdaptiveStopAckStrippingOverBinaries`）。
+
+| 视角 | 结论 | 已处理 |
+|---|---|---|
+| 协议 | GO + F1（既有） | F1：`RecordReviewResult` 从不写 `rv.Result` → PASS 后 DONE 仍落在假的「审查未结算」检查点；已写入并以 `TestDoneAfterAPassReviewReachesPostGame` 钉住。F2：评分器补「opened 与 auto 之间的 FAIL check.result」审计 + 4 个新 fixture（52 fixture / 309 断言）；`trace-protocol.md` 的自动通过形状改为 `opened → (check.result …) → auto`。F3：空白内容（含零宽/组合符）不算证据也不再折叠进摘要。F4：accept / recall / recovery-continue 都补续跑提示。F5：三类防御性守卫补单元测试。F6：协议文档列表格式修正。 |
+| 分类器 | NEEDS-FIX | 8 类「写判读」绕过与 9 类误拒全修：解释器的 stdin 程序、`[[ ]]`/`${…}` 内的进程替换、算术内的替换与重定向、裸替换词、`git branch -t`、`go test -o/-profile`、`perl -E`、`time` 包装器、大小写变形词；git config 作用域、npm audit、pip show、unzip -l、make -n、bash -n、tar -xO、/dev/std* 等误拒；`attachedAfter` 看闭合字符而非其后字符；嵌套深度上限 `maxLexDepth`（8k 深曾 2.6 s）。 |
+| 交互 | NEEDS-FIX | F1：请求关联式的自然措辞（带宾语、since you asked me to、at the user's request、遵照/依照、停止后置标记）放行，且 中止/结束/停下 入词表。F2：协议把 `经过` 定义为标题，详情视图新增 `history conclusions` 承载各已验收阶段的结构化结论全文。F3：最后阶段 skip / REVIEW_DEBT continue 的续跑提示与状态 awaiting 行不再指向不存在的下一步，也不再插值空阶段名。F4：同协议 F4。F5/F6：描述性散文维持已记录的残余；宽松档收尾停止词要求前文也短。F7：渲染配方改指 `view:checkpoint`。F8：详情视图省略空小节与无 recall 页时的目标列表。F9：`model:` 行走 stderr。F10：单页发问不带 `more:` 的测试。F11/F12：门禁与续跑文案更新。F13：渲染要求点明常见原因（缩进/引用/围栏/改写）。F14：翻页回答补追加题提示，单页不再提翻页。 |
+| 兼容 | NEEDS-FIX | F1：回滚段重写——0.6.1 的任何一次状态保存会丢弃 outcome/conclusion 且摘要不再匹配，答复被静默拒绝，装回 0.7.x 需重贴渲染，结论正文不可恢复；不再声称「绑定仍然一致」。F2：框架文案剥离补二进制级测试。F3：seam 清单（session-start 边缘、auto-pass 各守卫、宽松档选项否决）记为残余覆盖缺口。F4：空白结论项不再折叠（同协议 F3）。F5：邻接损坏状态文件可击穿项目级视图——既有缺陷，记录。 |
+
+**未在 round 2 关闭（记录在案）**：
+- 评分器无路由表，「路线已走完」一行无法被审计——由 Go 守卫与单元测试
+  覆盖，评分器侧记为缺口。
+- 回滚的「无损摘要」方案（把 0.6.1 可算的摘要留在 `display_digest`、另存
+  0.7.0 摘要）会改状态格式，未采纳；文档按有损回滚写实。
+- `git --git-dir="$(pwd)/.git"` 之外的同类「替换值拆词」形状未逐一穷举。

@@ -17,8 +17,13 @@ inline a variant.
 The render comes from the binary — run it and paste its output VERBATIM:
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}'
+"${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<<'{"view":"checkpoint"}'
 ```
+
+That view is EXACTLY the canonical block. The default view (`<<< '{}'`)
+ends with the same block but prints the status lines and the detail block
+before it — paste the trailing block alone, not the whole default view:
+the user decides on the checkpoint, and the mechanism belongs to the detail.
 
 (or `/summoner:status`, which does the same). NEVER hand-write, summarize, or
 reformat a status or checkpoint render. Display verification (Stop hook)
@@ -93,7 +98,7 @@ Field rules:
 |-------|------|
 | `{id}` / `{nonce}` | Mandatory, from the render. The nonce binds every decision to THIS checkpoint; a question without it is rejected. |
 | `{kind}` | `PHASE` \| `CHANGE_CONFIRM` \| `RECOVERY` \| `REVIEW_RESULT` \| `REVIEW_DEBT`. |
-| `经过` | The run's settled phase visits, oldest first — how each was settled and its conclusion — so a checkpoint can be read without the conversation. Capped at 6 lines; the overflow is counted, never dropped. |
+| `经过` | The run's settled phase visits, oldest first — how each was settled and the phase's **title** (the submission's top-level summary) — so a checkpoint can be read without the conversation. The full structured conclusion of each settled phase is in the detail view's `history conclusions`. Capped at 6 lines; the overflow is counted, never dropped. |
 | `结论` | The phase's structured conclusion (below), in the fixed inner order. An omitted outcome reads 未查清; every missing part reads 未提供 — a hole is never hidden by omission. |
 | `请决定` | Page 1 of the persisted menu, verbatim — exactly the labels the first decision question offers. The divider above it is an instruction to the model: raise the question through AskUserQuestion with options identical to this page. |
 | navigation hint | The last content line: the nonce, how to reach the other option pages, and where everything the render left out lives in full. |
@@ -213,13 +218,27 @@ established:
   the Stop hook's display binding covers them, so a conclusion edited after
   display never keeps its binding.
 - **Across versions**: a checkpoint that carries neither — every
-  pre-0.7.0 checkpoint, a submission that claimed nothing — hashes exactly
-  as before, so a run parked at a displayed checkpoint survives an upgrade
-  to 0.7.0 and a rollback from it unchanged. A checkpoint whose outcome is
-  not `unclear`, or that carries a conclusion, is decidable under 0.7.x
-  only: rolled back to 0.6.1, no answer lands on it (that reducer never
-  re-binds a display). Reinstall 0.7.x and ask again — the checkpoint is
-  still displayed and its binding still matches — or abandon the run.
+  pre-0.7.0 checkpoint, a conclusion-free submission that claimed nothing —
+  hashes exactly as before, so a run parked at a displayed checkpoint
+  survives an upgrade to 0.7.0 and a rollback from it unchanged.
+  A checkpoint whose outcome is not `unclear`, or that carries a
+  conclusion, is decidable under 0.7.x only. Rolling back to 0.6.1 is
+  LOSSY for such a checkpoint, and the document must say exactly how:
+  - 0.6.1's Stop hook treats a displayed checkpoint as settled, and the
+    first 0.6.1 state save (its gate writes the run on every admitted
+    call) rewrites the state with 0.6.1's structs — `outcome` and
+    `conclusion` are DROPPED, and `display_digest` no longer matches
+    what 0.6.1 recomputes. The answer is then rejected silently (exit 0,
+    one `checkpoint.decision_rejected`), and the conclusion is gone.
+  - Reinstalling 0.7.x does NOT restore the binding (the digest was
+    computed over content that no longer exists): the Stop hook demands a
+    re-render, a direct ask is rejected "content changed since display",
+    and after re-pasting the checkpoint message it is decidable again —
+    with every part of the conclusion reading 未提供.
+  - So: do not roll back with a live run waiting at a conclusion-bearing
+    decision; if a rollback already happened, re-paste the checkpoint
+    under 0.7.x before deciding, and re-submit the conclusion if it still
+    matters. (A conclusion-free checkpoint rolls back cleanly.)
 - An outcome outside the three values is a malformed payload: denied,
   naming the legal values.
 
@@ -230,6 +249,8 @@ established:
 the reference view and it is complete and uncapped:
 
 - the conclusion in full — every part, every item;
+- `history conclusions`: each settled phase's conclusion as it was
+  accepted, oldest first (the render's `经过` line carries only the titles);
 - the complete acceptance criteria with their meaning (including the
   default review axes the fix/new/review/ship routes merge into every
   acceptance);
@@ -259,6 +280,13 @@ A nonce-carrying ask before the display is bound is DENIED by the gate (exit
 the display binding does not exist yet. A displayed checkpoint whose question
 was never asked gets the same block on every later sign-off until the
 question is raised: the user never types "continue" to bring a dialog up.
+A request-tied acknowledgment of the user's request ends the turn even at a
+displayed checkpoint (`已按你的要求停止`, `Stopped as you asked`, a stop word
+next to 按要求/遵照你的要求/as you asked/per your instructions). A bare stop
+word does not — once the checkpoint is displayed, `停止` / `stop` alone is
+read as content; the user's explicit choice is the `stop:` option (or their
+own words to the model, which make the acknowledgment request-tied).
+
 Stopping stays possible at every step — an explicit stop acknowledgment ends
 the turn with the state kept.
 
@@ -455,12 +483,13 @@ A passed phase renders no checkpoint, so the run keeps moving two ways:
 
 - `summoner-status` prints `auto-passed: 阶段 X 已自动通过 → 立即进入 Y`.
 - If the turn ends right after the pass, the Stop hook blocks once with the
-  phase to enter — at most once per pass.
-
-The same one-shot nudge covers the user's own `continue:` / `skip:`: a
-decision that returns the run to ACTIVE renders nothing, so a sign-off
-right after it ("好的，继续下一阶段。") is answered once with the phase to
-enter — the user never types "continue" to keep the run alive.
+  phase to enter — at most once per pass. The same one-shot nudge covers
+  every decision that returns the run to ACTIVE with nothing rendered: the
+  user's own `continue:` / `skip:`, a requirement change's `accept:`, a
+  `recall:`, and a recovery `continue:`. A sign-off right after one of them
+  is answered once with the next step — the user never types "continue" to
+  keep the run alive; when the route is complete the nudge says so and the
+  run needs closing (post-game or stop).
 - The pass stays visible afterwards: the visit reads `accepted (自动通过)`
   and every later checkpoint's `经过` block shows `✓ 自动通过`.
 
