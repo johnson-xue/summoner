@@ -52,9 +52,24 @@ is diagnosis work — their output flags `-o` / `-coverprofile` write), `tar
 list` / `show`, `git config --global --list`. `make` is write-class in
 every form, `-n` included: GNU make runs `$(shell …)` while parsing.
 
+**What the freeze is — and is not.** The gate denies the spellings its
+tables name: the write verbs, each tool's write forms, and — whatever the
+verb — every redirection to a file, every command word bash computes when
+it runs, every interpreter program arriving on stdin, and whatever a
+wrapper (`timeout`, `nice`, `env`, `rtk`…) runs. It is not a sandbox. A
+program the tables do not name is ADMITTED (docker, kubectl, cargo, a
+project script); so is a script run as an argument (`python3 tools/x.py`);
+so is code a listed reader runs (`go test`). The freeze stops the named
+write commands and every lexical shape that hides one; it does not stop a
+model that routes a write through an unnamed tool — that class is a
+policy question (design doc §12: an adversarial panel ruled it for 0.7.0;
+a tree-change detector and OS-level confinement follow in 0.7.x).
+
 Until diagnosis is accepted the executable surface is read-only commands,
 LSP and the tools the manifest declares read-only; a Bash denial names the
-rule it matched. One consequence for projects: a check registered in
+rule it matched. Transparent wrappers are judged by what they run: a
+command rewritten to `rtk …` (an output-condensing hook) is judged as the
+command it wraps. One consequence for projects: a check registered in
 `summoner.yaml` whose command is write-class (`make test`) can no longer be
 admitted as an L2 check — re-register a read-class line.
 
