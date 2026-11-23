@@ -82,8 +82,8 @@ if ! cmp -s "$REPO/plugin.json" "$INSTALLED/plugin.json"; then
   diff "$REPO/plugin.json" "$INSTALLED/plugin.json" | head -5
   exit 1
 fi
-if ! cmp -s "$REPO/skills/summoner/SKILL.md" "$INSTALLED/skills/summoner/SKILL.md"; then
-  echo "✗ installed SKILL.md differs from checkout — install did not come from this tree"
+if ! cmp -s "$REPO/references/single-loop.md" "$INSTALLED/references/single-loop.md"; then
+  echo "✗ installed single-loop.md differs from checkout — install did not come from this tree"
   exit 1
 fi
 echo "   ✓ installed content byte-identical to checkout (version $CHECKOUT_VERSION)"
@@ -136,13 +136,38 @@ if [[ "$repo_cmds" != "$inst_cmds" ]]; then
 fi
 echo "   ✓ commands complete ($inst_cmds)"
 
-# all eight registered skills present (must match plugin.json skills[])
-for s in summoner summoner-setup summoner-release auto-setup-summoner phase-submit change review-submit probe-submit; do
+# all six registered skills present (must match plugin.json skills[])
+for s in summoner-setup summoner-release phase-submit change review-submit probe-submit; do
   if [[ ! -f "$INSTALLED/skills/$s/SKILL.md" ]]; then
     echo "✗ skill missing from installed tree: $s"
     exit 1
   fi
 done
-echo "   ✓ all 8 registered skills present"
+echo "   ✓ all 6 registered skills present"
+
+# skills[] arrays must equal the actual skills/ directories — both plugin
+# manifests, normalized (root uses name/path objects; .claude-plugin uses
+# "./skills/x" strings). A 0.6.0 audit found .claude-plugin's list-form
+# array had zero validation; a stale entry there ships a dead listing.
+ARRAY_DIFF=$(python3 - "$REPO" <<'EOF'
+import json, os, sys
+repo = sys.argv[1]
+on_disk = sorted(d for d in os.listdir(os.path.join(repo, "skills"))
+                 if os.path.isdir(os.path.join(repo, "skills", d)))
+root = sorted(e["name"] for e in json.load(open(os.path.join(repo, "plugin.json")))["skills"])
+cp = json.load(open(os.path.join(repo, ".claude-plugin/plugin.json")))["skills"]
+if isinstance(cp, str):
+    cp = [cp]
+cp = sorted(p.rstrip("/").split("/")[-1] for p in cp)
+for name, arr in (("plugin.json", root), (".claude-plugin/plugin.json", cp)):
+    if arr != on_disk:
+        print(f"{name} skills[] {arr} != skills/ dirs {on_disk}")
+EOF
+)
+if [[ -n "$ARRAY_DIFF" ]]; then
+  echo "✗ skills[] array drift: $ARRAY_DIFF"
+  exit 1
+fi
+echo "   ✓ skills[] arrays match skills/ directories (both manifests)"
 
 echo "✓ install smoke test passed — the checkout's distribution path works"

@@ -7,7 +7,8 @@ This is the Summoner orchestration framework. It is a Claude Code plugin designe
 ## When Working on This Plugin
 
 ### Code You Touch
-- `skills/summoner/SKILL.md` — the meta-skill. This is the routing brain.
+- `references/single-loop.md` — the loop contract + suite routing table. Each
+  `commands/<name>.md` is its suite's self-sufficient entry.
 - `commands/*.md` — slash command definitions. Keep them thin (50-80 lines).
 - `agents/reviewer.md` — the independent ⑤ reviewer contract (frozen acceptance scope, evidence-bound verdicts). `agents/worker.md` ships on disk but unregistered, pending the evaluation gate.
 - `references/*.md` — protocol specs. Reference material, not workflows.

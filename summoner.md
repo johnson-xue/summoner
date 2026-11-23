@@ -15,9 +15,9 @@ stale paraphrase is how pre-August-2026 integrations drifted.
 2. Add `summoner.yaml` to your project root declaring your phase→skill mappings
    (field spec: `<plugin-root>/references/manifest-spec.md`).
 3. Optional: `<plugin-root>/scripts/init-memory-db.sh <project-name>`
-4. Invoke a workflow (below). The routing hub is
-   `<plugin-root>/skills/summoner/SKILL.md` — read it first; it dispatches phases,
-   enforces checkpoints, and names the references to load per phase.
+4. Invoke a workflow (below). The loop contract is
+   `<plugin-root>/references/single-loop.md` — read it first; it routes intents
+   to suites, and each `commands/<name>.md` carries its own phase rules.
 
 ## Workflows (canonical chains — full rules in `<plugin-root>/commands/<name>.md`)
 

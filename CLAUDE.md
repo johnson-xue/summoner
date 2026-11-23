@@ -21,8 +21,8 @@ Summoner is a portable, project-agnostic orchestration layer for AI coding agent
 ## Plugin Structure
 
 ```
-skills/summoner/SKILL.md    → Meta-skill: reads manifest, routes, enforces protocol
-commands/                   → Slash command entry points (thin — just workflow + rules)
+references/single-loop.md   → Loop contract + suite routing (the protocol index)
+commands/                   → Slash command entries (each orchestrates exactly one suite)
 agents/                     → reviewer.md (the ⑤ review agent) + worker.md (on disk; registration pending behavioral approval)
 references/                 → Protocol specifications (manifest, checkpoint, review, composition)
 scripts/                    → Validation and utility scripts

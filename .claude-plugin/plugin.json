@@ -19,7 +19,6 @@
   ],
   "commands": "./commands",
   "skills": [
-    "./skills/summoner",
     "./skills/summoner-setup",
     "./skills/summoner-release",
     "./skills/phase-submit",

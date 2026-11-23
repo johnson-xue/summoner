@@ -7,11 +7,6 @@
   "hooks": "./hooks/hooks.json",
   "skills": [
     {
-      "name": "summoner",
-      "path": "skills/summoner/SKILL.md",
-      "description": "Routes user intent through summoner.yaml manifest to domain skills. Enforces checkpoint protocol and post-game review. Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow."
-    },
-    {
       "name": "summoner-setup",
       "path": "skills/summoner-setup/SKILL.md",
       "description": "Initialize or repair a project's Summoner configuration when the user explicitly requests it, or guide them when they ask about the missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration."
