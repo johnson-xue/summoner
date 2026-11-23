@@ -629,8 +629,10 @@ func TestTerminalDefaultReviewWithoutOptIn(t *testing.T) {
 		}
 		code, stderr := callGate(t, reviewSubmitPayload(t, envelopeOver("run-1", "rev-1")))
 		wantExit2(t, code, stderr, "explicitly skipped")
-		if reloadRun(t, "run-1").Status != shared.StatusActive || len(reloadRun(t, "run-1").Reviews) != 0 {
-			t.Fatal("the skipped default must register nothing")
+		// Skipping the last unsettled phase IS the explicit UNREVIEWED finish
+		// (ship review round 2): the run closes through post-game, not ACTIVE.
+		if reloadRun(t, "run-1").Status != shared.StatusPostGamePending || len(reloadRun(t, "run-1").Reviews) != 0 {
+			t.Fatal("the skipped default must register nothing and close through post-game")
 		}
 	})
 

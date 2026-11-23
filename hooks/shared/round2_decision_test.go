@@ -200,3 +200,35 @@ func TestAutoPassAndNudgeDefenseInDepth(t *testing.T) {
 		t.Fatalf("a non-decision lifecycle event armed the nudge (pending %v, err %v)", pending, err)
 	}
 }
+
+// TestSkipOfTheLastPhaseClosesThroughPostGame — a skip that settles the last
+// unsettled route phase is the explicit UNREVIEWED finish: the run must not
+// stay ACTIVE with nothing to open and no checkpoint to close from (ship
+// review round 2, interaction F3).
+func TestSkipOfTheLastPhaseClosesThroughPostGame(t *testing.T) {
+	useTraceDir(t)
+	r := startTestRun(t, BudgetLimits{}) // debug: context → diagnosis
+	openAndSubmit(t, r, "context")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	openAndSubmit(t, r, "diagnosis")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionSkip)
+	if r.Status != StatusPostGamePending {
+		t.Fatalf("skip of the last route phase: status = %s, want POST_GAME_PENDING", r.Status)
+	}
+}
+
+// TestSkipMidRouteStillResumes — the same skip one phase earlier resumes the
+// run ACTIVE with the continuation cue: the closing rule is for the LAST
+// unsettled phase only.
+func TestSkipMidRouteStillResumes(t *testing.T) {
+	useTraceDir(t)
+	r := startTestRun(t, BudgetLimits{})
+	openAndSubmit(t, r, "context")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionSkip)
+	if r.Status != StatusActive || r.ContinueNudgeFor == "" {
+		t.Fatalf("mid-route skip: status %s cue %q, want ACTIVE with the cue", r.Status, r.ContinueNudgeFor)
+	}
+}
