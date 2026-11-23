@@ -31,7 +31,8 @@ AskUserQuestion at a rendered checkpoint.
 2. **Paste the binary's output VERBATIM into your reply.** Never summarize,
    reformat, or hand-write a status or checkpoint render — the canonical format
    lives in `${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`, and a pending checkpoint's
-   block (its id + nonce) is what display verification binds to.
+   whole canonical block — not its id or nonce alone — is what display
+   verification binds to.
 
 3. Interpret for the user, briefly, below the pasted block: what is awaited
    (their decision / a reviewer / reconciliation probes), unmet criteria, and

@@ -134,7 +134,8 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 	run := runs[0]
 	// Strictly typed read-only views (final-fix wave C4/C1c). The ENTIRE
 	// output of view:checkpoint is the canonical checkpoint message — the
-	// same bytes the Stop hook's whole-message binding compares; ordinary
+	// block the Stop hook's display verification looks for in the model's
+	// message; ordinary
 	// route/history diagnostics never join that view. view:review serves the
 	// EXACT reviewer launch capsule bytes plus the read-only review state —
 	// status never mints or rotates authority.

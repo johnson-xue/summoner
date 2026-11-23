@@ -1,5 +1,5 @@
 ---
-description: 修 Bug 全链路 — context → diagnosis（铁律）→ reproduce → fix → regression → review，每阶段经检查点由用户裁决。Phase 2-5 可按条件显式跳过（标 UNVERIFIED/UNREVIEWED）。「排查」「修一下」类短语默认路由到这里（repair-bias）；仅当用户明确只要原因不要改码时才用 /summoner:debug。
+description: 修 Bug 全链路 — context → diagnosis（铁律）→ reproduce → fix → regression → review。检查点先给结论；已确认且有证据的 context / reproduce / regression 由框架自动通过，其余由用户裁决。Phase 2-5 可按条件显式跳过（标 UNVERIFIED/UNREVIEWED）。「排查」「修一下」类短语默认路由到这里（repair-bias）；仅当用户明确只要原因不要改码时才用 /summoner:debug。
 allowed-tools:
   - Skill
   - Read
@@ -12,8 +12,11 @@ allowed-tools:
 
 # /summoner:fix
 
-Bug-repair pipeline. Every phase closes at a user checkpoint; decisions come
-only from AskUserQuestion (`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`).
+Bug-repair pipeline. Every phase closes at a checkpoint
+(`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`): one that needs
+no judgment (context / reproduce / regression, confirmed and evidenced) is
+passed by the framework without asking; every other decision comes only from
+AskUserQuestion.
 
 ## Route
 

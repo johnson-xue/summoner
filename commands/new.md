@@ -1,5 +1,5 @@
 ---
-description: 新增功能全链路 — context → requirements → plan → implement → verify → review，每阶段经检查点由用户裁决。需求调整走变更子环（增量恢复，不重跑流水线）。「加个功能」「新需求」类意图路由到这里。
+description: 新增功能全链路 — context → requirements → plan → implement → verify → review。context / verify 确认且有证据即自动通过，其余由用户裁决。需求调整走变更子环（增量恢复，不重跑流水线）。「加个功能」「新需求」类意图路由到这里。
 allowed-tools:
   - Skill
   - Read
@@ -12,8 +12,9 @@ allowed-tools:
 
 # /summoner:new
 
-Feature pipeline. Spec/plan first; every phase closes at a user checkpoint
-(`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`).
+Feature pipeline. Spec/plan first; every phase closes at a checkpoint
+(`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`; context / verify
+auto-pass when confirmed and evidenced, the rest are the user's.
 
 ## Route
 
