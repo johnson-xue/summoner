@@ -22,7 +22,15 @@ records `phase_submitted.rejected`.
 ```json
 {
   "phase_id": "diagnosis",
-  "summary": "one paragraph — what the phase concluded, not how",
+  "summary": "nil deref in the task loader",
+  "outcome": "unclear",
+  "conclusion": {
+    "summary": "TaskModule.handle() dereferences player.SubTask without a nil check",
+    "evidence": ["task/module.go:88", "task/module_test.go:41 reproduces"],
+    "approach": "read the call chain from the error site, then ran the existing test",
+    "open_questions": ["does the team-mode hero ban apply to sub-tasks?"],
+    "impact": "task-list loads for players with a completed sub-task"
+  },
   "artifacts": [
     {"path": "docs/reviews/2026-11-10-npe.md", "digest": "<sha256 of the file bytes>", "kind": "report"}
   ],
@@ -31,10 +39,41 @@ records `phase_submitted.rejected`.
 }
 ```
 
-Field rules:
+## The conclusion comes first
+
+The user's checkpoint shows a `结论` block built from `conclusion` and
+little else (`../../references/checkpoint-protocol.md` is the render
+contract). Write it for someone who never saw the search:
+
+- `conclusion.summary` — what the phase established, stated as a
+  conclusion: for a diagnosis the root cause, for an implement phase what
+  now works. A narrative of the search belongs in `approach`.
+- `conclusion.evidence` — what establishes the summary: `file:line`, test
+  names, command results the user can re-check, heaviest first.
+- `conclusion.approach` — how you established it: where you looked, why
+  there, what you ran.
+- `conclusion.open_questions` — what stays undecided and needs the user's
+  judgment. List every real one; an empty list is the claim that nothing is
+  open.
+- `conclusion.impact` — who or what the result affects.
+- `outcome` — `confirmed` (established on the evidence above), `failed`
+  (the phase's goal was not met), `unclear` (holes remain). Omitted reads
+  `unclear`. A listed open question stores `unclear` whatever was claimed.
+
+Done means: a reader who sees only the `结论` block can say what was found,
+why it is believed, and what is still undecided.
+
+## Field rules
 
 - `phase_id` — MUST equal the currently open phase (a mismatch is rejected).
-- `summary` — the checkpoint note the user reads; declarative, ≤80 chars ideal.
+- `conclusion.summary` + `conclusion.approach` — REQUIRED on a diagnosis
+  submission (the root cause and how it was reached); the gate rejects a
+  diagnosis without them and names the missing field. Other phases may omit
+  the conclusion — the checkpoint then shows each missing part as 未提供.
+- `outcome` — one of `confirmed`, `failed`, `unclear`.
+- `summary` — a short title (≤80 chars ideal): the acceptance record's
+  content and the `经过` line of later checkpoints. The checkpoint body
+  shows the conclusion, so keep this to the title.
 - `artifacts` — every file the phase produced, each with its content digest at
   submission time (the checkpoint freezes these versions; changing an artifact
   after submission invalidates a review of it). No artifacts → omit or `[]`.

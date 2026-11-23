@@ -221,9 +221,24 @@ func askInput(questionTexts ...string) map[string]interface{} {
 	return map[string]interface{}{"questions": qs}
 }
 
+// defaultSubmission is the phase-submit payload the fixtures submit by
+// default: a title plus a minimal conclusion. Since 0.7.0 a diagnosis
+// submission without conclusion.summary/approach is denied before any other
+// validation — without this default every "must be rejected" test would pass
+// for the wrong reason. The outcome is deliberately omitted (stored as
+// unclear): an unclear submission never auto-passes, so these fixtures always
+// land on a pending checkpoint.
+func defaultSubmission(phaseID string) shared.PhaseSubmission {
+	return shared.PhaseSubmission{
+		PhaseID:    phaseID,
+		Summary:    phaseID + " done",
+		Conclusion: &shared.Conclusion{Summary: phaseID + " conclusion", Approach: phaseID + " approach"},
+	}
+}
+
 func submitArgs(t *testing.T, phaseID string) string {
 	t.Helper()
-	return mustJSONStr(t, shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done"})
+	return mustJSONStr(t, defaultSubmission(phaseID))
 }
 
 // readGateTrace returns the run's trace events (nil when no file exists) and

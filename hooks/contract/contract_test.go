@@ -125,7 +125,7 @@ func rebuildBinaries() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{"session-start", "pretooluse-gate", "posttooluse", "subagentstop", "stop", "userpromptsubmit", "summoner-sandbox-probe"} {
+	for _, name := range []string{"session-start", "pretooluse-gate", "posttooluse", "subagentstop", "stop", "userpromptsubmit", "summoner-sandbox-probe", "summoner-status"} {
 		out := filepath.Join(dir, name)
 		if b, err := exec.Command("go", "build", "-o", out, "../"+name).CombinedOutput(); err != nil {
 			os.RemoveAll(dir)
@@ -1256,11 +1256,18 @@ func renderAndDecideSettle(t *testing.T, runID, toolUseID string, cp *shared.Che
 }
 
 // submitPhaseViaGate drives one phase-submit through the real gate binary.
+// The payload carries a minimal conclusion: since 0.7.0 a diagnosis
+// submission without conclusion.summary/approach is denied. The outcome is
+// left out (stored unclear) — an unclear submission never auto-passes, so
+// every fixture lands on a checkpoint the test then decides itself.
 func submitPhaseViaGate(t *testing.T, toolUseID, phaseID string, criteria []string) {
 	t.Helper()
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", toolUseID, map[string]interface{}{
 		"skill": "summoner:phase-submit",
-		"args":  mustJSON(t, shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done", CriteriaIDs: criteria}),
+		"args": mustJSON(t, shared.PhaseSubmission{
+			PhaseID: phaseID, Summary: phaseID + " done", CriteriaIDs: criteria,
+			Conclusion: &shared.Conclusion{Summary: phaseID + " conclusion", Approach: phaseID + " approach"},
+		}),
 	}), nil); code != 0 {
 		t.Fatalf("phase-submit(%s) exit = %d, want 0 (stderr: %q)", phaseID, code, stderr)
 	}

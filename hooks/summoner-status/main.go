@@ -288,8 +288,10 @@ func sandboxTier() string {
 
 // renderStatus renders one live run: the §4 read-only view (route, visits,
 // artifact versions, unmet criteria, who is awaited, default recall, budget,
-// sandbox tier) plus — when a checkpoint is pending — the checkpoint block the
-// model embeds verbatim. Pure: it reads only the given state.
+// sandbox tier) plus — when a checkpoint is pending — the checkpoint DETAIL
+// (everything the checkpoint message leaves out: shared.CheckpointDetail) and
+// then the checkpoint message itself, so the view ends with the block the
+// model pastes. Pure: it reads only the given state.
 func renderStatus(run *shared.RunState, sandbox string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚡ SUMMONER STATUS — run %s · workflow %s · %s\n", run.RunID, run.Workflow, run.Status)
@@ -305,9 +307,11 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	b.WriteString(postGameLines(run))
 	fmt.Fprintf(&b, "sandbox: %s\n", sandbox)
 	if cp := run.CurrentCheckpoint(); cp != nil {
-		// The embedded checkpoint block IS the canonical message — the same
-		// renderer view:checkpoint serves and the Stop hook binds (C4: one
-		// shared renderer, no second form to drift).
+		// 0.7.0 D1: the message is the decision surface (conclusion first);
+		// the detail right before it is the reference view — the ONE shared
+		// renderer, no second form to drift (C4).
+		b.WriteString(shared.CheckpointDetail(run, *cp))
+		b.WriteString("\n")
 		b.WriteString(shared.RenderCheckpointMessage(run, *cp))
 	}
 	return b.String()

@@ -628,6 +628,12 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		if sub.PhaseID == "" {
 			return denySubmit("", "Summoner gate: summoner:phase-submit payload requires phase_id.")
 		}
+		// 0.7.0 D1: the structured conclusion is part of the payload contract.
+		// The outcome enum must be legal, and a diagnosis must state its
+		// conclusion and how it was reached — denied before any effect.
+		if reason := shared.ValidateSubmissionConclusion(&sub); reason != "" {
+			return denySubmit(sub.PhaseID, "Summoner gate: summoner:phase-submit "+reason)
+		}
 		// T17 standalone-review scope freeze (fix-round m3: EVERY phase of the
 		// route, not just the entry): on the standalone review/ship routes any
 		// accepted submission freezes criteria into the acceptance view, so

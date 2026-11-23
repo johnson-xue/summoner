@@ -182,10 +182,32 @@ func TestRenderWaitUser(t *testing.T) {
 		"default recall: latest → context@v1 (offered: latest, context@v1)",
 		"budget: phase_tool_calls 4/40 · failed_checks 0/3 · run_rework 0/2 · delegations 1/5 · run-start 已生效",
 		"sandbox: L1（未配置沙箱）",
+		// 0.7.0 D1: the mechanism the checkpoint message no longer prints
+		// lives in the detail block right before it — complete and uncapped.
+		"checkpoint detail (cp-2 — nonce " + cp.Nonce + " — PHASE):",
+		"conclusion (unclear 未查清):",
+		"summary (phase summary; no structured conclusion was submitted): root cause located",
+		// (the fix route merges the six default review axes into every
+		// acceptance: 2 submitted + 6 defaults — exactly the table that used
+		// to bury the checkpoint message)
+		"criteria (8):",
+		"crit-architecture [judgment · required]",
+		"goal: Changes respect the existing architecture and layering",
+		"crit-evid [judgment · required]",
+		"artifacts (frozen versions, 1):",
+		"docs/diag.md @ a1b2c3d4e5f6a7b8",
+		"environment: tier=framework os=darwin",
+		"menu pages (3):",
+		"page 2/3:",
+		"recall targets:",
+		"- latest (phase context, visit context@v1)",
+		"model: ",
+		// …and the checkpoint message still ends the default view.
 		"⚡ SUMMONER CHECKPOINT cp-2 — nonce " + cp.Nonce + " — PHASE",
 		"phase: diagnosis",
 		"criteria: crit-evid, crit-root",
-		"menu:",
+		"║ ▶ 结论 — 未查清",
+		"║   root cause located",
 		"continue:",
 		"skip:",
 		"done:",
@@ -197,10 +219,15 @@ func TestRenderWaitUser(t *testing.T) {
 			t.Errorf("render missing %q\n--- render ---\n%s", want, out)
 		}
 	}
-	// The render satisfies the Stop hook's display verification as-is: the
-	// checkpoint id and nonce both appear (hasRenderBlock contract).
-	if !strings.Contains(out, cp.ID) || !strings.Contains(out, cp.Nonce) {
-		t.Fatalf("render must carry checkpoint id %s and nonce %s verbatim", cp.ID, cp.Nonce)
+	// The default view ENDS with the canonical checkpoint message, byte for
+	// byte: the model pastes the tail (or the whole output — the Stop hook's
+	// display binding is a containment match) and nothing follows the frame.
+	render, err := shared.LoadRun("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out, shared.RenderCheckpointMessage(render, cp)) {
+		t.Fatalf("the default view must end with the canonical checkpoint message:\n%s", out)
 	}
 }
 
@@ -324,8 +351,8 @@ func TestRenderBudgetAsks(t *testing.T) {
 	}
 	out = renderStatus(r, "L1（未配置沙箱）")
 	for _, want := range []string{
-		"extend ask (budget exhausted): extend=\"extend: 追加已显示额度\" hold=\"extend: 不追加\"",
-		"delta ",
+		"extend ask (budget exhausted): extend: 追加已显示额度 / extend: 不追加",
+		"delta phase_tool_calls=1",
 		"run-start 已生效",
 	} {
 		if !strings.Contains(out, want) {
@@ -383,7 +410,11 @@ func TestRenderPostGamePending(t *testing.T) {
 // {continue, recall, stop}, review-result the full default set.
 func TestRenderMenusByKind(t *testing.T) {
 	// menu options render as two-space-indented "  keyword: label" lines.
-	has := func(out string, kw string) bool { return strings.Contains(out, "  "+kw+":") }
+	// A menu keyword is offered when a label leads with it — on its own line
+	// in the checkpoint message, or inside the detail's page projection.
+	has := func(out string, kw string) bool {
+		return strings.Contains(out, "  "+kw+":") || strings.Contains(out, "· "+kw+":")
+	}
 
 	t.Run("change-confirm", func(t *testing.T) {
 		useStatusEnv(t)
@@ -623,15 +654,16 @@ func TestRenderPagesNote(t *testing.T) {
 	}
 	out := renderStatus(r, "L1（未配置沙箱）")
 
-	// Full six-action menu stays visible.
-	for _, kw := range []string{"continue:", "skip:", "done:", "recall:", "review:", "stop:"} {
-		if !strings.Contains(out, "  "+kw) {
-			t.Errorf("render missing full-menu label %q:\n%s", kw, out)
+	// Full six-action menu stays visible: page 1 in the checkpoint message,
+	// every page — labels and all — in the detail's page projection.
+	for _, label := range shared.DecisionMenuLabels(cp.Kind) {
+		if !strings.Contains(out, label) {
+			t.Errorf("render missing full-menu label %q:\n%s", label, out)
 		}
 	}
-	// Paging block: the shared canonical renderer prints the persisted pages
-	// under the menu (final-fix §2) — pages, their labels, and navigation.
-	if !strings.Contains(out, "menu:") || !strings.Contains(out, "page 1/2:") {
+	// Paging block: the detail prints the persisted pages — pages, their
+	// labels, and navigation.
+	if !strings.Contains(out, "menu pages (2):") || !strings.Contains(out, "page 1/2:") {
 		t.Fatalf("render missing the menu paging block:\n%s", out)
 	}
 	for _, want := range []string{

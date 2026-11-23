@@ -591,7 +591,11 @@ func writeL1Artifact(t *testing.T, name, content string) {
 // submitPhaseWithRefs drives phase-submit carrying check refs.
 func submitPhaseWithRefs(t *testing.T, phaseID string, refs []string, artifacts ...shared.ArtifactRef) (int, string) {
 	t.Helper()
-	args := mustJSONStr(t, shared.PhaseSubmission{PhaseID: phaseID, Summary: phaseID + " done", CheckRefs: refs, Artifacts: artifacts})
+	args := mustJSONStr(t, func() shared.PhaseSubmission {
+		sub := defaultSubmission(phaseID)
+		sub.CheckRefs, sub.Artifacts = refs, artifacts
+		return sub
+	}())
 	return callGate(t, toolPayloadAt(t, "tu-sub-"+phaseID+"-"+fmt.Sprint(time.Now().UnixNano()), "Skill", skillInput("summoner:phase-submit", args)))
 }
 
