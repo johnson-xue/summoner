@@ -144,28 +144,16 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		if ans == "" {
 			continue // unanswered: nothing to settle for this kind
 		}
-		if ride.Kind == "budget" {
-			switch ans {
-			case ride.Labels[0]: // confirm the displayed proposal
-				lim := cp.BudgetAsk.Proposal.Limits
-				settle.Confirm = &lim
-				settling = true
-			case ride.Labels[1]: // unlimited
-				lim := shared.BudgetLimits{}
-				settle.Confirm = &lim
-				settling = true
-			default:
-				return reject(fmt.Sprintf("budget question answer %q is not one of its offered pointer labels (%q / %q)", truncate(ans, 80), ride.Labels[0], ride.Labels[1]))
-			}
-		} else {
-			switch ans {
-			case ride.Labels[0]: // extend by the persisted delta
-				settle.Extend = true
-				settling = true
-			case ride.Labels[1]: // hold: answered, no effect
-			default:
-				return reject(fmt.Sprintf("extend question answer %q is not one of its offered pointer labels (%q / %q)", truncate(ans, 80), ride.Labels[0], ride.Labels[1]))
-			}
+		// 0.6.1: the extend ride is the ONLY budget ride-along (a `budget:`
+		// question is rejected upstream by ParseBudgetRideAlongs), so no kind
+		// switch remains.
+		switch ans {
+		case ride.Labels[0]: // extend by the persisted delta
+			settle.Extend = true
+			settling = true
+		case ride.Labels[1]: // hold: answered, no effect
+		default:
+			return reject(fmt.Sprintf("extend question answer %q is not one of its offered pointer labels (%q / %q)", truncate(ans, 80), ride.Labels[0], ride.Labels[1]))
 		}
 	}
 
@@ -212,24 +200,7 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 			return reject(reason)
 		}
 		settle.ToolUseID = in.ToolUseID
-		beforeConfirmed := run.BudgetConfirmed
 		beforeExts := len(run.BudgetExtensions)
-		if settle.Confirm != nil {
-			if _, err := run.SetBudgetLimits(*settle.Confirm, in.ToolUseID); err != nil {
-				return reject(err.Error())
-			}
-			if !beforeConfirmed && run.BudgetConfirmed {
-				if err := appendTrace(run, in, shared.TraceEvent{
-					Type: shared.EventBudgetConfirmed,
-					Payload: map[string]interface{}{
-						"checkpoint_id": cp.ID,
-						"limits":        budgetLimitsPayload(*settle.Confirm),
-					},
-				}, errW); err != nil {
-					return 2
-				}
-			}
-		}
 		if settle.Extend {
 			if _, err := run.ExtendBudget(in.ToolUseID); err != nil {
 				return reject(err.Error())
@@ -301,7 +272,6 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	// hook errors. With a settlement, ONE commit applies settlement AND
 	// decision (RecordDecisionWithBudget) — a validation failure or a failed
 	// Save leaves NEITHER applied.
-	beforeConfirmed := run.BudgetConfirmed
 	beforeExts := len(run.BudgetExtensions)
 	if settling {
 		settle.ToolUseID = in.ToolUseID
@@ -313,18 +283,8 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	}
 	// The settlement's traces precede checkpoint.decided, mirroring the
 	// commit order (settlement first, decision second) — and fire only when
-	// the reducer newly applied something.
-	if settle.Confirm != nil && !beforeConfirmed && run.BudgetConfirmed {
-		if err := appendTrace(run, in, shared.TraceEvent{
-			Type: shared.EventBudgetConfirmed,
-			Payload: map[string]interface{}{
-				"checkpoint_id": cp.ID,
-				"limits":        budgetLimitsPayload(*settle.Confirm),
-			},
-		}, errW); err != nil {
-			return 2
-		}
-	}
+	// the reducer newly applied something (since 0.6.1 that is only an
+	// extension; budgets settle at run start).
 	if settle.Extend && len(run.BudgetExtensions) > beforeExts {
 		if err := appendTrace(run, in, shared.TraceEvent{
 			Type: shared.EventBudgetExtended,

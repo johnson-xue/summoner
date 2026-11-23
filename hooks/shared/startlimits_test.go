@@ -6,6 +6,8 @@ package shared
 // (a run never starts on a guessed budget).
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -65,5 +67,88 @@ func TestStartRunSettlesBudget(t *testing.T) {
 	if !disk.BudgetConfirmed || disk.BudgetSettledBy != "run-start" || disk.Limits != r.Limits {
 		t.Fatalf("run-start settlement must persist: confirmed %v by %q limits %+v",
 			disk.BudgetConfirmed, disk.BudgetSettledBy, disk.Limits)
+	}
+}
+
+// exhaustedCheckpoint drives the run to a checkpoint that carries the extend
+// offer (limits are run-start configuration since 0.6.1).
+func exhaustedCheckpoint(t *testing.T, r *RunState) *CheckpointState {
+	t.Helper()
+	firstDisplayedCheckpoint(t, r)
+	if err := r.RecordDecision(r.CurrentCheckpoint().ID, DecisionContinue, "tu-c0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	r.CountToolCall("")
+	cp, err := r.SubmitPhaseUnstaged(PhaseSubmission{PhaseID: "diagnosis"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.ExtendAsk == nil {
+		t.Fatal("the exhaustion checkpoint must carry the extension offer")
+	}
+	displayCurrent(t, r)
+	return r.CurrentCheckpoint()
+}
+
+// TestExtendSettlementRequiresToolUseID pins the guard that the retired
+// budget-settlement cases used to cover: a settlement without the answering
+// call's tool_use_id is malformed and records nothing.
+func TestExtendSettlementRequiresToolUseID(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{PhaseToolCalls: 1})
+	cp := *exhaustedCheckpoint(t, r)
+
+	err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-e1", &BudgetSettlement{Extend: true})
+	if err == nil || !strings.Contains(err.Error(), "tool_use_id") {
+		t.Fatalf("a settlement without tool_use_id must reject, got %v", err)
+	}
+	disk, derr := LoadRun("run-1")
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if disk.Status != StatusWaitUser || disk.Checkpoints[1].Decided || len(disk.BudgetExtensions) != 0 {
+		t.Fatalf("a rejected settlement must record nothing: status %s decided %v receipts %d",
+			disk.Status, disk.Checkpoints[1].Decided, len(disk.BudgetExtensions))
+	}
+
+	// With the id, the same settlement extends and decides in one commit.
+	if err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-e2", &BudgetSettlement{ToolUseID: "tu-e2", Extend: true}); err != nil {
+		t.Fatalf("extend+decision: %v", err)
+	}
+	if r.Limits.PhaseToolCalls != 2 || len(r.BudgetExtensions) != 1 || r.Status != StatusActive {
+		t.Fatalf("extend+decision = limits %+v receipts %d status %s", r.Limits, len(r.BudgetExtensions), r.Status)
+	}
+}
+
+// TestExtendWithDecisionAtomicOnSaveFailure: the extend settlement and the
+// decision share ONE commit — a failed Save applies neither. (This replaces
+// the pre-0.6.1 confirm variant of the test; confirm payloads are inert now,
+// so the extension is the live settlement.)
+func TestExtendWithDecisionAtomicOnSaveFailure(t *testing.T) {
+	r := startTestRun(t, BudgetLimits{PhaseToolCalls: 1})
+	cp := *exhaustedCheckpoint(t, r)
+
+	sessDir := filepath.Join(runStateDirOverride, ProjectKey(), "sess-1")
+	if err := os.Chmod(sessDir, 0o500); err != nil {
+		t.Skipf("cannot chmod the state dir here: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(sessDir, 0o755) })
+
+	err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-x1", &BudgetSettlement{ToolUseID: "tu-x1", Extend: true})
+	if err == nil {
+		t.Fatal("RecordDecisionWithBudget must surface the Save failure")
+	}
+	if err := os.Chmod(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	disk, derr := LoadRun("run-1")
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if disk.Status != StatusWaitUser || disk.Checkpoints[1].Decided || len(disk.BudgetExtensions) != 0 || disk.Limits.PhaseToolCalls != 1 {
+		t.Fatalf("half-applied callback on disk: status %s decided %v receipts %d limits %+v",
+			disk.Status, disk.Checkpoints[1].Decided, len(disk.BudgetExtensions), disk.Limits)
 	}
 }

@@ -46,8 +46,9 @@ without consent. `skills/summoner-setup/SKILL.md` handles requested setup.
   independent reviewer. No project check registry means no invented mechanical
   evidence. Shipped L1 checks remain available; unavailable L2 isolation remains
   honestly `BLOCKED`. Explicitly skipped review is `UNREVIEWED`, never PASS.
-- User gates, recall, budget confirmation, stop/recovery and mandatory post-game
-  handling are unchanged. An emergency stop still leaves `POST_GAME_PENDING`.
+- User gates, recall, budgets (manifest-authored since 0.6.1 — no run-start
+  question), stop/recovery and mandatory post-game handling are unchanged. An
+  emergency stop still leaves `POST_GAME_PENDING`.
 
 After setup, validate and reload the capabilities for the existing run. Preserve
 accepted requirements, state and checkpoints; any proposed change to accepted

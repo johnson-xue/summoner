@@ -18,9 +18,11 @@
 // Before starting, the session's runs are checked: ANY live (non-CLOSED) run
 // means NO second run is ever created (a second live run would make every
 // other hook fail closed on ambiguity) — stderr one-line note, exit 0. A
-// start mints a fresh crypto/rand run id, StartRun with all-zero
-// BudgetLimits (= unlimited; budgets surface at the first checkpoint, spec
-// §5), and one workflow.started trace event. Unreadable state,
+// start mints a fresh crypto/rand run id, resolves the run-start budget
+// (ResolveStartLimits: the manifest's suggested_budgets, else unlimited —
+// settled at StartRun since 0.6.1, no checkpoint asks; an unreadable
+// manifest fails the start CLOSED), and appends one workflow.started trace
+// event. Unreadable state,
 // StartRun/AppendEvent failures → stderr + exit 2.
 //
 // The un-brick path is SUMMONER_HOOKS_DISABLE == "1" exactly: enforce

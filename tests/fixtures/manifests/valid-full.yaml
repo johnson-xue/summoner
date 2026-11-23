@@ -40,7 +40,7 @@ tool_scope:
   allowed_tools: [Read, Grep, Bash]
   readable: [docs, src]
   writable: [src]
-# Illustrative suggestions only; the first checkpoint asks the user to confirm.
+# Run-start limits: applied when the run starts, with no confirmation question (0.6.1).
 suggested_budgets:
   phase_tool_calls: 40
   failed_checks: 3

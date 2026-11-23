@@ -142,7 +142,6 @@ func TestSetBudgetLimitsInertAfterRunStart(t *testing.T) {
 	}
 }
 
-
 func TestExtendBudgetAppliesPersistedDelta(t *testing.T) {
 	// 0.6.1: limits are run-start configuration — seed them directly.
 	r := startTestRun(t, BudgetLimits{PhaseToolCalls: 2, Delegations: 1})
@@ -195,7 +194,11 @@ func TestExtendBudgetAppliesPersistedDelta(t *testing.T) {
 	}
 }
 
-func TestRecordDecisionWithBudgetAtomicOnSaveFailure(t *testing.T) {
+// TestDecisionWithInertSettlementAtomicOnSaveFailure: with budgets settled
+// at run start (0.6.1) a Confirm payload is inert, so this pins the DECISION's
+// commit atomicity alone — the live settlement case (an extension) is
+// TestExtendWithDecisionAtomicOnSaveFailure in startlimits_test.go.
+func TestDecisionWithInertSettlementAtomicOnSaveFailure(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	cp := firstDisplayedCheckpoint(t, r)
 

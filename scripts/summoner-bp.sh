@@ -73,18 +73,15 @@ if ! [[ "$PROJECT_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [[ "$PROJECT_NAME"
 fi
 
 # Capability names match the fixed reducer phases. These are provider defaults,
-# not instructions to execute phases in the order printed here.
+# not instructions to execute phases in the order printed here. The framework
+# ships NO methodology defaults (0.6.0/0.6.1): every unbound capability is
+# `none` and runs the built-in disclosed default — bind the project's own
+# skills here (a generated manifest previously defaulted to a plugin that may
+# be disabled, which stopped the run on a missing skill).
 PHASES=(requirements plan implement test diagnosis ops)
 SKILLS=()
 default_skill() {
-    case "$1" in
-        requirements) printf '%s' 'superpowers:brainstorming' ;;
-        plan)         printf '%s' 'superpowers:writing-plans' ;;
-        implement)    printf '%s' 'superpowers:executing-plans' ;;
-        test)         printf '%s' 'superpowers:test-driven-development' ;;
-        diagnosis)    printf '%s' 'superpowers:systematic-debugging' ;;
-        ops)          printf '%s' 'none' ;;
-    esac
+    printf '%s' 'none'
 }
 
 for phase in "${PHASES[@]}"; do
@@ -146,13 +143,14 @@ trap 'exit 143' TERM
     printf '  fix:\n    skill: "%s"\n' "${SKILLS[2]}"
     printf '  reproduce:\n    skill: "%s"\n' "${SKILLS[3]}"
     printf '%s\n' \
-        '  verify:' '    skill: "superpowers:verification-before-completion"' \
-        '  regression:' '    skill: "superpowers:verification-before-completion"' \
+        '  verify:' '    skill: "none"' \
+        '  regression:' '    skill: "none"' \
         '  review:' '    verification_spec:' '      criteria: []' \
         '      check_ids: []' '      readable: []' '      rubric: plugin:agents/reviewer.md'
 } > "$TEMP_FILE"
 "$SCRIPT_DIR/validate-manifest.sh" "$TEMP_FILE"
 mv -f "$TEMP_FILE" "$OUTPUT_FILE"
 printf '%s\n' 'Created summoner.yaml (v2). Review capability bindings before use.' \
-    'Tool scopes and budgets are not pre-authorized; confirm suggestions at the first checkpoint.'
+    'Every capability starts unbound (skill: none) and runs the built-in default until you bind your own.' \
+    'A suggested_budgets block, if you add one, applies as each run'"'"'s starting limits with no confirmation question; omit it to run unlimited.'
 printf 'Memory setup: %s/init-memory-db.sh %s\n' "$SCRIPT_DIR" "$PROJECT_NAME"
