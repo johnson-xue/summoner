@@ -284,3 +284,38 @@ func TestBlankEvidenceDoesNotAutoPass(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteClassCheckLosesL2Admission (ship review round 1): a project
+// check whose command became write-class in 0.7.0 (`make test`) can no
+// longer be an L2 check — the denial says so, instead of leaving a silent
+// regression in the registry.
+func TestWriteClassCheckLosesL2Admission(t *testing.T) {
+	useGateEnv(t)
+	writeLadderManifest(t, ladderCheck("make-test", "make", []string{"test"}, "project"))
+	startFixRun(t, shared.BudgetLimits{}) // diagnosis not accepted: freeze on
+
+	code, stderr := callGate(t, toolPayload(t, "Bash", bashInput("make test")))
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %q)", code, stderr)
+	}
+	for _, want := range []string{"[写类规则: write-class verb: make]", "make-test", "L2", "read-class"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("denial must carry %q: %q", want, stderr)
+		}
+	}
+
+	// Read-only fan-out hints: xargs and find -exec are write-class by
+	// long-standing design; the denial names the read-class alternative.
+	for cmd, hint := range map[string]string{
+		"find . -name '*.go' | xargs wc -l":    "xargs",
+		"find . -name '*.go' -exec wc -l {} +": "find -exec",
+	} {
+		code, stderr = callGate(t, toolPayload(t, "Bash", bashInput(cmd)))
+		if code != 2 {
+			t.Fatalf("%q: exit = %d, want 2", cmd, code)
+		}
+		if !strings.Contains(stderr, hint) || !strings.Contains(stderr, "grep -r") {
+			t.Errorf("%q: the denial should name the write-class rule and the read-class fan-out alternative: %q", cmd, stderr)
+		}
+	}
+}

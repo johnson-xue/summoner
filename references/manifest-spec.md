@@ -245,7 +245,11 @@ spec §3). Checks may be cited at phase-submit as `check://<check_id>`.
   admission consumed — after every admission a fresh probe is required; a
   probe at seq 2 never authorizes a check at seq 1000). `posttooluse`
   re-verifies definition digest, exact line and the admission's OWN probe
-  before writing `check.result`. A pass carries the tier
+  before writing `check.result`. Since 0.7.0 the write class is wider
+  (`make`, `npm test`, `tar -x`, `go build`, …): a registered line that is
+  write-class is never admitted as L2 — the gate's denial names the check
+  and asks for a read-class line (`go test` stays read-class). A pass
+  carries the tier
   `L2(basis:paired_probe@<probe-id>, point-in-time)` — sandbox proof is
   observational and time-scoped, never a standing property. No/declined/
   consumed probe → honest BLOCKED `sandbox_unproven`; definition drift →

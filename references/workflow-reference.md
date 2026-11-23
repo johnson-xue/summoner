@@ -18,17 +18,31 @@ capability, it never rewrites the order):
 
 (M) = iron law: in fix/debug, writes are gate-denied until the diagnosis
 phase is ACCEPTED at its checkpoint. "Write" is the gate's write-class
-verdict on the command text (0.7.0): file and process writers and shells;
-interpreters with inline code (`python3 -c`, `node -e`, `perl -i`, awk
-`system()`); build and run (`make`, `go run`, `npm i`, `npx`,
-`pip install`); remote and copy (`ssh`, `rsync`, `scp`); downloads
-(`curl -o`, `wget`); unpacking (`tar -x`, `unzip`); `find -exec`; and
-every git subcommand outside the read-only table (`status`, `log`, `diff`,
-`rev-parse`, `ls-files`, …). A redirection is judged on its own: to a
-file it is a write, to `/dev/null` it is not, and `2>&1` is a descriptor
-copy. Until diagnosis is accepted the executable surface is read-only
-commands, LSP and the tools the manifest declares read-only; a Bash
-denial names the rule it matched.
+verdict on the command text (0.7.0). The ruling names categories; each is
+covered by its tools' spellings:
+- file and process writers, shells, `source`;
+- interpreters with inline code (`python3 -c`, `node -e`, `perl -i`, awk
+  `system()`, `sed -i`);
+- build and run: `make`, `npx`; `go build` / `install` / `get` / `generate`
+  / `fmt` / `run`; `npm`, `pnpm`, `yarn`, `bun`, `deno` run / test / build
+  / install forms; `pip`, `pipx`, `poetry`, `uv` installs;
+- remote and copy (`ssh`, `rsync`, `scp`); downloads (`curl` when it saves,
+  `wget`); unpacking and repacking (`tar` x / c / r / u / A, `unzip`);
+  `find -exec`; wrappers that run a command (`timeout`, `nice`, …);
+- every git subcommand outside the read-only table (`status`, `log`, `diff`,
+  `rev-parse`, `ls-files`, …).
+
+Three rules cut across them. A redirection is judged on its own: to a file
+it is a write, to `/dev/null` it is not, and `2>&1` is a descriptor copy.
+A command NAME bash computes when it runs (`"$(echo rm)"`, `$X`, `$'…'`)
+writes — nothing is known about that program. `go test` and `go vet` stay
+read-only: reproducing a failure is diagnosis work.
+
+Until diagnosis is accepted the executable surface is read-only commands,
+LSP and the tools the manifest declares read-only; a Bash denial names the
+rule it matched. One consequence for projects: a check registered in
+`summoner.yaml` whose command is write-class (`make test`) can no longer be
+admitted as an L2 check — re-register a read-class line.
 
 Capability keys ≠ route phase ids: the manifest binds `phases.<capability>`
 (the ops capability key is `phases.ops`), never a route's internal phase id

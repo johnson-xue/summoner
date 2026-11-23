@@ -90,6 +90,23 @@ func TestFinalWaveWriteBarrier(t *testing.T) {
 		// is still the command's verb (and the gate must answer, never hang)
 		{"ls\nrm scratch", 2}, {"ls\r\nrm scratch", 2}, {"ls && \\\nrm scratch", 2},
 		{"ls\ncat 'a path'", 0}, {"ls && \\\ncat 'a path'", 0},
+		// ship review round 1 (classifier lens): command words computed at
+		// run time, grouping forms, whole categories, lexer edges — each
+		// judged READ before the fix, most with the effect proven in bash.
+		{`"$(echo touch)" scratch`, 2}, {"`echo touch` scratch", 2}, {`X=touch; "$X" scratch`, 2},
+		{`$'\x74\x6f\x75\x63\x68' scratch`, 2},
+		{`case "" in *) rm scratch;; esac`, 2}, {`cat <(rm scratch)`, 2},
+		{`f() { rm scratch; }; f`, 2}, {`function f { rm scratch; }; f`, 2}, {`coproc rm scratch`, 2},
+		{"go build ./...", 2}, {"go install", 2}, {"go generate ./...", 2}, {"go fmt ./...", 2},
+		{"npm run build", 2}, {"pnpm install", 2}, {"tar -czf x.tgz dir", 2},
+		{`python3 -ic 'print(1)'`, 2}, {`node -pe "1+1"`, 2}, {`sed '/x/w out.txt' f`, 2},
+		{"source x.sh", 2}, {"curl -sSo out.json https://example.com", 2},
+		{"[[ 1 -eq 1 ]]>f", 2}, {"cat <<'EOF' f\r\na\r\nEOF\r\nrm scratch\r\n", 2},
+		{`git -c alias.x='!rm scratch' x`, 2},
+		{`if [[ a > b ]]; then echo big; fi`, 0}, {`while [[ $i > 0 ]]; do break; done`, 0},
+		{"git --version", 0}, {"git config user.name", 0}, {"git reflog -5", 0}, {"git branch -avv", 0},
+		{"git stash list", 0}, {"git worktree list", 0}, {"git show-ref", 0}, {"git apply --check p.diff", 0},
+		{`diff <(sort a) <(sort b)`, 0}, {`echo "$(cat f)"`, 0}, {`cat "$HOME/x"`, 0}, {`echo ${x:?err > file}`, 0},
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {

@@ -10,40 +10,61 @@ package main
 // a false positive costs one denied command, a false negative costs the
 // iron law.
 //
-// Two channels, judged independently (writeClassRule):
+// Three channels, judged independently (writeClassRule):
 //
 //   - REDIRECTS, one at a time (redirectRule). The lexer (shelllex.go)
 //     says which '>' are operators, so `ls 2>/dev/null`, `echo "a > b"`,
-//     `[[ a > b ]]` and a '>' in a comment or heredoc body are no longer
-//     writes. A redirection to a FILE is a write unless the target is
-//     exactly /dev/null; a file-descriptor copy (2>&1) or close (>&-) is
-//     not a file target. Anything else is a file: `> /dev/null > f`,
-//     `>$NULL`, `>~/dev/null` all write.
+//     `if [[ a > b ]]` and a '>' in a comment, a heredoc body or a
+//     parameter expansion are no longer writes. A redirection to a FILE is
+//     a write unless the target is exactly /dev/null; a file-descriptor
+//     copy (2>&1) or close (>&-) is not a file target. Anything else is a
+//     file: `> /dev/null > f`, `>$NULL`, `>~/dev/null` all write.
 //
-//   - VERBS, per command (commandRule): the command-position words after
-//     assignments, wrappers (env / command / nohup) and reserved words
-//     (`then rm x`, `time make`, `! rm`). A substitution that IS the first
-//     word (`"$(echo rm)" -rf x`) writes: its output becomes the command.
+//   - THE COMMAND WORD (commandRule): a command name bash computes when it
+//     runs — from a substitution, a backtick, a variable, an arithmetic or
+//     parameter expansion, or $'…' — names no known program and writes:
+//     `"$(echo rm)" -rf x` runs rm. So does a command supplied outright by
+//     a substitution (`"$(echo rm)" -rf x`).
 //
-// The verb table (D5.5, user ruling 2026-11-23 — the diagnosis freeze
-// covers everything that can change the tree, not just file writers):
+//   - VERBS, per command (verbTableRule): the command-position words after
+//     assignments, wrappers (env / command / builtin / nohup) and reserved
+//     words (`then rm x`, `time make`, `! rm`, `function f {…}`, `coproc`).
+//
+// The verb table (D5.5, user ruling 2026-11-23 — the diagnosis freeze covers
+// everything that can change the tree, not just file writers). The ruling
+// names CATEGORIES; a category is covered by the spellings of its tools,
+// not by one example each (ship review round 1):
 //
 //   - file and process writers: rm mv cp tee chmod chown touch mkdir dd
-//     truncate ln install sudo xargs eval, and shells (sh bash zsh);
-//   - interpreters with inline code: python -c, node -e, perl -i/-e,
-//     awk system() / `| getline` / `print >`, awk -f;
-//   - build and run: make, go run, npm i/install/ci/add, npx, pip install;
-//   - remote and copy: ssh rsync scp; download to disk: curl -o/-O, wget;
-//     unpack: tar -x, unzip; find -exec/-delete;
+//     truncate ln install sudo xargs eval, shells (sh bash zsh), `source`;
+//   - interpreters with inline code: python -c (in any short cluster) and
+//     programs read from stdin, python -m <module> outside a small
+//     read-only set, node -e/-p/-r/- (in any cluster), perl -i/-e, awk
+//     system() / `| "cmd"` / `print >` / -f, sed -i and sed `w file`,
+//     gofmt -w;
+//   - build and run: make, npx; go build/install/get/generate/fmt/clean/
+//     run/mod (writing forms)/env -w; npm/pnpm/yarn/bun/deno run-test-build
+//     forms; pip/pipx/poetry/uv install forms, bunx, uvx;
+//   - remote and copy: ssh rsync scp; downloads: curl whenever it saves
+//     (short options cluster), wget; unpacking and repacking: tar
+//     x/c/r/u/A, unzip; find -exec/-delete/-fprint;
+//   - wrappers that run a command (timeout nice watch caffeinate …) are
+//     judged by trying every later word as a verb;
 //   - sed -i, and git: every subcommand outside the read-only table writes
-//     (unknown ones included — the default flipped in 0.7.0).
+//     (unknown ones included — the default flipped in 0.7.0), and the
+//     argument-dependent ones (branch tag config reflog stash worktree …)
+//     are judged by their own read/write forms.
 //
-// Known residuals (accepted, conservative or out of reach of a text
-// classifier): a script run as an argument (`bash x.sh` is write-class
-// through its shell; `python3 x.py`, `node x.js` and `./x.sh` are not),
-// dd-like writers not in the table, curl/wget variants without the listed
-// flags, and compound shell syntax the lexer does not model (case
-// patterns). Each of those is a verb the table simply does not name yet.
+// `go test` is deliberately read-class: reproducing a failure is diagnosis
+// work, and registered project checks commonly run it (`go test -c`, which
+// writes a binary, is not).
+//
+// Known residuals (a text classifier is not a shell): a script run as an
+// argument (`python3 x.py`, `node x.js`, `./x.sh`), tools whose write is a
+// subcommand the table does not name yet (docker, kubectl, sqlite3, cargo,
+// brew, gzip, zip, …), curl long options outside the list, and shell
+// constructs the lexer does not model. An allowlist default (unknown verb →
+// write, as git already is) would close the class; it is a policy decision.
 //
 // What a write-class verdict costs depends on the run's status: under the
 // diagnosis freeze and at a pending checkpoint the call is denied; while a
@@ -66,6 +87,9 @@ var (
 		"sh": true, "bash": true, "zsh": true,
 		// D5.5 (a)
 		"make": true, "npx": true, "ssh": true, "rsync": true, "scp": true, "unzip": true,
+		"bunx": true, "uvx": true,
+		// `source` and `.` run a script file.
+		"source": true, ".": true,
 		"__ambiguous_wrapper__": true,
 	}
 
@@ -85,42 +109,95 @@ var (
 
 	// gitReadOnlySubcommands are read-only by nature; subcommands whose
 	// effect depends on their arguments (branch, tag, config, remote, …)
-	// are judged below. Anything in neither table writes.
+	// are judged below. Anything in neither table writes. Only real git
+	// builtins belong here: a name git does not have is an alias, and an
+	// alias (`git -c alias.x='!cmd' x`) runs a command.
 	gitReadOnlySubcommands = map[string]bool{
 		"status": true, "log": true, "diff": true, "show": true,
 		"rev-parse": true, "rev-list": true, "ls-files": true, "ls-tree": true, "ls-remote": true,
 		"cat-file": true, "describe": true, "blame": true, "annotate": true, "grep": true,
-		"shortlog": true, "name-rev": true, "merge-base": true, "for-each-ref": true,
+		"shortlog": true, "name-rev": true, "merge-base": true, "for-each-ref": true, "merge-tree": true,
 		"check-ignore": true, "check-attr": true, "check-ref-format": true,
-		"var": true, "version": true, "help": true, "count-objects": true, "fsck": true,
+		"var": true, "version": true, "help": true, "count-objects": true, "fsck": true, "fsck-objects": true,
 		"verify-commit": true, "verify-tag": true, "verify-pack": true,
-		"whatchanged": true, "cherry": true, "patch-id": true, "dag": true,
+		"cherry": true, "patch-id": true,
+		"show-ref": true, "show-branch": true, "diff-tree": true, "diff-index": true,
+		"range-diff": true, "fast-export": true,
+	}
+
+	// gitReadOnlyFlags are global git options with no effect on the tree.
+	gitReadOnlyFlags = map[string]bool{
+		"--version": true, "--help": true, "-h": true, "-p": true, "-P": true,
+		"--no-pager": true, "--paginate": true, "--bare": true,
+		"--no-optional-locks": true, "--literal-pathspecs": true, "--no-literal-pathspecs": true,
+		"--html-path": true, "--man-path": true, "--info-path": true,
+		"--no-replace-objects": true,
 	}
 
 	// gitFlagsWithValue — global git flags whose argument must be skipped
-	// before the subcommand: git -C /repo commit …
+	// before the subcommand: git -C /repo commit … (--exec-path doubles as
+	// a bare read: it prints the path.)
 	gitFlagsWithValue = map[string]bool{
 		"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
 		"--namespace": true, "--exec-path": true,
 	}
 
-	// npmInstallSubcommands and pipInstallSubcommands are the package
-	// managers' install forms (D5.5: build and run).
-	npmInstallSubcommands = map[string]bool{"i": true, "install": true, "in": true, "ci": true, "add": true}
-	pipInstallSubcommands = map[string]bool{"install": true, "uninstall": true}
+	// goWriteSubcommands / goModWriteSubcommands: `go test` and `go vet`
+	// are diagnosis work; everything that builds, installs, fetches,
+	// formats or generates writes.
+	goWriteSubcommands    = map[string]bool{"build": true, "install": true, "get": true, "generate": true, "fmt": true, "clean": true, "run": true, "work": true, "fix": true, "tool": true}
+	goModWriteSubcommands = map[string]bool{"tidy": true, "download": true, "vendor": true, "edit": true, "init": true}
 
-	// findEffectOptions make find run a command, delete, or write a file.
-	findEffectOptions = []string{"-exec", "-ok", "-delete", "-fprint", "-fls"}
+	// JS package managers: read-only subcommands; everything else runs,
+	// installs or publishes.
+	pkgReadSubcommands = map[string]bool{
+		"ls": true, "list": true, "ll": true, "la": true, "v": true, "view": true, "info": true, "show": true,
+		"outdated": true, "help": true, "version": true, "--version": true, "-v": true, "-V": true,
+		"ping": true, "root": true, "prefix": true, "bin": true, "doctor": true, "search": true, "s": true,
+		"explain": true, "why": true, "licenses": true,
+	}
+
+	// pythonReadModules are the -m modules that only read and print.
+	pythonReadModules = map[string]bool{
+		"json.tool": true, "json": true, "pprint": true, "this": true, "platform": true, "sys": true, "base64": true,
+	}
+
+	// awkNames are the awk family; the program rules apply to each.
+	awkNames = map[string]bool{"awk": true, "gawk": true, "mawk": true, "nawk": true, "original-awk": true}
+
+	// curlShortWithValue are curl's short options that take a value.
+	curlShortWithValue = map[byte]bool{
+		'A': true, 'b': true, 'c': true, 'C': true, 'd': true, 'D': true, 'e': true, 'E': true,
+		'F': true, 'H': true, 'K': true, 'm': true, 'o': true, 'P': true, 'Q': true, 'T': true,
+		'u': true, 'U': true, 'w': true, 'x': true, 'X': true, 'y': true, 'Y': true,
+	}
+
+	// curlLongWrites are curl's long options that always save or send a file.
+	curlLongWrites = map[string]bool{
+		"remote-name": true, "remote-name-all": true, "remote-header-name": true, "cookie-jar": true,
+		"trace": true, "trace-ascii": true, "etag-save": true, "config": true, "upload-file": true, "output-dir": true,
+	}
+
+	// tarLongWrites are tar's long forms that unpack or repack.
+	tarLongWrites = map[string]bool{
+		"--extract": true, "--get": true, "--create": true, "--append": true, "--update": true,
+		"--catenate": true, "--concatenate": true, "--delete": true,
+	}
 
 	envAssign    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	pythonNameRe = regexp.MustCompile(`^python[0-9.]*$`)
+	pipNameRe    = regexp.MustCompile(`^pip[0-9.]*$`)
+	awkSystemRe  = regexp.MustCompile(`system\s*\(`)
+	awkPipeCmdRe = regexp.MustCompile(`\|\s*["']`)
+	sedWriteRe   = regexp.MustCompile(`(?:^|[^[:alnum:]_\\])w\s+[^\s;{}]`)
 
 	// shellReservedWords may precede the verb of a command: `then rm x`,
-	// `time make`, `! rm`, `{ rm; }`. They are skipped when they come first.
+	// `time make`, `! rm`, `{ rm; }`, `coproc rm`, `function f {…}`. They
+	// are skipped when they come first.
 	shellReservedWords = map[string]bool{
 		"then": true, "do": true, "else": true, "elif": true, "if": true, "while": true,
 		"until": true, "for": true, "case": true, "select": true, "function": true,
-		"time": true, "!": true, "{": true, "}": true,
+		"time": true, "!": true, "{": true, "}": true, "coproc": true,
 	}
 )
 
@@ -136,7 +213,12 @@ func writeClassRule(command string) string {
 	if strings.TrimSpace(command) == "" {
 		return ""
 	}
-	toks := lexShell(command)
+	return ruleFor(lexShell(command))
+}
+
+// ruleFor judges an already lexed command. Split from writeClassRule so the
+// lexer's own stop marker can be pinned by a test.
+func ruleFor(toks []shTok) string {
 	for _, t := range toks {
 		if t.kind == shOp && t.text == opLexStop {
 			return "shell lexer stopped early (unparseable command text)"
@@ -184,37 +266,74 @@ func redirectRule(toks []shTok) string {
 	return ""
 }
 
-// verbRule judges every command of the token stream (commands are separated
-// by the break operators) and returns the first rule that matches.
+// verbRule judges every command of the token stream and returns the first
+// rule that matches. Commands are separated by the break operators, and a
+// substitution's nested text is a command of its own; the words that follow
+// a substitution's closing marker belong to the OUTER command again — they
+// continue its word (the argument `"...$(x)/tail"`) or follow it
+// (`X=$(cmd) rm -rf x` runs rm). Gathering words per nesting level keeps
+// both true: a continuation word is never mistaken for a command word, and
+// a real command after an assignment is never lost.
 func verbRule(toks []shTok) string {
 	if rule := substitutedCommandRule(toks); rule != "" {
 		return rule
 	}
-	start := 0
-	for i := 0; i <= len(toks); i++ {
-		if i == len(toks) || (toks[i].kind == shOp && shBreaks[toks[i].text]) {
-			if rule := commandRule(toks[start:i]); rule != "" {
+	outer := []*[]shTok{} // the commands suspended by an open substitution / arithmetic
+	words := []shTok{}
+	for _, t := range toks {
+		if t.kind == shWord {
+			words = append(words, t)
+			continue
+		}
+		switch t.text {
+		case opSubstOpen, opArithOpen:
+			suspended := words // by value: the variable is reused for the nested command
+			outer = append(outer, &suspended)
+			words = []shTok{}
+			continue
+		case opSubstClose, opArithClose:
+			if n := len(outer); n > 0 {
+				words = *outer[n-1]
+				outer = outer[:n-1]
+			}
+			continue
+		}
+		if shBreaks[t.text] {
+			if rule := commandRule(words); rule != "" {
 				return rule
 			}
-			start = i + 1
+			words = []shTok{}
 		}
 	}
-	return ""
+	return commandRule(words)
 }
 
 // substitutedCommandRule catches a command substitution that IS the first
-// word of a command — `"$(echo rm)" -rf x`: nothing literal stands between
-// the substitution and the command position, so its OUTPUT is the command
-// name (and words after it are its arguments). That command is unknown until
-// it runs, and the nested text says nothing about it (here it is `echo rm`).
-// A substitution that merely builds part of a word —
-// `$(git rev-parse …)/bin/tool`, `x="$(cat v)"` — is judged by the word it
-// sits in, like any other. The rule needs words AFTER the substitution; a
-// bare `"$(ls)"` is its nested command alone.
+// word of a command — `"$(echo rm)" -rf x`: nothing literal stands before
+// it in command position, so its OUTPUT is the command name (and words
+// after it are its arguments). That command is unknown until it runs, and
+// the nested text says nothing about it (there it is `echo rm`). The rule
+// needs a word after the substitution; a bare `$(ls)` is its nested command
+// alone. Inside arithmetic the spliced words are numbers, not a command.
 func substitutedCommandRule(toks []shTok) string {
+	arith := 0
 	for i, t := range toks {
-		if t.kind != shOp || t.text != opSubstOpen || t.attachedBefore || t.attachedAfter {
+		if t.kind != shOp {
 			continue
+		}
+		switch t.text {
+		case opArithOpen:
+			arith++
+			continue
+		case opArithClose:
+			arith--
+			continue
+		case opSubstOpen:
+		default:
+			continue
+		}
+		if arith > 0 || t.attachedBefore || t.attachedAfter {
+			continue // inside arithmetic, or part of a larger word
 		}
 		if i > 0 {
 			prev := toks[i-1]
@@ -225,45 +344,46 @@ func substitutedCommandRule(toks []shTok) string {
 		depth := 0
 		for j := i; j < len(toks); j++ {
 			u := toks[j]
-			if u.kind == shOp {
-				switch {
-				case u.text == opSubstOpen:
-					depth++
-				case u.text == opSubstClose:
-					depth--
-				case depth == 0 && shBreaks[u.text] && !(j == i+1 && u.text == ";"):
-					return "" // the command ended with no word after the substitution
+			if u.kind != shOp {
+				if depth == 0 {
+					return "command substitution in command position: $(…) supplies the command"
 				}
 				continue
 			}
-			if depth == 0 {
-				return "command substitution in command position: $(…) supplies the command"
+			switch {
+			case u.text == opSubstOpen:
+				depth++
+			case u.text == opSubstClose:
+				depth--
+			case depth == 0 && shBreaks[u.text] && !(j == i+1 && u.text == ";"):
+				return "" // the command ended with no word after the substitution
 			}
 		}
 	}
 	return ""
 }
 
-// commandRule judges one command's verb.
-func commandRule(cmd []shTok) string {
-	if len(cmd) == 0 {
+// commandRule judges one command — its words only (operators excluded) —
+// by its command word and its verb.
+func commandRule(words []shTok) string {
+	if len(words) == 0 {
 		return ""
 	}
-	var words []string
-	for _, t := range cmd {
-		if t.kind == shWord {
-			words = append(words, t.text)
-		}
+	if words[0].text == "case" {
+		return "" // the words up to `)` are the case subject, not a command
 	}
-	for len(words) > 0 && (shellReservedWords[words[0]] || envAssign.MatchString(words[0])) {
-		if words[0] == "time" {
+	for len(words) > 0 && (shellReservedWords[words[0].text] || envAssign.MatchString(words[0].text)) {
+		if words[0].text == "function" && len(words) > 1 {
+			words = words[1:] // the function's name precedes its body
+		}
+		if words[0].text == "time" {
 			// `time [-p] [-l] [-o FILE] command` — the keyword's own options.
 			words = words[1:]
-			for len(words) > 0 && (words[0] == "-p" || words[0] == "--portability" || words[0] == "-l" || words[0] == "--list" ||
-				strings.HasPrefix(words[0], "--format=") || strings.HasPrefix(words[0], "-f")) {
+			for len(words) > 0 && (words[0].text == "-p" || words[0].text == "--portability" || words[0].text == "-l" || words[0].text == "--list" ||
+				strings.HasPrefix(words[0].text, "--format=") || strings.HasPrefix(words[0].text, "-f")) {
 				words = words[1:]
 			}
-			if len(words) > 0 && (words[0] == "-o" || words[0] == "--output") {
+			if len(words) > 1 && (words[0].text == "-o" || words[0].text == "--output") {
 				words = words[2:] // … and its value
 			}
 			continue
@@ -273,15 +393,48 @@ func commandRule(cmd []shTok) string {
 	if len(words) == 0 {
 		return ""
 	}
-	verbIdx, verb := resolveVerb(words)
+	texts := make([]string, len(words))
+	for i, w := range words {
+		texts[i] = w.text
+	}
+	verbIdx, verb := resolveVerb(texts)
 	if verbIdx < 0 {
 		return ""
 	}
-	args := words[verbIdx+1:]
+	if words[verbIdx].expanded {
+		// The command word is computed when it runs: a substitution, an
+		// expansion or $'…' supplies it, and its text here is only a
+		// spelling of that value. One spelling is still a known PROGRAM
+		// NAME: a path whose last component is literal
+		// ("${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status") — the
+		// expansion only chooses the directory, so the basename is judged
+		// like any verb ("$BIN/rm" is rm). When the expansion supplies the
+		// last component, nothing is known about the program.
+		if base, literal := literalBasename(words[verbIdx].text); literal {
+			verb = base
+		} else {
+			return "command word is computed at run time (a substitution, an expansion or $'…' supplies it) — unknown until it runs"
+		}
+	}
+	args := texts[verbIdx+1:]
 	if rule := verbTableRule(verb, args); rule != "" {
 		return rule
 	}
 	return scanningWrapperRule(verb, args)
+}
+
+// literalBasename splits an expanded command word into its final path
+// component and reports whether that component is literal (no expansion
+// inside it).
+func literalBasename(text string) (string, bool) {
+	if !strings.ContainsRune(text, '/') {
+		return "", false
+	}
+	base := path.Base(text)
+	if strings.ContainsAny(base, "$`\\") {
+		return "", false
+	}
+	return base, true
 }
 
 // verbTableRule is the per-verb table: "" when the verb, with these
@@ -290,8 +443,8 @@ func verbTableRule(verb string, args []string) string {
 	switch {
 	case verb == "git":
 		return gitRule(args)
-	case verb == "awk":
-		return awkRule(args)
+	case awkNames[verb]:
+		return awkRule(verb, args)
 	case verb == "find":
 		return findRule(args)
 	case verb == "tar":
@@ -301,65 +454,41 @@ func verbTableRule(verb string, args []string) string {
 	case verb == "wget":
 		return wgetRule(args)
 	case verb == "go":
-		if len(args) > 0 && args[0] == "run" {
-			return "go run (builds and runs)"
-		}
-	case verb == "npm":
-		if len(args) > 0 && npmInstallSubcommands[args[0]] {
-			return "npm " + args[0] + " (installs packages)"
-		}
-	case verb == "pip" || verb == "pip3":
-		if len(args) > 0 && pipInstallSubcommands[args[0]] {
-			return "pip " + args[0] + " (changes the environment)"
-		}
+		return goRule(args)
+	case verb == "gofmt" || verb == "goimports" || verb == "gofumpt":
+		return writeFlagRule(verb, args)
+	case verb == "npm" || verb == "pnpm" || verb == "yarn" || verb == "bun" || verb == "deno":
+		return packageManagerRule(verb, args)
+	case pipNameRe.MatchString(verb):
+		return anyArgRule(verb, args, "install", "uninstall", "download", "wheel", "build")
+	case verb == "pipx":
+		return anyArgRule(verb, args, "install", "uninstall", "run", "runpip", "inject", "upgrade", "reinstall", "ensurepath")
+	case verb == "poetry":
+		return anyArgRule(verb, args, "install", "add", "remove", "update", "lock", "new", "init", "build", "publish", "self")
+	case verb == "uv":
+		return uvRule(args)
 	case pythonNameRe.MatchString(verb):
-		for _, a := range args {
-			if a == "--" {
-				return ""
-			}
-			// -c takes the program as an argument; a lone "-" reads it from
-			// stdin — inline code in another spelling.
-			if len(a) >= 2 && a[0] == '-' && a[1] == 'c' {
-				return verb + " -c (inline code)"
-			}
-			if a == "-" {
-				return verb + " - (program read from stdin)"
-			}
-		}
+		return pythonRule(verb, args)
 	case verb == "node":
-		for _, a := range args {
-			if a == "--" {
-				return ""
-			}
-			if a == "-" {
-				return "node - (program read from stdin)"
-			}
-			if a == "-e" || a == "--eval" || a == "-p" || a == "--print" ||
-				strings.HasPrefix(a, "--eval=") || strings.HasPrefix(a, "--print=") {
-				return "node (inline code)"
-			}
-		}
-	case verb == "ruby" || verb == "php":
-		for _, a := range args {
-			if (verb == "ruby" && (a == "-e" || strings.HasPrefix(a, "-e"))) ||
-				(verb == "php" && (a == "-r" || strings.HasPrefix(a, "--run="))) {
-				return verb + " (inline code)"
-			}
-		}
+		return nodeRule(args)
 	case verb == "perl":
 		for _, a := range args {
+			if a == "--" {
+				return ""
+			}
 			if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "ie") {
 				return "perl -i/-e (in-place or inline code)"
 			}
 		}
 	case verb == "sed":
-		for _, a := range args {
-			if strings.HasPrefix(a, "-i") || strings.Contains(a, "--in-place") {
-				return "sed -i (in-place edit)"
-			}
-		}
+		return sedRule(args)
+	case verb == "ruby" || verb == "php" || verb == "lua":
+		return inlineCodeRule(verb, args)
 	}
 	if writeClassVerbs[verb] {
+		if verb == "source" || verb == "." {
+			return "source (runs a script file)"
+		}
 		return "write-class verb: " + verb
 	}
 	return ""
@@ -367,14 +496,15 @@ func verbTableRule(verb string, args []string) string {
 
 // scanningWrapperRule judges the wrappers whose own options hide the real
 // command from a keyword-level reading — `timeout 5 make test`,
-// `nice -n 10 go run x`: the command starts after an unknown number of
-// option/value words. Every later word is tried as a verb; the first the
-// table names wins. The cost is one over-block when an argument happens to
-// equal a table verb (`timeout 5 grep rm notes.txt`); the alternative is
-// letting a wrapped writer through.
+// `nice -n 10 go run x`, `caffeinate -i make`: the command starts after an
+// unknown number of option/value words. Every later word is tried as a
+// verb; the first the table names wins. The cost is one over-block when an
+// argument happens to equal a table verb (`timeout 5 grep rm notes.txt`);
+// the alternative is letting a wrapped writer through.
 func scanningWrapperRule(verb string, args []string) string {
 	switch verb {
-	case "timeout", "nice", "watch", "doas", "strace", "ltrace":
+	case "timeout", "nice", "watch", "doas", "strace", "ltrace", "setsid", "arch", "caffeinate",
+		"parallel", "stdbuf", "script", "xcrun", "flock", "taskset", "ionice", "chrt", "prlimit":
 	default:
 		return ""
 	}
@@ -389,75 +519,140 @@ func scanningWrapperRule(verb string, args []string) string {
 	return ""
 }
 
+// --- git ------------------------------------------------------------------------
+
 // gitRule judges a git invocation. Read-only subcommands pass; the
-// argument-dependent ones are judged by their flags; everything else — the
-// write table and any subcommand outside both tables — writes.
+// argument-dependent ones are judged by their own forms; everything else —
+// the write table and any subcommand outside both tables — writes.
 func gitRule(args []string) string {
 	for j := 0; j < len(args); j++ {
 		a := args[j]
 		if gitFlagsWithValue[a] {
 			if j+1 >= len(args) {
+				if a == "--exec-path" {
+					return "" // bare: prints the path
+				}
 				return "git (unfinished option " + a + ")"
+			}
+			// `git -c alias.x='!cmd' x` runs cmd through an alias.
+			if a == "-c" && strings.HasPrefix(args[j+1], "alias.") {
+				return "git -c alias.* (an alias runs a command)"
 			}
 			j++
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
-			// Unknown global flags may take a value or dispatch a helper.
-			if a == "--no-pager" || a == "--paginate" || a == "--bare" || strings.HasPrefix(a, "--git-dir=") ||
-				strings.HasPrefix(a, "--work-tree=") || strings.HasPrefix(a, "--namespace=") ||
+			if gitReadOnlyFlags[a] || strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") ||
+				strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--exec-path=") ||
 				strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-C") {
+				if strings.HasPrefix(a, "-c") && strings.HasPrefix(strings.TrimPrefix(a, "-c"), "alias.") {
+					return "git -c alias.* (an alias runs a command)"
+				}
 				continue
 			}
 			return "git (unknown option " + a + ")"
 		}
-		if gitWriteSubcommands[a] {
-			return "git " + a
-		}
+		rest := args[j+1:]
 		switch a {
-		case "branch", "tag":
-			if gitRefMutation(args[j+1:]) {
-				return "git " + a + " (create, delete or force)"
+		case "stash":
+			if len(rest) > 0 && (rest[0] == "list" || rest[0] == "show") {
+				return ""
 			}
-			return ""
-		case "config":
-			for _, flag := range args[j+1:] {
-				if flag == "--get" || flag == "--get-all" || flag == "--get-regexp" || flag == "--list" || flag == "-l" {
+		case "worktree":
+			if len(rest) > 0 && rest[0] == "list" {
+				return ""
+			}
+		case "submodule":
+			if len(rest) > 0 && rest[0] == "status" {
+				return ""
+			}
+		case "notes":
+			if len(rest) > 0 && (rest[0] == "show" || rest[0] == "list") {
+				return ""
+			}
+		case "bundle":
+			if len(rest) > 0 && (rest[0] == "verify" || rest[0] == "list-heads") {
+				return ""
+			}
+		case "apply":
+			for _, flag := range rest {
+				if flag == "--check" || flag == "--stat" || flag == "--numstat" {
 					return ""
 				}
 			}
-			return "git config (write)"
+		case "format-patch":
+			for _, flag := range rest {
+				if flag == "--stdout" {
+					return ""
+				}
+			}
+		case "branch":
+			if branchMutation(rest) {
+				return "git branch (create, delete, force or unknown options)"
+			}
+			return ""
+		case "tag":
+			if tagMutation(rest) {
+				return "git tag (create, delete, annotate or unknown options)"
+			}
+			return ""
+		case "config":
+			if configWrites(rest) {
+				return "git config (write)"
+			}
+			return ""
 		case "symbolic-ref":
-			if len(args[j+1:]) != 1 || strings.HasPrefix(args[j+1], "-") {
+			nonFlag := 0
+			for _, flag := range rest {
+				if !strings.HasPrefix(flag, "-") {
+					nonFlag++
+					continue
+				}
+				if flag != "--short" && flag != "-q" && flag != "--quiet" {
+					return "git symbolic-ref (write)"
+				}
+			}
+			if nonFlag > 1 {
 				return "git symbolic-ref (write)"
 			}
 			return ""
 		case "remote":
-			rest := args[j+1:]
 			if len(rest) == 0 || rest[0] == "-v" || rest[0] == "--verbose" || rest[0] == "show" || rest[0] == "get-url" {
 				return ""
 			}
 			return "git remote " + rest[0]
 		case "reflog":
-			rest := args[j+1:]
-			if len(rest) == 0 || rest[0] == "show" {
-				return ""
+			if len(rest) > 0 && (rest[0] == "expire" || rest[0] == "delete") {
+				return "git reflog " + rest[0]
 			}
-			return "git reflog " + rest[0]
+			return "" // show, a count, a ref, --date=…: all reads
 		case "archive":
-			for _, flag := range args[j+1:] {
+			for _, flag := range rest {
 				if flag == "-o" || flag == "--output" || strings.HasPrefix(flag, "--output=") {
 					return "git archive -o (writes an archive)"
 				}
 			}
 			return ""
 		case "hash-object":
-			for _, flag := range args[j+1:] {
+			for _, flag := range rest {
 				if strings.HasPrefix(flag, "-w") {
 					return "git hash-object -w (writes an object)"
 				}
 			}
 			return ""
+		case "bisect":
+			if len(rest) > 0 && (rest[0] == "log" || rest[0] == "status") {
+				return ""
+			}
+			return "git bisect " + firstWord(rest)
+		case "lfs":
+			if len(rest) > 0 && (rest[0] == "ls-files" || rest[0] == "status") {
+				return ""
+			}
+			return "git lfs " + firstWord(rest)
+		}
+		if gitWriteSubcommands[a] {
+			return "git " + a
 		}
 		if gitReadOnlySubcommands[a] {
 			return ""
@@ -467,49 +662,126 @@ func gitRule(args []string) string {
 	return ""
 }
 
-// gitRefMutation distinguishes the genuine branch/tag listing forms from
-// creation, deletion, force and unknown options. Unknown shapes stay write-class.
-func gitRefMutation(args []string) bool {
-	if len(args) == 0 {
-		return false
+func firstWord(words []string) string {
+	if len(words) == 0 {
+		return "(no subcommand)"
 	}
-	listing := false
-	for _, a := range args {
-		switch a {
-		case "--list", "-l", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "-a", "--all", "-r", "--remotes", "-v", "-vv":
-			listing = true
-		default:
-			if strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=") {
-				listing = true
-				continue
-			}
-			if strings.HasPrefix(a, "-") {
-				return true
-			}
-			if !listing {
-				return true
-			}
-		}
-	}
-	return !listing
+	return words[0]
 }
 
-// awkRule judges an awk program: it is code. system() and `cmd | getline`
-// run commands, `print > "file"` writes, -f runs a program the gate cannot
-// see. Comparisons (`NR>=1213`, `a > b`) write nothing.
-func awkRule(args []string) string {
+// branchMutation distinguishes `git branch`'s listing forms from creation,
+// deletion, force and unknown options. Short flags may be clustered
+// (`-avv`, `-vv`): a cluster of listing letters is a listing.
+func branchMutation(args []string) bool {
+	listing := false
+	for _, a := range args {
+		switch {
+		case a == "--list" || a == "--show-current" || a == "--contains" || a == "--no-contains" ||
+			a == "--merged" || a == "--no-merged" || a == "--points-at" || a == "--column" || a == "--no-column" ||
+			a == "--sort" || a == "--format" || a == "--ignore-case" || a == "-i" || a == "--efilter":
+			listing = true
+		case strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=") || strings.HasPrefix(a, "--points-at=") ||
+			strings.HasPrefix(a, "--contains=") || strings.HasPrefix(a, "--merged=") || strings.HasPrefix(a, "--efilter="):
+			listing = true
+		case len(a) > 1 && a[0] == '-' && a[1] != '-' && onlyLetters(a[1:], "larvVqit"):
+			listing = true
+		case strings.HasPrefix(a, "-"):
+			return true
+		case !listing:
+			return true // a name without a listing flag: create / copy
+		}
+	}
+	return false
+}
+
+// tagMutation distinguishes `git tag`'s listing forms from creation,
+// annotation, deletion and signing. A bare NAME means different things
+// with and without a listing flag: `git tag -l "v1*"` lists, while
+// `git tag v1` CREATES the tag when it does not exist. The short letters
+// mean something else than for branch: `-a` ANNOTATES here, `-n` lists
+// with lines.
+func tagMutation(args []string) bool {
+	listing := false
+	for _, a := range args {
+		switch {
+		case a == "-l" || a == "--list" || a == "--contains" || a == "--no-contains" ||
+			a == "--merged" || a == "--no-merged" || a == "--points-at" || a == "--column" || a == "--no-column" ||
+			a == "--sort" || a == "--format" || a == "-i" || a == "--ignore-case":
+			listing = true
+		case strings.HasPrefix(a, "-n") || strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=") ||
+			strings.HasPrefix(a, "--points-at=") || strings.HasPrefix(a, "--contains=") || strings.HasPrefix(a, "--merged="):
+			listing = true
+		case strings.HasPrefix(a, "-"):
+			return true // -a -s -m -f -d -v -u -F -e …
+		case !listing:
+			return true // a name without a listing flag: create
+		}
+	}
+	return false
+}
+
+// configWrites separates `git config`'s reads (a name, or a read verb) from
+// writes (a name and a value, or a write verb).
+func configWrites(args []string) bool {
+	names := 0
+	for k := 0; k < len(args); k++ {
+		a := args[k]
+		if !strings.HasPrefix(a, "-") {
+			names++
+			continue
+		}
+		switch {
+		case a == "--type":
+			k++ // its value follows as a separate word
+		case a == "--get" || a == "--get-all" || a == "--get-regexp" || a == "--get-urlmatch" ||
+			a == "--list" || a == "-l" || a == "--name-only" || a == "--show-origin" ||
+			a == "--show-scope" || a == "--show-names" || a == "-z" || a == "--null" ||
+			strings.HasPrefix(a, "--type=") || strings.HasPrefix(a, "--get-"):
+		default:
+			return true // --add, --unset, --replace-all, --edit, … or an option the classifier does not know
+		}
+	}
+	return names >= 2 // name + value
+}
+
+// --- awk / sed -------------------------------------------------------------------
+
+// awkRule judges an awk program: it is code. system() and `print … | "cmd"`
+// run commands, `print > "file"` writes, and -f / --exec / --source / -i /
+// -l run or load a program the gate cannot see. Comparisons (`NR>=1213`,
+// `a > b`) write nothing.
+func awkRule(verb string, args []string) string {
 	prog := ""
 	for k := 0; k < len(args) && prog == ""; k++ {
 		a := args[k]
-		switch {
-		case a == "-f" || a == "--file" || strings.HasPrefix(a, "--file="):
-			return "awk -f (program from a file)"
-		case a == "-F" || a == "-v" || a == "--field-separator" || a == "--assign":
-			k++ // each takes the next argument as its value
-		case strings.HasPrefix(a, "-"):
-			// a bundled or attached option (-F:, -vx=1, -W …)
-		default:
+		if !strings.HasPrefix(a, "-") || len(a) == 1 {
 			prog = a
+			continue
+		}
+		if strings.HasPrefix(a, "--") {
+			name := strings.TrimSuffix(a[2:], "")
+			if eq := strings.Index(name, "="); eq >= 0 {
+				name = name[:eq]
+			}
+			switch name {
+			case "file", "exec", "source", "include", "load":
+				return verb + " --" + name + " (program from a file or the command line)"
+			case "assign", "field-separator":
+				if !strings.Contains(a, "=") {
+					k++ // the value follows
+				}
+			}
+			continue
+		}
+		// A short cluster: its first letter decides (-f FILE, -E FILE,
+		// -i FILE, -l LIB run or load a program; -v and -F take a value).
+		switch a[1] {
+		case 'f', 'E', 'i', 'l':
+			return verb + " -" + string(a[1]) + " (program from a file or the command line)"
+		case 'v', 'F':
+			if len(a) == 2 {
+				k++ // the value follows
+			}
 		}
 	}
 	if prog == "" {
@@ -518,19 +790,22 @@ func awkRule(args []string) string {
 	for _, stmt := range strings.FieldsFunc(prog, func(r rune) bool { return r == ';' || r == '{' || r == '}' || r == '\n' }) {
 		s := strings.TrimSpace(stmt)
 		switch {
-		case strings.Contains(s, "system("):
-			return "awk system() (runs a command)"
-		case strings.HasPrefix(s, "print") && awkOutputRedirect(s):
-			return "awk print > (writes a file)"
+		case awkSystemRe.MatchString(s):
+			return verb + " system() (runs a command)"
+		case strings.HasPrefix(s, "print") && awkOutput(s):
+			return verb + " print > (writes a file)"
+		case strings.HasPrefix(s, "print") && awkPipeCmdRe.MatchString(s):
+			return verb + ` print | "cmd" (pipes into a command)`
 		case strings.Contains(s, "getline") && strings.Contains(s, "|"):
-			return "awk … | getline (runs a command)"
+			return verb + " … | getline (runs a command)"
 		}
 	}
 	return ""
 }
 
-// awkOutputRedirect reports a '>' that is not the '>=' comparison.
-func awkOutputRedirect(s string) bool {
+// awkOutput reports a '>' in an awk print statement that is not the '>='
+// comparison.
+func awkOutput(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '>' && (i+1 >= len(s) || s[i+1] != '=') {
 			return true
@@ -539,10 +814,23 @@ func awkOutputRedirect(s string) bool {
 	return false
 }
 
+// sedRule: -i edits in place; a `w file` command writes a file.
+func sedRule(args []string) string {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-i") || strings.Contains(a, "--in-place") {
+			return "sed -i (in-place edit)"
+		}
+		if sedWriteRe.MatchString(a) {
+			return "sed w (writes a file)"
+		}
+	}
+	return ""
+}
+
 // findRule: -exec / -ok run a command, -delete removes, -fprint* write.
 func findRule(args []string) string {
 	for _, a := range args {
-		for _, opt := range findEffectOptions {
+		for _, opt := range []string{"-exec", "-ok", "-delete", "-fprint", "-fls"} {
 			if strings.HasPrefix(a, opt) {
 				return "find " + opt + " (runs a command, deletes or writes)"
 			}
@@ -551,12 +839,13 @@ func findRule(args []string) string {
 	return ""
 }
 
-// tarRule: an extract flag, in any spelling — -x, -xzf, --extract, --get,
-// and the old-style `tar xzf`.
+// tarRule: an extract, create, append, update or concatenate flag, in any
+// spelling — bundled short options (-xzf, -czf), long forms, and the
+// old-style `tar xzf`.
 func tarRule(args []string) string {
 	for k, a := range args {
-		if a == "--extract" || a == "--get" {
-			return "tar -x (unpacks)"
+		if tarLongWrites[a] {
+			return "tar " + a + " (unpacks or repacks)"
 		}
 		letters := ""
 		switch {
@@ -565,35 +854,74 @@ func tarRule(args []string) string {
 		case k == 0 && len(a) > 1 && a[0] != '-':
 			letters = a
 		}
-		if isASCIILetters(letters) && strings.ContainsRune(letters, 'x') {
-			return "tar -x (unpacks)"
+		if isASCIILetters(letters) && strings.ContainsAny(letters, "xcruA") {
+			return "tar -x/-c/-r/-u/-A (unpacks or repacks)"
 		}
 	}
 	return ""
 }
 
-// curlRule: curl prints to stdout unless told to save (-o/--output) or to
-// keep the remote name (-O). An output target of "-" is still stdout.
+// curlRule: curl prints to stdout unless told to save — an output file
+// (-o/--output, -D/--dump-header, -c/--cookie-jar: a target of "-" keeps
+// stdout), the remote name (-O/-J), a trace, an etag file, a config or an
+// upload. Short options cluster (`-sSo out`), so a cluster is walked
+// letter by letter past the letters that take a value.
 func curlRule(args []string) string {
 	for k := 0; k < len(args); k++ {
 		a := args[k]
-		target, saves := "", false
-		switch {
-		case a == "-o" || a == "--output":
-			saves = true
-			if k+1 < len(args) {
-				target = args[k+1]
-				k++
-			}
-		case strings.HasPrefix(a, "--output="):
-			saves, target = true, strings.TrimPrefix(a, "--output=")
-		case strings.HasPrefix(a, "-o") && len(a) > 2:
-			saves, target = true, a[2:]
-		case a == "-O" || a == "--remote-name" || strings.HasPrefix(a, "--remote-name"):
-			return "curl -O (downloads to disk)"
+		if a == "--" {
+			return ""
 		}
-		if saves && target != "-" && target != "/dev/null" {
-			return "curl -o (downloads to disk)"
+		if strings.HasPrefix(a, "--") {
+			name, value := a[2:], ""
+			if eq := strings.Index(name, "="); eq >= 0 {
+				name, value = name[:eq], name[eq+1:]
+			}
+			if curlLongWrites[name] {
+				return "curl --" + name + " (sends or saves a file)"
+			}
+			if name == "output" || name == "dump-header" {
+				if value == "" && k+1 < len(args) {
+					value = args[k+1]
+					k++
+				}
+				if value != "-" && value != "/dev/null" {
+					return "curl --" + name + " (saves a file)"
+				}
+			}
+			continue
+		}
+		if len(a) > 1 && a[0] == '-' {
+			rest := a[1:]
+			for len(rest) > 0 {
+				letter := rest[0]
+				rest = rest[1:]
+				switch letter {
+				case 'O', 'J':
+					return "curl -O/-J (saves under the remote name)"
+				case 'o', 'D', 'c', 'K', 'T':
+					value := rest
+					if value == "" && k+1 < len(args) {
+						value = args[k+1]
+						k++
+					}
+					if (letter == 'o' || letter == 'D' || letter == 'c') && (value == "-" || value == "/dev/null") {
+						rest = ""
+						continue // still stdout
+					}
+					return "curl -" + string(letter) + " (sends or saves a file)"
+				default:
+					if curlShortWithValue[letter] {
+						if rest == "" {
+							if k+1 < len(args) {
+								k++ // the next argument is this option's value
+							}
+							break
+						}
+						rest = "" // the rest of the cluster is this option's value
+					}
+				}
+			}
 		}
 	}
 	return ""
@@ -637,6 +965,166 @@ func wgetRule(args []string) string {
 	return "wget (downloads to disk)"
 }
 
+// goRule: `go test` (without -c), `go vet`, `go list`, `go version`, `go
+// doc`, `go help` and `go env` (without -w) are diagnosis work; everything
+// that builds, installs, fetches, formats or generates writes.
+func goRule(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	switch args[0] {
+	case "test":
+		for _, a := range args[1:] {
+			if a == "-c" || strings.HasPrefix(a, "-c=") || a == "--compile" {
+				return "go test -c (writes a test binary)"
+			}
+		}
+		return ""
+	case "vet", "list", "version", "doc", "help", "bug":
+		return ""
+	case "env":
+		for _, a := range args[1:] {
+			if a == "-w" || a == "-u" || a == "--unset" {
+				return "go env -w/-u (changes the go environment file)"
+			}
+		}
+		return ""
+	case "mod":
+		if len(args) > 1 && goModWriteSubcommands[args[1]] {
+			return "go mod " + args[1] + " (changes the module files)"
+		}
+		return ""
+	}
+	if goWriteSubcommands[args[0]] {
+		return "go " + args[0] + " (builds, installs or changes the tree)"
+	}
+	return ""
+}
+
+// writeFlagRule: gofmt / goimports / gofumpt rewrite files with -w.
+func writeFlagRule(verb string, args []string) string {
+	for _, a := range args {
+		if a == "-w" {
+			return verb + " -w (rewrites files)"
+		}
+	}
+	return ""
+}
+
+// packageManagerRule: the run / test / build / install / publish forms of
+// npm, pnpm, yarn, bun and deno write; the listing forms read; an unknown
+// subcommand writes (the tools evolve faster than this table).
+func packageManagerRule(verb string, args []string) string {
+	if len(args) == 0 {
+		return "" // usage
+	}
+	sub := args[0]
+	if pkgReadSubcommands[sub] {
+		return ""
+	}
+	if sub == "config" && len(args) > 1 && args[1] == "get" {
+		return ""
+	}
+	if sub == "run" && len(args) == 1 {
+		return "" // lists the scripts
+	}
+	if verb == "deno" && (sub == "info" || sub == "lint" || sub == "check" || sub == "types" || sub == "doc") {
+		return ""
+	}
+	return verb + " " + sub + " (runs, installs, builds or publishes)"
+}
+
+// uvRule: uv's install / environment / run forms write.
+func uvRule(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	switch args[0] {
+	case "pip":
+		return anyArgRule("uv pip", args[1:], "install", "uninstall", "sync")
+	case "--version", "version", "help", "tree", "git":
+		return ""
+	}
+	if args[0] == "cache" && len(args) > 1 && args[1] == "dir" {
+		return ""
+	}
+	return "uv " + args[0] + " (installs, creates an environment or runs code)"
+}
+
+// pythonRule: -c in any short cluster (-ic, -Oc), a program read from
+// stdin, and `-m <module>` outside a small read-only set.
+func pythonRule(verb string, args []string) string {
+	for k := 0; k < len(args); k++ {
+		a := args[k]
+		if a == "--" {
+			return ""
+		}
+		if a == "-" {
+			return verb + " - (program read from stdin)"
+		}
+		if len(a) >= 2 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a[1:], 'c') {
+			return verb + " -c (inline code)"
+		}
+		if a == "-m" {
+			if k+1 < len(args) && pythonReadModules[args[k+1]] {
+				k++
+				continue
+			}
+			return verb + " -m <module> (runs a module)"
+		}
+	}
+	return ""
+}
+
+// nodeRule: -e / -p / --eval / --print / -r / --require / --import / a
+// program from stdin, in any short cluster.
+func nodeRule(args []string) string {
+	for _, a := range args {
+		if a == "--" {
+			return ""
+		}
+		if a == "-" || a == "-e" || a == "-r" || a == "-p" || a == "--eval" || a == "--print" || a == "--require" ||
+			strings.HasPrefix(a, "--eval=") || strings.HasPrefix(a, "--print=") || strings.HasPrefix(a, "--require=") ||
+			strings.HasPrefix(a, "--import=") || strings.HasPrefix(a, "--preload=") {
+			return "node (inline code or a preloaded module)"
+		}
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "epr") {
+			return "node (inline code or a preloaded module)"
+		}
+	}
+	return ""
+}
+
+// inlineCodeRule: ruby -e, php -r and lua -e take a program on the command
+// line, alone or inside a short cluster.
+func inlineCodeRule(verb string, args []string) string {
+	flag := "e"
+	if verb == "php" {
+		flag = "r"
+	}
+	for _, a := range args {
+		if a == "--" {
+			return ""
+		}
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a[1:], rune(flag[0])) {
+			return verb + " -" + flag + " (inline code)"
+		}
+	}
+	return ""
+}
+
+// anyArgRule names the rule when any argument is one of the write words.
+func anyArgRule(verb string, args []string, writeWords ...string) string {
+	for _, a := range args {
+		for _, w := range writeWords {
+			if a == w {
+				return verb + " " + w + " (changes the environment)"
+			}
+		}
+	}
+	return ""
+}
+
 func isDigits(s string) bool {
 	if s == "" {
 		return false
@@ -655,6 +1143,18 @@ func isASCIILetters(s string) bool {
 	}
 	for _, c := range s {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+func onlyLetters(s, set string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune(set, c) {
 			return false
 		}
 	}
@@ -698,7 +1198,6 @@ func isStatusInvocation(command string) bool {
 // status binary plus at most the canonical herestring payload.
 func isStatusCommand(cmd []shTok) bool {
 	words := make([]string, 0, len(cmd))
-	verbAt := -1 // token index of the verb word
 	for _, t := range cmd {
 		if t.kind != shWord {
 			continue
@@ -710,6 +1209,7 @@ func isStatusCommand(cmd []shTok) bool {
 		return false
 	}
 	seen := -1
+	verbAt := -1
 	for i, t := range cmd {
 		if t.kind == shWord {
 			seen++
@@ -757,9 +1257,9 @@ func isJSONObjectLiteral(tok string) bool {
 
 // resolveVerb finds the real verb of a command's words: it skips leading
 // VAR=value assignments, drops the wrappers `env` (plus its flags and
-// operands), `command` and `nohup`, and reduces absolute paths to their base
-// name (/bin/rm → rm). Returns the verb's word index, or -1 when no verb
-// remains (e.g. a bare `env`).
+// operands), `command`, `builtin` and `nohup`, and reduces absolute paths to
+// their base name (/bin/rm → rm). Returns the verb's word index, or -1 when
+// no verb remains (e.g. a bare `env`).
 func resolveVerb(words []string) (int, string) {
 	i := 0
 	for i < len(words) {
