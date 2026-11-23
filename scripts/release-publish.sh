@@ -105,7 +105,7 @@ echo "✅ Tagged v$VERSION"
 
 # Push unless --no-push — standalone, trap fires on failure
 if [ "$NO_PUSH" != "true" ]; then
-    BRANCH=$(git rev-parse --abbrev-r HEAD)
+    BRANCH=$(git rev-parse --abbrev-ref HEAD)
     git push origin "$BRANCH"
     git push origin "v$VERSION"
     echo "✅ Pushed to remote"
