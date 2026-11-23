@@ -47,9 +47,9 @@ restart of the pipeline.
 ## Rules
 
 1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
-   (the only submission channel) → paste the summoner-status render verbatim
-   and end the turn → next turn AskUserQuestion (nonce in the question,
-   keyword-led labels from the persisted menu page).
+   with a conclusion (the only submission channel) → paste the checkpoint and end
+   the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
+   phase shows no checkpoint: go straight on.
 2. requirements/plan are not skippable (没 spec 不动工，没 plan 不写码).
 3. Direction wrong after acceptance → `recall:` to the phase's history label
    (downstream accepted criteria go stale). Baseline moved → change loop.

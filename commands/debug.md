@@ -27,9 +27,9 @@ context → diagnosis → 检查点（结束）
 ## Rules
 
 1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
-   (the only submission channel) → paste the summoner-status render verbatim
-   and end the turn → next turn AskUserQuestion (nonce in the question,
-   keyword-led labels from the persisted menu page).
+   with a conclusion (the only submission channel) → paste the checkpoint and end
+   the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
+   phase shows no checkpoint: go straight on.
 2. NO code changes, no test files — the write gate enforces this until
    diagnosis is accepted, and the workflow ends there anyway.
 3. 诊断报告 = 根因、影响范围、修复建议（给用户的输入，不是修复承诺）。

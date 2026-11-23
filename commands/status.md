@@ -14,8 +14,9 @@ AskUserQuestion at a rendered checkpoint.
 
 ## Steps
 
-1. Run exactly this and nothing else (read-only; `{}` resolves the project's
-   single live run when the session id is unknown):
+1. Run exactly this and nothing else (read-only; `{}` scopes to this
+   session's run — SessionStart exports the session id — and names the
+   project's other live runs; without it, the project's single live run):
 
    ```
    "${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}'

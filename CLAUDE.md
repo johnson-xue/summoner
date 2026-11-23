@@ -8,13 +8,14 @@ Summoner is a portable, project-agnostic orchestration layer for AI coding agent
 
 1. User invokes a `/summoner:*` command (e.g. `/summoner:fix`) or expresses intent
 2. Summoner reads the project's `summoner.yaml` manifest to discover available skills
-3. Summoner executes phases in order, pausing at each checkpoint for user confirmation
+3. Summoner executes phases in order, pausing at each checkpoint that needs the
+   user's judgment (a phase that needs none is passed by the framework and recorded)
 4. At workflow end, Summoner triggers a post-game review questionnaire
 
 ## Key Design Principles
 
 - **Framework verbs are fixed — project skills are replaceable.** Like a Makefile.
-- **Every phase ends with a checkpoint.** The user can continue, skip, recall, or stop.
+- **Every phase ends with a checkpoint.** The user can continue, skip, recall, or stop. A phase that needs no judgment (a confirmed, evidenced context / reproduce / verify / regression) is passed by the framework instead and recorded as `checkpoint.auto`.
 - **Phase 1 is iron law.** For fix/debug, root cause must be found before any code changes.
 - **Post-game review is mandatory.** Every session produces a journal entry that feeds back into skill improvement.
 
@@ -33,6 +34,7 @@ journal/                    → Post-game review artifacts (deprecated, moved to
 ## Boundaries
 
 - Never hardcode any project name or domain-specific path in the framework
-- Never auto-advance past a checkpoint without user confirmation
+- Never auto-advance past a checkpoint on your own. Only a recorded decision moves a
+  run: the user's answer, or the framework's own auto-pass — which no model action can produce
 - Never skip Phase 1 (diagnosis) in fix/debug workflows
 - Project CLAUDE.md integration is the project's responsibility, not the framework's

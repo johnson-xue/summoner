@@ -36,7 +36,8 @@ Capability keys ≠ route phase ids: the manifest binds `phases.<capability>`
 table: `references/capability-map.md`.
 
 Every phase — including skipped ones — closes at a checkpoint; every arrow is
-a recorded user decision (`references/checkpoint-protocol.md`).
+a recorded decision — the user's, or the framework's own auto-pass
+(`checkpoint.auto`, 0.7.0; `references/checkpoint-protocol.md`).
 
 ## Auto-Skip Conditions
 
@@ -79,22 +80,25 @@ Both re-enter earlier ground, but they answer different failures (spec §1
 | "The error code is obvious, skip diagnosis" | Diagnosis is iron law — the gate denies writes until it is accepted. Obvious is often wrong. |
 | "User skipped phase 2, I'll skip phase 4 too" | Each phase decides independently at its own checkpoint. |
 | "This is too simple for checkpoints" | Checkpoints are the Summoner contract. Recorded as Type 5. |
-| "User usually says yes, I'll auto-continue" | Advancement is AskUserQuestion-only; free text never advances. |
+| "User usually says yes, I'll auto-continue" | Advancement is a recorded AskUserQuestion answer, or the framework's auto-pass under its fixed conditions (which no model can produce); free text never advances. |
 | "用户描述得很清楚了，直接写码就行" | 没 spec = 假设当需求。requirements/plan 先行。 |
 | "这个功能简单，plan 和 spec 合并为一步就行" | Spec ≠ Plan。跳过 plan = 实现顺序靠猜。 |
-| "审查员 PASS 了，直接进下一阶段" | PASS 仍留 WAIT_USER；推进只来自用户决定。 |
+| "审查员 PASS 了，直接进下一阶段" | PASS 仍留 WAIT_USER——审查结果检查点不自动通过；推进只来自用户决定。 |
 
 ## Red Flags
 
-- ✗ Advancing past a checkpoint without a recorded AskUserQuestion decision
+- ✗ Advancing past a checkpoint without a recorded decision (an AskUserQuestion
+  answer, or the framework's `checkpoint.auto` — which no model can produce)
 - ✗ Hand-writing a checkpoint/status render instead of pasting the
-  summoner-status output (display verification binds id + nonce)
+  summoner-status output (display verification binds the canonical block)
 - ✗ AskUserQuestion at a checkpoint whose question text lacks the nonce, whose
   option labels do not LEAD with the decision keyword, or whose offered set
   is not exactly one persisted menu page
 - ✗ Asking the decision question in the render turn itself (the protocol is
   two-turn: render ends turn N, ask on turn N+1)
-- ✗ Misreading content feedback as CONTINUE (e.g. "方案漏了边界" → revise and re-ask)
+- ✗ Misreading content feedback as CONTINUE (e.g. "方案漏了边界" → follow the
+  paths the rejection block names: the read-only investigation it asks for,
+  or the user's recall / requirement change / stop; then re-ask)
 - ✗ Writes before diagnosis acceptance in fix/debug (the gate's exit-2 deny
   IS the iron law, not an error to work around)
 - ✗ Skipping diagnosis, or presenting a skipped phase as verified
@@ -105,9 +109,9 @@ Both re-enter earlier ground, but they answer different failures (spec §1
 ## Verification Checklist
 
 After workflow completion:
-- [ ] Every phase opened, was submitted via summoner:phase-submit, and closed at a rendered checkpoint
+- [ ] Every phase opened, was submitted via summoner:phase-submit with a conclusion, and closed at a checkpoint (rendered for the user, or auto-passed by the framework)
 - [ ] Every checkpoint render was the binary's output pasted verbatim (id + nonce present)
-- [ ] Every decision came from AskUserQuestion (menu labels keyword-led)
+- [ ] Every decision came from AskUserQuestion (menu labels keyword-led) or is a recorded auto-pass
 - [ ] Content feedback replies were handled (not misread as advancement)
 - [ ] Skipped phases are recorded as UNVERIFIED/UNREVIEWED — none presented as PASS
 - [ ] Post-game review questionnaire presented and journal entry persisted

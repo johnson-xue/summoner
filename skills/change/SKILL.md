@@ -66,7 +66,9 @@ Field rules:
   any call outside the legal states.
 
 On `apply` the gate opens one CHANGE_CONFIRM checkpoint — render it with
-`${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and paste the output
-verbatim; the user closes the loop with `accept: 接受变更并恢复开发`
-(ACCEPT_REQUIREMENT_CHANGE), which restores the frozen position in place —
+`${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status`, paste the checkpoint
+verbatim and end the turn (the Stop hook binds the display and hands back
+the question); raise it, and the user closes the loop with
+`accept: 接受变更并恢复开发` (ACCEPT_REQUIREMENT_CHANGE), which restores the
+frozen position in place —
 no phase-by-phase reopen, no re-asking untouched phases.

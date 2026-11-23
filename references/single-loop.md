@@ -38,12 +38,17 @@
    「未配置项目专属能力」。工作在本会话完成；只可委派类型化的
    reviewer/worker Agent。`version: "1"` manifest 免迁移（hooks 内存
    翻译，按 SessionStart 打印的 v2 视图路由）。
-3. **Submit** — 阶段工作完成 → `Skill(summoner:phase-submit)` —
-   唯一提交通道。payload 与规则权威：`../skills/phase-submit/SKILL.md`。
-4. **Render** — 运行 summoner-status 二进制，输出**逐字**粘贴进回复。
-   渲染与显示验证权威：`checkpoint-protocol.md`。
-5. **Decide** — AskUserQuestion（nonce 入题；选项 = 已持久化菜单页的
-   逐字标签）。两轮决策与分页权威：`checkpoint-protocol.md`。
+3. **Submit** — 阶段工作完成 → `Skill(summoner:phase-submit)`，带结构化
+   结论 — 唯一提交通道。payload 与规则权威：
+   `../skills/phase-submit/SKILL.md`。
+4. **Render** — 运行 summoner-status 二进制。有检查点时，把末尾的检查点
+   消息**逐字**粘贴进回复（前面可写解释），随即**结束回合**：Stop 钩子
+   绑定展示并把该问的裁决题交回。没有检查点 = 该阶段已自动通过
+   （状态行 `auto-passed: … → 立即进入 Y`），直接开始下一阶段。
+   渲染、显示验证与自动通过权威：`checkpoint-protocol.md`。
+5. **Decide** — 用 Stop 钩子交回的那道题发起 AskUserQuestion（nonce 入
+   题；选项 = 一页菜单的逐字标签）。裁决、被拒反馈与分页权威：
+   `checkpoint-protocol.md`。
 6. **Repeat** — 直到用户决定 done/stop 或路线落定。
 
 ## 3. 指针节（权威在别处，此处只指路）
@@ -55,7 +60,7 @@
   永远难；`SUMMONER_HOOKS_DISABLE=1` 仅解砖，用于活 run 记违约）。
 - **需求变更闭环**：`../skills/change/SKILL.md`（open/apply 通道、
   增量恢复、不重跑流水线）。
-- **检查点渲染 / 两轮决策 / 分页菜单 / 预算生命周期**：
+- **检查点渲染 / 两轮决策 / 分页菜单 / 自适应停问 / 预算生命周期**：
   `checkpoint-protocol.md`（预算 = T18：清单 suggested_budgets 开跑即生效、
   不询问 → 耗尽 → 追加）。
 - **post-game 关闭**：`post-game-review.md`（done/stop 落
