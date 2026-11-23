@@ -30,8 +30,13 @@
 #     (context / reproduce / verify / regression), only for a CONFIRMED
 #     submission, at most once per checkpoint, and it must be the
 #     checkpoint's ONLY conclusion — a checkpoint that was displayed or
-#     decided can never also be auto-passed. Such a checkpoint owes no
-#     display: opened → auto is its complete trace shape.
+#     decided can never also be auto-passed, and nothing rides it (no
+#     criterion drop, no budget extension). Its shape is exact (the trace
+#     protocol): opened → auto — the auto names a checkpoint that was
+#     OPENED before, for the same phase; it never rides an AskUserQuestion
+#     call (that id belongs to a human answer); and a second auto-pass
+#     needs a phase.started in between (every auto-pass closes a phase that
+#     was opened first).
 #
 # POSITIONAL CONTRACT (T10 carry, binding): the change-confirm checkpoint
 # (and review-result / recovery checkpoints) emits NO checkpoint.opened —
@@ -78,10 +83,11 @@ def payload(ev):
 AUTO_PASS_PHASES = {"context", "reproduce", "verify", "regression"}
 
 # --- collect the gate surface ---------------------------------------------------
-opened = {}      # checkpoint_id -> (seq, nonce)
+opened = {}      # checkpoint_id -> (seq, nonce, phase_id)
 displayed = {}   # checkpoint_id -> seq (first display wins)
 decided = []     # (seq, checkpoint_id, tool_use_id)
-autos = []       # (seq, checkpoint_id, phase_id, outcome)
+autos = []       # (seq, checkpoint_id, phase_id, outcome, tool_use_id)
+phase_started_seqs = [] # seqs of phase.started
 ask_calls = {}   # tool_use_id -> seq of AskUserQuestion tool.started
 delta_seqs = []  # change.delta_applied seqs
 change_seqs = [] # change.opened/delta_applied seqs (supersession evidence)
@@ -98,7 +104,7 @@ for seq, ev in events:
             if cid in opened:
                 fail(f"checkpoint.opened for {cid} recorded twice — a "
                      "checkpoint opens once")
-            opened[cid] = (seq, pl.get("nonce"))
+            opened[cid] = (seq, pl.get("nonce"), pl.get("phase_id"))
     elif typ == "checkpoint.displayed":
         cid = pl.get("checkpoint_id")
         if cid and cid not in displayed:
@@ -107,7 +113,9 @@ for seq, ev in events:
         decided.append((seq, pl.get("checkpoint_id"), ev.get("tool_use_id")))
     elif typ == "checkpoint.auto":
         autos.append((seq, pl.get("checkpoint_id"), pl.get("phase_id"),
-                      pl.get("outcome")))
+                      pl.get("outcome"), ev.get("tool_use_id")))
+    elif typ == "phase.started":
+        phase_started_seqs.append(seq)
     elif typ == "tool.started" and pl.get("tool_name") == "AskUserQuestion":
         tid = ev.get("tool_use_id")
         if tid:
@@ -143,7 +151,8 @@ if not decided and not opened and not displayed and not autos:
 # gate. An auto-pass is terminal for its checkpoint — never together with a
 # display or a decision of the same id, never twice.
 auto_passed = {}   # checkpoint_id -> seq
-for seq, cid, phase, outcome in autos:
+prev_auto_seq = None
+for seq, cid, phase, outcome, tool_id in autos:
     if not cid or not phase:
         fail(f"checkpoint.auto at event #{seq} is malformed: needs "
              "payload.checkpoint_id and payload.phase_id")
@@ -163,9 +172,28 @@ for seq, cid, phase, outcome in autos:
              f"displayed (event #{displayed[cid]}) — an auto-passed "
              "checkpoint is never shown for decision, and an already "
              "displayed checkpoint is decided by a human answer")
-    if cid in opened and opened[cid][0] >= seq:
+    if cid not in opened:
+        fail(f"checkpoint.auto at event #{seq} names checkpoint {cid} with no "
+             "checkpoint.opened before it — opened → auto is an auto-pass's "
+             "whole shape")
+    oseq, _, ophase = opened[cid]
+    if oseq >= seq:
         fail(f"ordering: checkpoint {cid} auto-passed at event #{seq} before "
-             f"it opened at event #{opened[cid][0]}")
+             f"it opened at event #{oseq}")
+    if ophase != phase:
+        fail(f"checkpoint.auto at event #{seq} names phase {phase!r} but "
+             f"checkpoint {cid} was opened for phase {ophase!r} — an auto-pass "
+             "settles the checkpoint of its own phase")
+    if tool_id in ask_calls:
+        fail(f"checkpoint.auto at event #{seq} rides tool_use_id {tool_id!r}, "
+             "an AskUserQuestion call — that id belongs to a human answer; "
+             "an auto-pass is the framework's own act")
+    if prev_auto_seq is not None and not any(
+            prev_auto_seq < ps < seq for ps in phase_started_seqs):
+        fail(f"checkpoint.auto at event #{seq} follows another auto-pass "
+             f"(event #{prev_auto_seq}) with no phase.started between — every "
+             "auto-pass closes a phase that was opened first")
+    prev_auto_seq = seq
     auto_passed[cid] = seq
 
 # --- decisions --------------------------------------------------------------------
@@ -193,7 +221,7 @@ for seq, cid, tid in decided:
              "was never displayed before the decision — 生成文本 ≠ 已展示; "
              "a decision without a prior render is invalid")
     if cid in opened:
-        oseq, ononce = opened[cid]
+        oseq, ononce, _ = opened[cid]
         dnonce = None
         for s, ev in events:
             if s == displayed[cid]:
@@ -265,6 +293,10 @@ for seq, cid, crit, tid in drops:
     seen_drop_pairs.add((crit, tid))
     drop_checkpoint[crit] = cid
     drop_seq[crit] = seq
+    if cid in auto_passed:
+        fail(f"criterion.dropped for {crit} (event #{seq}) rides checkpoint "
+             f"{cid}, which was auto-passed (event #{auto_passed[cid]}) — an "
+             "auto-pass takes no ride-along answers")
     if cid in seen_decided and seq > seen_decided[cid]:
         fail(f"criterion.dropped for {crit} (event #{seq}) landed after "
              f"checkpoint {cid} was decided (#{seen_decided[cid]}) — drops "
@@ -287,6 +319,10 @@ for seq, cid, tid in budget_extended:
         fail(f"decision binding: budget.extended at event #{seq} binds "
              f"tool_use_id {tid!r}, which is not a recorded AskUserQuestion "
              "call — extensions consume a fresh human answer")
+    if cid in auto_passed:
+        fail(f"budget.extended at event #{seq} rides checkpoint {cid}, which "
+             f"was auto-passed (event #{auto_passed[cid]}) — an auto-pass is "
+             "refused while an extension question is owed")
     if cid in seen_decided and seq > seen_decided[cid]:
         fail(f"budget.extended (event #{seq}) landed after checkpoint {cid} "
              f"was decided (#{seen_decided[cid]}) — the extension is "
@@ -294,7 +330,7 @@ for seq, cid, tid in budget_extended:
 
 # --- opened-but-never-displayed (superseded checkpoints are legitimate) ------------
 last_change = max(change_seqs) if change_seqs else 0
-for cid, (oseq, _) in opened.items():
+for cid, (oseq, _, _) in opened.items():
     if cid in displayed:
         continue
     if cid in auto_passed:

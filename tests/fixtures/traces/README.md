@@ -55,6 +55,12 @@ the script is the executable truth.
 | `invalid-usergate-injected-answers.jsonl` | **注入 answers**: a decision bound to a Bash tool_use id — decisions come only from AskUserQuestion calls. |
 | `invalid-usergate-auto-pass-diagnosis.jsonl` | `checkpoint.auto` on `diagnosis` — a phase that never auto-passes (diagnosis and fix always owe the human gate). |
 | `invalid-usergate-auto-pass-unconfirmed.jsonl` | `checkpoint.auto` with outcome `unclear` — only a confirmed submission may skip the human gate. |
+| `valid-auto-pass-twice.jsonl` | Two auto-passes, each after its own `phase.started` — the legal shape of consecutive passes. |
+| `invalid-usergate-auto-without-opened.jsonl` | `checkpoint.auto` with no `checkpoint.opened` before it. |
+| `invalid-usergate-auto-phase-mismatch.jsonl` | `checkpoint.auto` naming a phase other than the one its checkpoint was opened for. |
+| `invalid-usergate-auto-on-ask-call.jsonl` | `checkpoint.auto` riding an AskUserQuestion call's `tool_use_id` — that id belongs to a human answer. |
+| `invalid-usergate-auto-twice-no-phase.jsonl` | Two auto-passes with no `phase.started` between them. |
+| `invalid-usergate-drop-after-auto.jsonl` | `criterion.dropped` riding an auto-passed checkpoint. |
 | `invalid-usergate-auto-after-display.jsonl` | `checkpoint.auto` on a checkpoint that was already displayed — the human gate was shown; only a human answer concludes it. |
 | `invalid-usergate-stale-render.jsonl` | **stale 渲染**: `change.delta_applied` between a checkpoint's display and its decision — the decision bound pre-change content. |
 | `invalid-usergate-undisplayed-decision.jsonl` | Decision on a checkpoint never displayed (生成文本 ≠ 已展示). |
@@ -85,7 +91,7 @@ displayed-before-decided always.
 
 ## Harness
 
-- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (42
+- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (48
   fixtures × 5 scorers), adversarial message assertions, and sidecar /
   baseline self-checks. Run it in CI and after any scorer/fixture edit.
 - `scripts/score-trace.sh --trace <file>` — scores one trace and writes the
