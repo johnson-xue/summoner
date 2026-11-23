@@ -675,7 +675,7 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 		// always comes from SubmitPhase — and is traced as
 		// phase_submitted.rejected. Out-of-order ids get no auto-open.
 		if run.Status == shared.StatusActive && run.Change == nil && openPhaseOf(run) == nil {
-			if next := nextExpectedPhase(run); next != "" && next == sub.PhaseID {
+			if next := shared.NextExpectedPhase(run); next != "" && next == sub.PhaseID {
 				eff.openPhase = sub.PhaseID
 			}
 		}
@@ -692,7 +692,7 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 	eff := &effects{}
 	if run.Status == shared.StatusActive && run.Change == nil &&
 		openPhaseOf(run) == nil && run.CurrentCheckpoint() == nil {
-		if next := nextExpectedPhase(run); next != "" {
+		if next := shared.NextExpectedPhase(run); next != "" {
 			eff.openPhase = next
 		}
 	}
@@ -1650,6 +1650,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		if err != nil {
 			return rejectSubmit(eff.submit.PhaseID, err)
 		}
+		checkFailed := false // one FAIL among this submission's L1 checks stops the auto-pass
 		events := []shared.TraceEvent{{
 			Type:    shared.EventToolStarted,
 			Payload: map[string]interface{}{"tool_name": in.ToolName},
@@ -1699,6 +1700,7 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 					return err
 				}
 				if outcome.Status == shared.CheckStatusFail {
+					checkFailed = true
 					run.CountFailedCheck()
 				}
 			}
@@ -1707,6 +1709,12 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 		if err := run.Save(); err != nil {
 			fmt.Fprintf(errW, "Summoner gate: persisting run state failed — denying (fail-closed): %v\n", err)
 			return err
+		}
+		// 0.7.0 D3: LAST, after the counters — the submit call sits outside
+		// any visit bucket here exactly as it does before a human CONTINUE,
+		// so an auto-pass never charges it to the next visit.
+		if shared.AutoPassablePhase(cp.PhaseID) {
+			return autoPass(run, cp, checkFailed, appendAll, errW)
 		}
 		return nil
 	}
@@ -2012,6 +2020,39 @@ func apply(run *shared.RunState, in *gateInput, eff *effects, errW io.Writer) er
 	return nil
 }
 
+// autoPass is the adaptive-checkpoint step of the submit path (0.7.0 D3): a
+// confirmed, evidenced submission on a phase that needs no human judgment is
+// accepted in the same call — the checkpoint record is kept (accepted by the
+// framework, see shared.AutoPassCheckpoint), the run returns to ACTIVE, and
+// checkpoint.auto is traced after the checkpoint's own check results.
+//
+// Anything that owes the user a decision simply stays a human checkpoint:
+// AutoPassBlocker says why (an unclear or failed submission, no evidence, a
+// FAIL among the checks, a riding extension question, an exhausted budget)
+// and WAIT_USER is the default posture — the submission itself succeeded. A
+// trace failure AFTER the state moved denies fail-closed, like every
+// post-mutation append here.
+func autoPass(run *shared.RunState, cp shared.CheckpointState, checkFailed bool, appendAll func([]shared.TraceEvent) error, errW io.Writer) error {
+	if reason := shared.AutoPassBlocker(run, cp, checkFailed); reason != "" {
+		fmt.Fprintf(errW, "Summoner gate: checkpoint %s stays with the user — %s\n", cp.ID, reason)
+		return nil
+	}
+	if err := run.AutoPassCheckpoint(cp.ID, checkFailed); err != nil {
+		return fmt.Errorf("Summoner gate: auto-passing checkpoint %s failed — the submission is recorded and the checkpoint stays with the user: %v", cp.ID, err)
+	}
+	if err := appendAll([]shared.TraceEvent{{
+		Type: shared.EventCheckpointAuto,
+		Payload: map[string]interface{}{
+			"checkpoint_id": cp.ID,
+			"phase_id":      cp.PhaseID,
+			"outcome":       cp.Outcome,
+		},
+	}}); err != nil {
+		return err // state already moved (ACTIVE) — deny fail-closed
+	}
+	return nil
+}
+
 // --- run-state read helpers (pure) -------------------------------------------
 
 func stringField(m map[string]interface{}, key string) string {
@@ -2106,40 +2147,4 @@ func hasAcceptedPhase(run *shared.RunState, id string) bool {
 		}
 	}
 	return false
-}
-
-// nextExpectedPhase derives which phase the sequence allows to open next
-// (ruling 3, review I2): walk the workflow sequence and, for each phase id,
-// look at its LATEST PhaseState (last entry per id — recall appends fresh
-// visits); a phase is settled only when that visit's Outcome is accepted or
-// skipped. The first unsettled phase is the next expected one. A recalled
-// phase (Outcome "recalled", or no visit at all) re-enters ahead of any
-// later phase. "" = every phase is settled, nothing may open.
-func nextExpectedPhase(run *shared.RunState) string {
-	seq, err := shared.WorkflowPhases(run.Workflow)
-	if err != nil {
-		return ""
-	}
-	lastVisit := func(id string) *shared.PhaseState {
-		var last *shared.PhaseState
-		for i := range run.Phases {
-			if run.Phases[i].ID == id {
-				last = &run.Phases[i]
-			}
-		}
-		return last
-	}
-	for _, id := range seq {
-		visit := lastVisit(id)
-		if visit == nil {
-			return id // never visited — unsettled
-		}
-		switch visit.Outcome {
-		case "accepted", "skipped":
-			continue // settled; sequencing moves on
-		default:
-			return id // open, undecided or recalled — the phase owes work
-		}
-	}
-	return ""
 }

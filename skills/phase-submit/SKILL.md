@@ -101,5 +101,11 @@ On success the gate atomically closes the phase and opens its checkpoint
    turn (nonce in the question, options = the labels it listed). Raise it
    before ending the turn again.
 
+A confirmed, evidenced submission on `context`, `reproduce`, `verify` or
+`regression` passes with no dialog (adaptive checkpoints): summoner-status
+then shows no checkpoint, only `auto-passed: 阶段 X 已自动通过 → 立即进入 Y`
+— start Y at once. Every other phase, and any submission that is unclear,
+failed or unevidenced, stops at the steps above.
+
 Submit once per phase; a submission while a checkpoint is pending or a
 requirement change is open (CHANGE_OPEN) is rejected.

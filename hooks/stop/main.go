@@ -192,6 +192,11 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 	if run.Status == shared.StatusWaitUser {
 		return waitUserStop(run, in, outW, errW)
 	}
+	// 0.7.0 D3: an auto-pass opens no checkpoint, so nothing tells the model
+	// to go on — the continuation backstop nudges it once.
+	if run.Status == shared.StatusActive && nudgeAfterAutoPass(run, in, outW, errW) {
+		return 0
+	}
 
 	// Not WAIT_USER (ACTIVE / REVIEW_PENDING / OUTCOME_UNKNOWN /
 	// POST_GAME_PENDING …): allow, keep state. A non-emergency stop of a live
@@ -286,6 +291,46 @@ func waitUserStop(run *shared.RunState, in *stopInput, outW, errW io.Writer) int
 	}
 	emitAskBlock(outW, cp, run)
 	return 0
+}
+
+// nudgeAfterAutoPass is the continuation backstop of adaptive checkpoints
+// (0.7.0 D3). A phase the framework passed itself leaves the run ACTIVE with
+// no checkpoint to render, so a model that submitted it and ended its turn
+// used to stall there until the user typed something. When the run sits
+// right after such a pass (shared.AutoPassNudgePending: the cue is set and
+// the trace's last lifecycle event is that checkpoint.auto), the hook
+// consumes the cue and BLOCKS once with the phase to enter. Consuming
+// BEFORE blocking bounds it: at most one nudge per auto-pass, even when the
+// block is lost to the platform's consecutive-block cap. An explicit stop
+// acknowledgment ends the turn as always. Reports whether it blocked.
+func nudgeAfterAutoPass(run *shared.RunState, in *stopInput, outW, errW io.Writer) bool {
+	if run.AutoPassNudgeFor == "" {
+		return false
+	}
+	pending, err := shared.AutoPassNudgePending(run)
+	if err != nil {
+		fmt.Fprintf(errW, "summoner stop: auto-pass nudge skipped — trace unreadable: %v\n", err)
+		return false
+	}
+	if !pending || stopAck(in.LastAssistantMessage, nil) {
+		return false
+	}
+	passed, cue := "", run.AutoPassNudgeFor
+	for i := range run.Checkpoints {
+		if run.Checkpoints[i].ID == cue {
+			passed = run.Checkpoints[i].PhaseID
+		}
+	}
+	if err := run.ClearAutoPassNudge(); err != nil {
+		fmt.Fprintf(errW, "summoner stop: auto-pass nudge skipped — the cue could not be consumed (state unchanged): %v\n", err)
+		return false
+	}
+	target := "路线已走完 — 运行 summoner-status 查看收尾步骤"
+	if next := shared.NextExpectedPhase(run); next != "" {
+		target = "立即进入 " + next + "：按该阶段的能力开始工作，完成后用 summoner:phase-submit 提交。不要等待用户输入。"
+	}
+	emitBlock(outW, fmt.Sprintf("阶段 %s 已自动通过（提交已确认且有证据，无需用户裁决）→ %s", passed, target))
+	return true
 }
 
 // bindDisplay binds the contained render (verified by

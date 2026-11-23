@@ -8,6 +8,9 @@ package contract
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -206,4 +209,85 @@ func askQuestionInput(page []string, nonce string) map[string]interface{} {
 		"options":     opts,
 		"multiSelect": false,
 	}}}
+}
+
+// TestAdaptiveAutoPassOverBinaries — acceptance criteria 1 and 12 end to
+// end over the real binaries: a confirmed context submission passes in the
+// submitting call (nothing pending, checkpoint.auto traced, no decision);
+// the status view says what to enter next; a turn ended right after it is
+// nudged on once; and the real trace scores clean on the gate scorer.
+func TestAdaptiveAutoPassOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-auto", "fix")
+
+	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-ps-1", map[string]interface{}{
+		"skill": "summoner:phase-submit",
+		"args": mustJSON(t, shared.PhaseSubmission{
+			PhaseID: "context", Summary: "context established",
+			Outcome: shared.ConclusionConfirmed,
+			Conclusion: &shared.Conclusion{
+				Summary:  "Go 1.16 monorepo, entry cmd/server",
+				Evidence: []string{"go.mod:3", "cmd/server/main.go:12"},
+				Approach: "read the module layout and the entry point",
+			},
+		}),
+	}), nil)
+	if code != 0 {
+		t.Fatalf("confirmed context submission: exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err := shared.LoadRun("run-auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusActive || run.CurrentCheckpoint() != nil {
+		t.Fatalf("after the auto-pass: status %s, pending %+v", run.Status, run.CurrentCheckpoint())
+	}
+	if run.AutoPassNudgeFor == "" {
+		t.Fatal("the pass must leave the continuation cue")
+	}
+
+	// The real trace: opened → auto, and no decision or display anywhere.
+	types := make([]string, 0)
+	for _, ev := range allTraceEvents(t) {
+		types = append(types, ev.Type)
+	}
+	if want := "tool.started,phase.started,phase.closed,checkpoint.opened,checkpoint.auto"; strings.Join(types, ",") != want {
+		t.Fatalf("trace types = %v, want %v", types, want)
+	}
+
+	// The status view names the phase to enter and renders no checkpoint.
+	out := statusView(t, `{"session_id":"`+contractSession+`"}`)
+	if !strings.Contains(out, "auto-passed: 阶段 context 已自动通过 → 立即进入 diagnosis") {
+		t.Fatalf("the status view must say the phase passed and what to enter:\n%s", out)
+	}
+	if strings.Contains(out, "SUMMONER CHECKPOINT") {
+		t.Fatalf("a passed phase renders no checkpoint:\n%s", out)
+	}
+
+	// The turn ends right after the pass: nudged once, with the phase to enter.
+	code, out, stderr = runBinary(t, "stop", stopRenderPayload(t, "context 阶段已提交。"), nil)
+	if code != 0 {
+		t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, "立即进入 diagnosis") {
+		t.Fatalf("a turn ended right after an auto-pass must be nudged on once, got %q", out)
+	}
+	code, out, stderr = runBinary(t, "stop", stopRenderPayload(t, "context 阶段已提交。"), nil)
+	if code != 0 || strings.Contains(out, "block") {
+		t.Fatalf("one auto-pass nudges at most once — second stop: (code, stdout) = (%d, %q)", code, out)
+	}
+
+	// The real binary-produced trace is what the gate scorer expects.
+	trace := filepath.Join(os.Getenv("SUMMONER_TRACE_DIR"), shared.ProjectKey(), "run-auto.jsonl")
+	scorer, err := filepath.Abs("../../scorers/deterministic/user-gate-check.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scored, err := exec.Command("bash", scorer, trace).CombinedOutput()
+	if err != nil {
+		t.Fatalf("user-gate-check on the real auto-pass trace: %v\n%s", err, scored)
+	}
+	if !strings.Contains(string(scored), "1 checkpoint(s) auto-passed") {
+		t.Fatalf("the gate scorer must report the auto-pass:\n%s", scored)
+	}
 }

@@ -896,3 +896,57 @@ func TestBareInvocationIsEmptyPayload(t *testing.T) {
 		t.Fatalf("whitespace invocation: exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 }
+
+// TestRenderAutoPassLine (0.7.0 D3): after an in-gate auto-pass the default
+// view says so and names the phase to enter — the model's cue to go straight
+// on — and the visit reads as accepted by the framework. The line is gone
+// once a later step supersedes it.
+func TestRenderAutoPassLine(t *testing.T) {
+	useStatusEnv(t)
+	r := newRun(t)
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
+		PhaseID: "context", Summary: "context established",
+		Outcome:    shared.ConclusionConfirmed,
+		Conclusion: &shared.Conclusion{Summary: "context conclusion", Evidence: []string{"evidence-1"}, Approach: "read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AutoPassCheckpoint(cp.ID, false); err != nil {
+		t.Fatalf("AutoPassCheckpoint: %v", err)
+	}
+
+	out := renderStatus(r, "L1（未配置沙箱）")
+	for _, want := range []string{
+		"⚡ SUMMONER STATUS — run run-1 · workflow fix · ACTIVE",
+		"auto-passed: 阶段 context 已自动通过 → 立即进入 diagnosis",
+		"- context: accepted (自动通过)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("auto-pass render missing %q:\n%s", want, out)
+		}
+	}
+	// Nothing is pending: no checkpoint block, no "awaiting a decision".
+	if strings.Contains(out, "SUMMONER CHECKPOINT") || strings.Contains(out, "awaiting: user decision") {
+		t.Errorf("an auto-passed run has nothing pending:\n%s", out)
+	}
+
+	// A later step supersedes the line: once the next phase is submitted the
+	// newest checkpoint is a human one.
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis", Summary: "diagnosis done"}); err != nil {
+		t.Fatal(err)
+	}
+	out = renderStatus(r, "L1（未配置沙箱）")
+	if strings.Contains(out, "auto-passed:") {
+		t.Errorf("the auto-pass line belongs to the run's latest step only:\n%s", out)
+	}
+	if !strings.Contains(out, "║   context ✓ 自动通过: context established") {
+		t.Errorf("the history block must still show the framework's acceptance:\n%s", out)
+	}
+}
