@@ -566,6 +566,11 @@ func substitutedCommandRule(toks []shTok) string {
 				depth++
 			case u.text == opSubstClose:
 				depth--
+				if depth == 0 && u.attachedAfter {
+					// `"$(git rev-parse …)"/bin/tool`: the substitution is
+					// the DIRECTORY of a program path, not the command.
+					return ""
+				}
 			case depth == 0 && shBreaks[u.text] && !(j == i+1 && u.text == ";"):
 				return "" // the command ended with no word after the substitution
 			}
@@ -586,7 +591,11 @@ func commandRule(words []shTok, stdinLive bool) string {
 	// The empty word a closing quote leaves after an assignment's
 	// expansion is the assignment's value, not a program (`X="$(pwd)" rm`,
 	// `X="$((1))" git`): drop it before the command word is resolved.
-	if n := len(words); n > 1 && words[0].text == "" && !words[0].expanded {
+	if n := len(words); n > 1 && words[0].text == "" && words[0].expanded && strings.HasPrefix(words[1].text, "/") {
+		// `$(git rev-parse --show-toplevel)/bin/tool status`: the
+		// substitution is the DIRECTORY, the next word the program path.
+		words = append([]shTok{words[1]}, words[2:]...)
+	} else if n > 1 && words[0].text == "" && !words[0].expanded {
 		words = words[1:]
 	} else if n > 1 && envAssign.MatchString(words[0].text) && words[0].expanded && words[1].text == "" {
 		words = append([]shTok{words[0]}, words[2:]...)
@@ -675,7 +684,7 @@ func commandRule(words []shTok, stdinLive bool) string {
 var wrapperValueOptions = map[string]map[string]bool{
 	"timeout":    {"-s": true, "--signal": true, "-k": true, "--kill-after": true},
 	"nice":       {"-n": true, "--adjustment": true},
-	"flock":      {"-w": true, "--wait": true, "-E": true, "--conflict-exit-code": true},
+	"flock":      {"-w": true, "--wait": true, "-E": true, "--conflict-exit-code": true, "-c": true},
 	"doas":       {"-u": true, "-C": true, "-L": true},
 	"strace":     {"-o": true, "-e": true, "-p": true, "-u": true, "-b": true, "-D": true, "-I": true, "-k": true},
 	"ltrace":     {"-o": true, "-e": true, "-p": true, "-u": true},
@@ -693,7 +702,7 @@ var wrapperValueOptions = map[string]map[string]bool{
 
 // wrapperOperandsBeforeCommand: wrappers whose wrapped command is NOT the
 // first operand (flock: the lock file comes first).
-var wrapperOperandsBeforeCommand = map[string]int{"flock": 1}
+var wrapperOperandsBeforeCommand = map[string]int{"flock": 1, "script": 1}
 
 var wrapperDurationRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]?$`)
 
@@ -791,8 +800,8 @@ func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) 
 	case verb == "unzip":
 		return unzipRule(args)
 	case shellNames[verb]:
-		if syntaxCheckOnly(args) {
-			return "" // -n parses without running anything
+		if syntaxCheckOnly(args) || shellInfoOnly(args) {
+			return "" // -n parses without running anything; --version / --help print
 		}
 	}
 	if writeClassVerbs[verb] {
@@ -829,7 +838,7 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 	if !scanningWrapper(verb) {
 		return ""
 	}
-	valueOpts := wrapperValueOptions[verb]
+	valueOpts, before := wrapperValueOptions[verb], wrapperOperandsBeforeCommand[verb]
 	for k := 0; k < len(args); k++ {
 		w := args[k]
 		if valueOpts[w] {
@@ -847,9 +856,8 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 			continue
 		}
 		if commandStringWrappers[verb] {
-			// The string is judged BEFORE anything else: `watch -n 2
-			// 'FOO=1 rm -rf x'` opens with an assignment, which must not
-			// hide the command it carries.
+			// Judged BEFORE the assignment skip: `watch -n 2 'FOO=1 rm -rf
+			// x'` opens with an assignment, which must not hide its command.
 			if rule := ruleFor(lexShell(w)); rule != "" {
 				return verb + " … " + rule
 			}
@@ -857,12 +865,32 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 		if strings.HasPrefix(w, "-") || envAssign.MatchString(w) || wrapperDurationRe.MatchString(w) {
 			continue
 		}
+		if before > 0 {
+			before--
+			continue
+		}
+		// THE wrapped command: this operand and nothing after it. Trying
+		// every later word as a verb denied `timeout 60 go test .` (the
+		// "." of go test read as `source`) — an ordinary spelling.
+		if commandStringWrappers[verb] {
+			if rule := ruleFor(lexShell(w)); rule != "" {
+				return verb + " … " + rule
+			}
+		}
+		name := strings.ToLower(w)
+		if !strings.ContainsAny(name, "$`\\") && strings.ContainsRune(name, '/') {
+			name = path.Base(name) // `timeout 5 /bin/rm -rf x`: a path names its program
+		}
+		if scanningWrapper(name) {
+			return scanningWrapperRule(name, args[k+1:], stdinLive) // nice -n 5 ionice -c2 rm x
+		}
 		// Words are tried without case (macOS's filesystem runs `RM`), and
 		// stdinLive travels with the line: `nice python3 < s.py` runs the
 		// interpreter on the file's contents.
-		if rule := verbTableRule(strings.ToLower(w), args[k+1:], stdinLive, nil); rule != "" {
+		if rule := verbTableRule(name, args[k+1:], stdinLive, nil); rule != "" {
 			return verb + " … " + rule
 		}
+		return ""
 	}
 	return ""
 }
@@ -1785,6 +1813,19 @@ func unzipRule(args []string) string {
 		}
 	}
 	return "write-class verb: unzip"
+}
+
+// shellInfoOnly: the shell is asked about itself (`bash --version`,
+// `zsh --help`, `sh -v`): the first option is an information flag.
+func shellInfoOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "--version", "-v", "-V", "--help", "-h", "-?":
+		return true
+	}
+	return false
 }
 
 // syntaxCheckOnly: `bash -n file` parses the file without running anything.
