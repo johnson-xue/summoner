@@ -202,3 +202,72 @@ func TestStopAcknowledgmentPhrasings(t *testing.T) {
 		t.Error("strict: listing the options is not a stop")
 	}
 }
+
+// TestStopAcknowledgmentProseIsNeverAStop — ship review round 4 (closure N1,
+// N5). A bare 应 / 依 in the request tie matched the 应 inside 响应, so
+// "服务停止响应你的要求。" ended the turn at a DISPLAYED checkpoint — the
+// incident's stall, by regression. And a stop word that OPENS a statement
+// took any tail ("已停止响应。", "The service stopped responding after
+// SIGTERM."). None of these may end the turn, at either strength; the
+// accepted acknowledgments must keep working.
+func TestStopAcknowledgmentProseIsNeverAStop(t *testing.T) {
+	run := &RunState{RunID: "run-1", Workflow: "fix"}
+	prose := []string{
+		"服务停止响应你的要求。",
+		"接口已停止响应用户要求，根因是连接池耗尽。",
+		"升级后网关停止响应您的要求；线程池已满。",
+		"根因：线程池耗尽，服务停止响应你的要求，恢复连接后正常。",
+		"系统终止回应你的要求。",
+		"按要求排查：服务停止响应你的要求。",
+		"I did not stop because you asked; I stopped because the test failed.",
+		"没有按要求停止，仍在继续排查。",
+		"按要求未停止：配置还没改完。",
+		"已停止响应。",
+		"The service stopped responding after SIGTERM.",
+		"停止转发流量后，延迟恢复正常。",
+		"Stopped responding after the upgrade.",
+		"Aborted by the client at handshake.",
+		"网关已停止响应。",
+	}
+	for _, msg := range prose {
+		if IsStopAcknowledgment(run, nil, msg, true) {
+			t.Errorf("strict: prose must NOT end the turn: %q", msg)
+		}
+		if IsStopAcknowledgment(run, nil, msg, false) {
+			t.Errorf("lenient: prose must NOT end the turn: %q", msg)
+		}
+	}
+	for _, msg := range []string{"好的，已停止。", "Halting the workflow now.", "I will stop here.", "Stopping for now.", "已停止了。", "系统已停止。"} {
+		if !IsStopAcknowledgment(run, nil, msg, false) {
+			t.Errorf("lenient: a real bare stop must end the turn: %q", msg)
+		}
+	}
+	for _, msg := range []string{"I stopped because you asked me to.", "按照你的要求，已停止。", "Stopped upon your request.", "应你的要求，已停止。"} {
+		if !IsStopAcknowledgment(run, nil, msg, true) {
+			t.Errorf("strict: a request-tied stop must end the turn: %q", msg)
+		}
+	}
+}
+
+// TestStopAcknowledgmentGuards — guards no test pinned (ship review round 4,
+// closure N8): the brevity cap, the option-talk veto, the paste guard.
+func TestStopAcknowledgmentGuards(t *testing.T) {
+	run, cp := stopWordState()
+	// Brevity: a long explanation that opens with a stop word is not a stop.
+	long := "已停止。" + strings.Repeat("排查过程说明。", 20)
+	if IsStopAcknowledgment(run, &cp, long, false) {
+		t.Error("a long explanation is not a bare stop")
+	}
+	// Option talk: a message that lists the options is describing the menu.
+	if IsStopAcknowledgment(run, &cp, "已停止。请选择 continue、skip 或 done。", false) {
+		t.Error("a message that lists options is not a stop")
+	}
+	// Paste guard: framework lines carrying a bare stop word in their
+	// leftovers are the pasted content, not the model's intent.
+	paste := strings.Join([]string{"║   stop", "║   done", "║   recall", "已停止。"}, "\n")
+	_ = paste
+	stale := blockquote(RenderCheckpointMessage(run, cp)) + "\n已停止。"
+	if IsStopAcknowledgment(run, &cp, stale, false) {
+		t.Error("a pasted checkpoint plus a bare stop word is not a stop")
+	}
+}
