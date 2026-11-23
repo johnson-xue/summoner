@@ -16,7 +16,7 @@ This is the Summoner orchestration framework. It is a Claude Code plugin designe
 
 ### Hard Rules
 1. **Never hardcode project names.** No domain-specific project names or paths in framework code. Use `my-project`, `my-debug-skill` as illustrative placeholders in examples.
-2. **Commands are thin.** They declare workflow phases and rules. The meta-skill does the heavy lifting.
+2. **Commands are self-sufficient.** Each `commands/<name>.md` orchestrates exactly one suite — its route, capability mapping, suite rules, and the Loop line that points at `references/single-loop.md`. No skill orchestrates more than one suite (0.6.0).
 3. **Review is a single contract.** `agents/reviewer.md` is the one review agent; sensitive changes add criteria, not reviewers. Adding or registering another agent is a spec-level decision, not a per-task one.
 4. **References are specs, not skills.** They define contracts, not workflows.
 5. **Checkpoint protocol is sacred.** Don't modify the checkpoint format without updating the spec.

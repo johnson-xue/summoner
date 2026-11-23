@@ -4,25 +4,25 @@ project:
   name: "fixture-project"
 phases:
   requirements:
-    skill: "superpowers:brainstorming"
+    skill: "none"
   plan:
-    skill: "superpowers:writing-plans"
+    skill: "none"
   implement:
-    skill: "superpowers:executing-plans"
+    skill: "none"
   test:
-    skill: "superpowers:test-driven-development"
+    skill: "none"
   diagnosis:
-    skill: "superpowers:systematic-debugging"
+    skill: "none"
   ops:
     skill: "none"
   fix:
-    skill: "superpowers:executing-plans"
+    skill: "none"
   reproduce:
-    skill: "superpowers:test-driven-development"
+    skill: "none"
   verify:
-    skill: "superpowers:verification-before-completion"
+    skill: "none"
   regression:
-    skill: "superpowers:verification-before-completion"
+    skill: "none"
   review:
     verification_spec:
       criteria: []
