@@ -260,23 +260,49 @@ func decide(in *gateInput, run *shared.RunState) decision {
 	case "Read", "Grep", "Glob", "ToolSearch":
 		return allow(nil)
 	default:
-		// Zero-touch tool surface (user ruling 2026-11-16): two admissions
-		// past the model list, both READ-ONLY, both before any effect.
-		// (1) LSP — first-party navigation (definition/references/symbols);
-		//     presumed read-only exactly like Read/Grep, no declaration owed.
-		// (2) A tool the project's OWN manifest names in
-		//     tool_scope.allowed_tools — the project declaring its read-only
-		//     workflow tools (e.g. an MCP code-search server). The
-		//     declaration is the project taking responsibility; the gate
-		//     still fails closed when the manifest cannot load.
-		// Modeled mutation tools never consult this list: their admission
-		// branches above run first, so a declaration cannot smuggle write
-		// access past Bash/Edit/Write/Agent/AskUserQuestion semantics.
-		if in.ToolName == "LSP" || manifestDeclaresReadOnlyTool(in.ToolName) {
+		// Unmodeled tool surface (0.6.1, user report 2026-11-23: a live run
+		// denied the harness's own read-only tools and every undeclared MCP
+		// tool, forcing the model onto read-only Bash).
+		//
+		// A live run gates MUTATION. A tool that cannot touch project state is
+		// admitted with no declaration (harnessReadOnlyTools, plus LSP —
+		// first-party navigation). An MCP tool is NOT presumed read-only: the
+		// hook input carries only tool_name and tool_input, with no annotation
+		// channel, so the project's manifest tool_scope.allowed_tools is the
+		// only trusted declaration (user ruling 2026-11-23: 按清单声明). The
+		// gate still fails closed when the manifest cannot load.
+		// Modeled mutation tools never reach this path: their admission
+		// branches above run first, so neither the set nor a manifest entry can
+		// smuggle write access past Bash/Edit/Write/Agent/AskUserQuestion.
+		if in.ToolName == "LSP" || harnessReadOnlyTools[in.ToolName] || manifestDeclaresReadOnlyTool(in.ToolName) {
 			return allow(nil)
 		}
-		return deny(fmt.Sprintf("Summoner gate: unmodeled tool %q has no supported read-only or mutation/probe declaration — denied before effects (declare read-only workflow tools in summoner.yaml tool_scope.allowed_tools; MCP is not presumed read-only).", in.ToolName))
+		return deny(fmt.Sprintf(
+			"Summoner gate: tool %q is not declared usable in this run — denied before any effect. It is neither a harness read-only tool nor listed in this project's summoner.yaml. If it only reads (an MCP code-search or memory server, say), add it to summoner.yaml and reload:\n  tool_scope:\n    allowed_tools: [\"%s\"]\nAn undeclared tool may mutate, so it stays closed until the project declares it (the Phase 1 diagnosis freeze holds for MCP writes too).",
+			in.ToolName, in.ToolName))
 	}
+}
+
+// harnessReadOnlyTools are the harness's own tools that cannot mutate project
+// state: web reading, and bookkeeping that lives in the harness (the task
+// list, wakeups, monitors, agent listing). Admitted during a live run exactly
+// like Read/Grep. Deliberately NOT here: anything with write or delegation
+// semantics (Edit, Write, NotebookEdit, Agent, AskUserQuestion, Bash) — those
+// keep their modeled admission branches above. EnterWorktree/ExitPlanMode
+// and friends stay out until their effect on a live checkpoint is
+// characterized.
+var harnessReadOnlyTools = map[string]bool{
+	"WebFetch":       true,
+	"WebSearch":      true,
+	"TaskCreate":     true,
+	"TaskUpdate":     true,
+	"TaskGet":        true,
+	"TaskList":       true,
+	"TaskStop":       true,
+	"TodoWrite":      true,
+	"Monitor":        true,
+	"ScheduleWakeup": true,
+	"ListAgents":     true,
 }
 
 // manifestDeclaresReadOnlyTool reports whether the project's summoner.yaml
