@@ -39,7 +39,11 @@ import (
 // 0.6.1 budgets settle at run start: the only surviving ride-along is the
 // exhaustion extend (a `budget:` question is rejected outright), so nothing
 // here ever owes a budget answer.
-func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in *hookInput, errW io.Writer) int {
+func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in *hookInput, outW, errW io.Writer) int {
+	// 0.7.0 D4: a rejection is also ANSWERED to the model (stdout block
+	// decision) — applied tracks what this callback changed before the
+	// rejection, so the answer can disclose it.
+	applied := &appliedEffects{}
 	reject := func(reason string) int {
 		if err := appendTrace(run, in, shared.TraceEvent{
 			Type: shared.EventCheckpointDecisionRejected,
@@ -50,6 +54,7 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		}, errW); err != nil {
 			return 2
 		}
+		emitRejection(outW, cp, reason, applied)
 		return 0
 	}
 
@@ -178,6 +183,7 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		if !recorded {
 			continue // idempotent replay: the observation is already on disk
 		}
+		applied.drops = append(applied.drops, dq.id)
 		if err := appendTrace(run, in, shared.TraceEvent{
 			Type: shared.EventCriterionDropped,
 			Payload: map[string]interface{}{
@@ -215,6 +221,8 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 				}, errW); err != nil {
 					return 2
 				}
+				delta := run.BudgetExtensions[len(run.BudgetExtensions)-1].Delta
+				applied.extended = &delta
 			}
 		}
 		return reject(reason)
