@@ -248,6 +248,19 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"read", "echo x | python3 --version"},
 		{"write", "sed '1w out.txt' f"},
 		{"write", "sed -n '/start/,/end/w out.txt' f"},
+		// ---- found by the posture panel's diagnosis-flow lens (measured denials) ----
+		{"read", "timeout 60 go test ."}, // the wrapper scan judges the command, not every word
+		{"read", "timeout 300 pytest ."},
+		{"read", "nice -n 5 ls ."},
+		{"read", "timeout 5 grep rm notes.txt"},
+		{"write", "timeout 5 /bin/rm -rf x"}, // a path operand names its program
+		{"write", "nice -n 5 ionice -c2 rm x"},
+		{"write", "script -q /dev/null make test"},
+		{"read", "bash --version"},
+		{"read", "zsh --help"},
+		{"read", `"$(git rev-parse --show-toplevel)"/bin/tool status`},
+		{"read", `$(git rev-parse --show-toplevel)/bin/tool status`},
+		{"write", `"$(pwd)/bin/rm" -rf x`},
 		// ---- controls: forms that already work must keep working ----
 		{"write", `git -C "$(pwd)" push`},
 		{"write", `env -u "$(echo FOO)" rm x`},
