@@ -104,13 +104,13 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 	// SessionStart exported into this session's shell environment; without
 	// it the project-wide fallback stands (and names its own ambiguity).
 	sessionID, fromEnv := resolveSession(in.SessionID)
-	runs, err := liveRunsFor(sessionID, errW)
+	runs, skipped, err := liveRunsFor(sessionID, errW)
 	if err == nil && fromEnv && len(runs) == 0 {
 		// The exported id can be stale (an earlier session of this project,
 		// and no SessionStart ran for this one). Nothing live under it must
 		// not read as "no active run": the project-wide fallback stands.
 		fromEnv = false
-		runs, err = liveRunsFor("", errW)
+		runs, skipped, err = liveRunsFor("", errW)
 	}
 	if err != nil {
 		// Unreadable state is not an input error: surface it, stay exit 0.
@@ -121,6 +121,9 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 	switch {
 	case len(runs) == 0:
 		fmt.Fprintln(outW, "No active Summoner run for this session/project (read-only viewer; nothing was started).")
+		if skipped > 0 {
+			fmt.Fprintf(outW, "(%d session(s) could not be read and were skipped — see stderr; a run there would not show.)\n", skipped)
+		}
 		return 0
 	case len(runs) > 1:
 		ids := make([]string, 0, len(runs))
@@ -262,25 +265,25 @@ func reviewView(run *shared.RunState) string {
 // through shared.SessionRuns (the same resolution the hooks use); an empty one
 // falls back to scanning every session under the project key — the model does
 // not know its own session id when invoking the viewer over Bash.
-func liveRunsFor(sessionID string, errW io.Writer) ([]*shared.RunState, error) {
+func liveRunsFor(sessionID string, errW io.Writer) (runs []*shared.RunState, skipped int, err error) {
 	if sessionID != "" {
 		runs, err := shared.SessionRuns(sessionID)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		return liveRuns(runs), nil
+		return liveRuns(runs), 0, nil
 	}
 	root, err := statusStateRoot()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	projDir := filepath.Join(root, shared.ProjectKey())
 	sessions, err := os.ReadDir(projDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	var out []*shared.RunState
 	for _, s := range sessions {
@@ -292,11 +295,12 @@ func liveRunsFor(sessionID string, errW io.Writer) ([]*shared.RunState, error) {
 			// One unreadable session must not hide every other run: the
 			// stale-id fallback rests on this scan (ship review round 3).
 			fmt.Fprintf(errW, "summoner-status: session %s unreadable, skipped — %v\n", s.Name(), err)
+			skipped++
 			continue
 		}
 		out = append(out, liveRuns(runs)...)
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 // statusStateRoot mirrors the shared package's state-root resolution

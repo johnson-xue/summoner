@@ -1288,7 +1288,14 @@ func (r *RunState) nextVisitID(phaseID string) string {
 // REVIEWED with a PASS verdict that still covers the CURRENT acceptance
 // view — freshness by re-mint digest equality, so a PASS over an older,
 // since-superseded view is stale and does not discharge the debt.
-func (s *RunState) terminalReviewSettled() bool {
+func (s *RunState) terminalReviewSettled() bool { return s.TerminalReviewSettled() }
+
+// TerminalReviewSettled reports whether the mandatory terminal review is
+// settled (a concluded PASS over the current acceptance view, or an explicit
+// skip). Exported for the decision recorder: at a terminal REVIEW_RESULT
+// `continue` means "go on", and with a settled review there is nowhere to go
+// on to but the finish.
+func (s *RunState) TerminalReviewSettled() bool {
 	var latestReviewVisit *PhaseState
 	for i := range s.Phases {
 		if s.Phases[i].ID == "review" {
@@ -1348,7 +1355,7 @@ func legalDecisionForKind(kind CheckpointKind, d Decision) error {
 		switch d {
 		case DecisionReviewOnDemand, DecisionSkip, DecisionContinue, DecisionRecall, DecisionStop:
 		default:
-			return fmt.Errorf("%s illegal at review-debt checkpoint (want REVIEW, SKIP, CONTINUE or STOP — done cannot discharge the mandatory terminal review)", d)
+			return fmt.Errorf("%s illegal at review-debt checkpoint (want REVIEW, SKIP, CONTINUE, RECALL or STOP — done cannot discharge the mandatory terminal review)", d)
 		}
 	default:
 		if d == DecisionAcceptRequirementChange {
@@ -1527,6 +1534,12 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 			if s.Status == StatusActive && !s.hasOpenPhase() {
 				s.ContinueNudgeFor = cp.ID
 			}
+		} else if cp.Kind == CheckpointReviewResult && !s.hasOpenPhase() && NextExpectedPhase(s) == "" && s.TerminalReviewSettled() {
+			// Ship review round 4 (N3): at the terminal REVIEW_RESULT of a
+			// settled review, `continue` with nothing left on the route IS
+			// the finish — DONE and SKIP lead here; ACTIVE had no way back.
+			s.decidePhase(cp, true)
+			s.Status = StatusPostGamePending // CLOSED only after post-game persists
 		} else {
 			s.decidePhase(cp, true)
 			// I1 (adjudication §5): the decision authorizes the next visit —

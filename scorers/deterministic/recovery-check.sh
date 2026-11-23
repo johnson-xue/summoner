@@ -181,9 +181,16 @@ for seq, pid in phase_starts:
 for seq, pl in recalls:
     target = pl.get("target_phase_id")
     frm = pl.get("from_phase_id")
-    if not target or not frm:
+    kind = pl.get("from_checkpoint_kind")
+    # A recall from a PHASE-LESS checkpoint (review-debt, review-result,
+    # recovery, change-confirm) has no phase to come from: the trace names
+    # the checkpoint's kind instead (0.7.0: a review-debt "continue" that
+    # re-enters a phase is such a recall).
+    if not target or (not frm and kind not in ("REVIEW_DEBT", "REVIEW_RESULT",
+                                               "RECOVERY", "CHANGE_CONFIRM")):
         fail(f"recall.applied at event #{seq} is malformed: needs "
-             "from_phase_id and target_phase_id")
+             "target_phase_id and from_phase_id (or, from a phase-less "
+             "checkpoint, its from_checkpoint_kind)")
     priors = [s for s in started_phases.get(target, []) if s < seq]
     if not priors:
         fail(f"recall.applied at event #{seq} targets {target!r}, which is "
