@@ -49,6 +49,18 @@ type appliedEffects struct {
 // emitRejection writes the block decision of a rejected decision attempt.
 // problem is the recorder's own reason; next is the legal path at this
 // checkpoint; applied is what the callback already changed.
+// emitBlockReason writes a PostToolUse block that carries a model-facing
+// reason which is NOT a rejection — a recorded decision that took an effect
+// the model must be told about (a "continue" that re-entered a phase).
+func emitBlockReason(outW io.Writer, reason string) {
+	if outW == nil {
+		return
+	}
+	if err := json.NewEncoder(outW).Encode(map[string]string{"decision": "block", "reason": reason}); err != nil {
+		fmt.Fprintf(os.Stderr, "summoner posttooluse: writing a block failed: %v\n", err)
+	}
+}
+
 func emitRejection(outW io.Writer, cp *shared.CheckpointState, problem string, applied *appliedEffects) {
 	if outW == nil {
 		return

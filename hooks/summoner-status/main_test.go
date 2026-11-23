@@ -1159,3 +1159,44 @@ func TestStatusExportedSessionWithoutLiveRunFallsBack(t *testing.T) {
 		t.Fatalf("the fallback is not session-scoped:\n%s", out)
 	}
 }
+
+// TestProjectScanSurfacesOnlyLiveRuns — a CLOSED run in a neighbour session
+// is not surfaced by the project-wide fallback (ship review round 4, N8).
+func TestProjectScanSurfacesOnlyLiveRuns(t *testing.T) {
+	useStatusEnv(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-gone")
+	r := newRun(t) // live, sess-1
+	closed, err := shared.StartRun("run-closed", "sess-old", "fix", limits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Status = shared.StatusClosed
+	if err := closed.Save(); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := callStatus(t, `{}`)
+	if code != 0 || !strings.Contains(out, "⚡ SUMMONER STATUS — run "+r.RunID) {
+		t.Fatalf("the live run must render: (code %d)\n%s", code, out)
+	}
+	if strings.Contains(out, "run-closed") || strings.Contains(out, "ambiguous") {
+		t.Fatalf("a CLOSED neighbour must not surface or make the view ambiguous:\n%s", out)
+	}
+}
+
+// TestProjectScanNamesSkippedSessionsWhenNothingRenders — when the only state
+// is unreadable the stdout answer must say so, not just stderr (round 4, N9).
+func TestProjectScanNamesSkippedSessionsWhenNothingRenders(t *testing.T) {
+	useStatusEnv(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-gone")
+	bad := filepath.Join(os.Getenv("SUMMONER_STATE_DIR"), shared.ProjectKey(), "sess-bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "run-bad.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := callStatus(t, `{}`)
+	if code != 0 || !strings.Contains(out, "No active Summoner run") || !strings.Contains(out, "1 session(s) could not be read and were skipped") {
+		t.Fatalf("the unreadable session must be named on stdout too: (code %d)\n%s", code, out)
+	}
+}

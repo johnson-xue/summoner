@@ -281,14 +281,25 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	// label) means the DEFAULT recall; a label on NO persisted page is a
 	// gate-bypass artifact — rejected, never guessed.
 	_, target := splitLabelKeyword(label)
-	// Ship review round 3: at the review-debt checkpoint "continue" means
-	// back to work — but when every route phase is settled there is nothing
-	// to continue INTO, and the run stayed ACTIVE with nothing to open and
-	// no checkpoint to close from. "Continue" then re-enters the latest
-	// accepted phase: the default recall, through the ordinary recall path.
-	if d == shared.DecisionContinue && cp.Kind == shared.CheckpointReviewDebt && len(cp.RecallTargets) > 0 &&
-		!run.HasOpenPhase() && shared.NextExpectedPhase(run) == "" {
-		d, target = shared.DecisionRecall, "latest"
+	mappedContinue := false // "continue" turned into a recall (below)
+	// Ship review rounds 3–4: at a phase-less checkpoint (review-debt, or a
+	// review-result whose review is NOT settled) "continue" means back to
+	// work — but when every route phase is settled there is nothing to
+	// continue INTO, and the run stayed ACTIVE with nothing to open and no
+	// checkpoint to close from. "Continue" then re-enters the last accepted
+	// DEVELOPMENT phase (the last one that is not the review), or the latest
+	// accepted phase when there is none: a recall, through the ordinary
+	// recall path. A settled PASS at REVIEW_RESULT is the reducer's case
+	// (continue = the finish).
+	if d == shared.DecisionContinue && len(cp.RecallTargets) > 0 && !run.HasOpenPhase() && shared.NextExpectedPhase(run) == "" &&
+		(cp.Kind == shared.CheckpointReviewDebt || cp.Kind == shared.CheckpointReviewResult && !run.TerminalReviewSettled()) {
+		d, target, mappedContinue = shared.DecisionRecall, "latest", true
+		for i := len(run.Phases) - 1; i >= 0; i-- {
+			if p := run.Phases[i]; p.Outcome == "accepted" && p.ID != "review" && cp.IsOfferedRecallTarget(p.VisitID) {
+				target = p.VisitID
+				break
+			}
+		}
 	}
 	if d == shared.DecisionRecall && !cp.IsOfferedRecallTarget(target) {
 		if !cp.OnMenuPage(label) {
@@ -346,13 +357,16 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		if err := appendTrace(run, in, shared.TraceEvent{
 			Type: shared.EventRecallApplied,
 			Payload: map[string]interface{}{
-				"from_phase_id":   rec.FromPhaseID,
-				"target_phase_id": rec.TargetPhaseID,
-				"target_visit_id": rec.TargetVisitID,
-				"provenance":      rec.Provenance,
-				"label":           rec.Label,
-				"reason":          rec.Reason,
-				"run_rework":      run.Counters.RunRework,
+				"from_phase_id": rec.FromPhaseID,
+				// A phase-less checkpoint (review-debt / result, recovery)
+				// has no phase to come from: the kind says where it did.
+				"from_checkpoint_kind": string(cp.Kind),
+				"target_phase_id":      rec.TargetPhaseID,
+				"target_visit_id":      rec.TargetVisitID,
+				"provenance":           rec.Provenance,
+				"label":                rec.Label,
+				"reason":               rec.Reason,
+				"run_rework":           run.Counters.RunRework,
 			},
 		}, errW); err != nil {
 			return 2
@@ -363,6 +377,17 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		}, errW); err != nil {
 			return 2
 		}
+	}
+	if mappedContinue {
+		// The user clicked "continue" and the effect is a recall: say so,
+		// or the model ends its turn none the wiser (ship review round 4, N4).
+		reopened := ""
+		for _, p := range run.Phases {
+			if p.Open {
+				reopened = p.VisitID
+			}
+		}
+		emitBlockReason(outW, shared.MappedContinueReason(run.Recalls[len(run.Recalls)-1], reopened))
 	}
 	// The change loop's single-point close (T10): a successful
 	// ACCEPT_REQUIREMENT_CHANGE resumes the run in place — record the resume

@@ -184,13 +184,10 @@ func TestDefaultRecallViaShippedMenuLabel(t *testing.T) {
 	}
 }
 
-// TestDebtContinueWithACompleteRouteReentersTheLatestPhase — ship review
-// round 3 (interaction F3, second half): DONE with an unsettled terminal
-// review parks at REVIEW_DEBT. With every route phase settled its
-// `continue:` used to leave the run ACTIVE with nothing to open and no
-// checkpoint to close from. It is now the default recall — the ordinary
-// recall path, traced like one.
-func TestDebtContinueWithACompleteRouteReentersTheLatestPhase(t *testing.T) {
+// walkFixRoute accepts context → regression through their checkpoints and
+// returns the review phase's displayed checkpoint (the run sits on it).
+func walkFixRoute(t *testing.T) (*shared.RunState, shared.CheckpointState) {
+	t.Helper()
 	useHookEnv(t)
 	r := startRun(t)
 	for _, ph := range []string{"context", "diagnosis", "reproduce", "fix", "regression"} {
@@ -200,22 +197,97 @@ func TestDebtContinueWithACompleteRouteReentersTheLatestPhase(t *testing.T) {
 		}
 	}
 	reviewCp := openDisplayedCheckpoint(t, r, "review")
+	return r, reviewCp
+}
+
+// continueAnswerPayload builds the answer `continue:` for a phase-less
+// checkpoint whose page 1 carries a continue label.
+func continueAnswerPayload(t *testing.T, debt *shared.CheckpointState, toolUseID string) string {
+	t.Helper()
+	page := shared.DecisionPage(*debt)
+	continueLabel := ""
+	for _, l := range page {
+		if strings.HasPrefix(strings.ToLower(l), "continue") {
+			continueLabel = l
+		}
+	}
+	if continueLabel == "" {
+		t.Fatalf("fixture: page 1 offers no continue label: %q", page)
+	}
+	q, text := cpQuestion(debt.Nonce, false, page...)
+	return postUsePayload(t, "AskUserQuestion", toolUseID,
+		map[string]interface{}{"questions": []interface{}{q}},
+		map[string]interface{}{
+			"questions": []interface{}{map[string]interface{}{"question": text}},
+			"answers":   map[string]interface{}{text: continueLabel},
+		})
+}
+
+// display binds the current checkpoint (the two-turn display act).
+func display(t *testing.T, r *shared.RunState) *shared.CheckpointState {
+	t.Helper()
+	cp := r.CurrentCheckpoint()
+	if cp == nil {
+		t.Fatal("fixture: no current checkpoint")
+	}
+	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, r.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	return cp
+}
+
+// assertReenteredByContinue checks the effect of a "continue" that was
+// mapped to a recall: one open visit, a recall record, the trace pair with
+// the checkpoint's kind, and the block that tells the model.
+func assertReenteredByContinue(t *testing.T, out string, wantVisit, wantKind string) {
+	t.Helper()
+	after := reloadRun(t, "run-1")
+	if after.Status != shared.StatusActive || !after.HasOpenPhase() {
+		t.Fatalf("after continue: status %s open %v, want ACTIVE with a phase open (not stranded)", after.Status, after.HasOpenPhase())
+	}
+	var open []string
+	for _, p := range after.Phases {
+		if p.Open {
+			open = append(open, p.VisitID)
+		}
+	}
+	if len(open) != 1 || open[0] != wantVisit {
+		t.Fatalf("open visits = %v, want [%s]", open, wantVisit)
+	}
+	applied := -1
+	for i, ev := range readHookTrace(t, "run-1") {
+		if ev.Type == shared.EventRecallApplied {
+			applied = i
+			if ev.Payload["from_checkpoint_kind"] != wantKind {
+				t.Fatalf("recall.applied from_checkpoint_kind = %v, want %s", ev.Payload["from_checkpoint_kind"], wantKind)
+			}
+		}
+	}
+	if applied < 0 {
+		t.Fatal("the re-entry must be traced as a recall (recall.applied)")
+	}
+	if !strings.Contains(out, shared.MappedContinueHeader) || !strings.Contains(out, wantVisit) {
+		t.Fatalf("the model must be TOLD that continue re-entered %s:\n%s", wantVisit, out)
+	}
+}
+
+// TestDebtContinueWithACompleteRouteReentersDevelopment — ship review
+// rounds 3–4 (interaction F3): DONE with an unsettled terminal review parks
+// at REVIEW_DEBT. With every route phase settled its `continue:` used to
+// leave the run ACTIVE with nothing to open and no checkpoint to close
+// from. It now re-enters the last accepted DEVELOPMENT phase through the
+// ordinary recall path — traced as one, and told to the model.
+func TestDebtContinueWithACompleteRouteReentersDevelopment(t *testing.T) {
+	r, reviewCp := walkFixRoute(t)
 	if err := r.RecordDecision(reviewCp.ID, shared.DecisionDone, ""); err != nil {
 		t.Fatalf("done at the review checkpoint: %v", err)
 	}
-	debt := reloadRun(t, "run-1").CurrentCheckpoint()
-	if debt == nil || debt.Kind != shared.CheckpointReviewDebt {
-		t.Fatalf("DONE with an unsettled terminal review must park at REVIEW_DEBT, got %+v", debt)
-	}
-	cur := reloadRun(t, "run-1")
-	if shared.NextExpectedPhase(cur) != "" {
-		t.Fatal("fixture: the route must be complete")
-	}
-	if err := cur.MarkDisplayed(debt.ID, shared.CheckpointContentDigest(*debt, cur.RequirementsVersion)); err != nil {
-		t.Fatal(err)
-	}
-	if err := cur.Save(); err != nil {
-		t.Fatal(err)
+	debt := display(t, reloadRun(t, "run-1"))
+	if debt.Kind != shared.CheckpointReviewDebt || shared.NextExpectedPhase(reloadRun(t, "run-1")) != "" {
+		t.Fatalf("fixture: want REVIEW_DEBT on a complete route, got %+v", debt)
 	}
 	offersRecall := false
 	for _, pg := range debt.MenuPages {
@@ -228,44 +300,82 @@ func TestDebtContinueWithACompleteRouteReentersTheLatestPhase(t *testing.T) {
 	if !offersRecall {
 		t.Fatalf("the debt checkpoint must offer the recall page: %+v", debt.MenuPages)
 	}
-
-	page := shared.DecisionPage(*debt)
-	continueLabel := ""
-	for _, l := range page {
-		if strings.HasPrefix(strings.ToLower(l), "continue") {
-			continueLabel = l
-		}
-	}
-	q, text := cpQuestion(debt.Nonce, false, page...)
-	code, stderr := callHook(t, postUsePayload(t, "AskUserQuestion", "toolu-ask-cont",
-		map[string]interface{}{"questions": []interface{}{q}},
-		map[string]interface{}{
-			"questions": []interface{}{map[string]interface{}{"question": text}},
-			"answers":   map[string]interface{}{text: continueLabel},
-		}))
+	code, out, stderr := callHookOut(t, continueAnswerPayload(t, debt, "toolu-ask-cont"))
 	if code != 0 {
 		t.Fatalf("continue at the debt checkpoint: exit = %d (stderr %q)", code, stderr)
 	}
+	assertReenteredByContinue(t, out, "regression@v2", "REVIEW_DEBT")
+}
+
+// TestResultContinueWithACompleteRouteAndAnUnsettledReviewReentersDevelopment
+// — the same dead end one checkpoint later: a review that concluded
+// NEEDS-FIX parks at REVIEW_RESULT; with the route complete its `continue:`
+// re-enters the last development phase too.
+func TestResultContinueWithACompleteRouteAndAnUnsettledReviewReentersDevelopment(t *testing.T) {
+	r, reviewCp := walkFixRoute(t)
+	if err := r.RecordDecision(reviewCp.ID, shared.DecisionContinue, ""); err != nil {
+		t.Fatalf("continue at the review checkpoint: %v", err)
+	}
+	// A REVIEW_RESULT checkpoint whose review concluded NEEDS-FIX: built the
+	// way addCheckpoint builds it (kind menu, offered recall history).
+	cp := shared.CheckpointState{
+		ID: fmt.Sprintf("cp-%d", len(r.Checkpoints)+1), Kind: shared.CheckpointReviewResult,
+		Nonce: "n0nc3r501", Note: "COMPLETED NEEDS-FIX", MenuPages: shared.MenuProjection(shared.CheckpointReviewResult),
+	}
+	for i := range r.Phases {
+		if r.Phases[i].Outcome == "accepted" {
+			cp.RecallTargets = append(cp.RecallTargets, shared.RecallTarget{VisitID: r.Phases[i].VisitID, Label: r.Phases[i].VisitID, PhaseID: r.Phases[i].ID})
+		}
+	}
+	latest := cp.RecallTargets[len(cp.RecallTargets)-1]
+	cp.RecallTargets = append([]shared.RecallTarget{{VisitID: latest.VisitID, Label: "latest", PhaseID: latest.PhaseID}}, cp.RecallTargets...)
+	r.Checkpoints = append(r.Checkpoints, cp)
+	r.Status = shared.StatusWaitUser
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	result := display(t, r)
+	if shared.NextExpectedPhase(reloadRun(t, "run-1")) != "" || reloadRun(t, "run-1").TerminalReviewSettled() {
+		t.Fatal("fixture: want a complete route with an unsettled review")
+	}
+	code, out, stderr := callHookOut(t, continueAnswerPayload(t, result, "toolu-ask-cont"))
+	if code != 0 {
+		t.Fatalf("continue at the review-result checkpoint: exit = %d (stderr %q)", code, stderr)
+	}
+	assertReenteredByContinue(t, out, "regression@v2", "REVIEW_RESULT")
+}
+
+// TestDebtContinueOnAnIncompleteRouteResumesTheRoute — the mapping is for a
+// COMPLETE route only: with phases still to do, `continue:` resumes the
+// route exactly as before (no recall, no block, the continuation cue).
+func TestDebtContinueOnAnIncompleteRouteResumesTheRoute(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	for _, ph := range []string{"context", "diagnosis"} {
+		cp := openDisplayedCheckpoint(t, r, ph)
+		if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
+			t.Fatalf("continue %s: %v", ph, err)
+		}
+	}
+	repro := openDisplayedCheckpoint(t, r, "reproduce")
+	if err := r.RecordDecision(repro.ID, shared.DecisionDone, ""); err != nil {
+		t.Fatalf("done at reproduce: %v", err)
+	}
+	debt := display(t, reloadRun(t, "run-1"))
+	if debt.Kind != shared.CheckpointReviewDebt || shared.NextExpectedPhase(reloadRun(t, "run-1")) != "fix" {
+		t.Fatalf("fixture: want REVIEW_DEBT with fix still to do, got %+v", debt)
+	}
+	before := len(reloadRun(t, "run-1").Recalls)
+	code, out, stderr := callHookOut(t, continueAnswerPayload(t, debt, "toolu-ask-cont"))
+	if code != 0 {
+		t.Fatalf("continue: exit = %d (stderr %q)", code, stderr)
+	}
 	after := reloadRun(t, "run-1")
-	if after.Status != shared.StatusActive || !after.HasOpenPhase() {
-		t.Fatalf("after continue: status %s open %v, want ACTIVE with a phase open (not stranded)", after.Status, after.HasOpenPhase())
+	if after.Status != shared.StatusActive || after.HasOpenPhase() || after.ContinueNudgeFor != debt.ID || len(after.Recalls) != before {
+		t.Fatalf("an incomplete route must resume, not recall: status %s open %v cue %q recalls %d→%d",
+			after.Status, after.HasOpenPhase(), after.ContinueNudgeFor, before, len(after.Recalls))
 	}
-	var open []string
-	for _, p := range after.Phases {
-		if p.Open {
-			open = append(open, p.VisitID)
-		}
-	}
-	if len(open) != 1 || open[0] != "review@v2" {
-		t.Fatalf("open visits = %v, want [review@v2] (the latest accepted phase, re-entered)", open)
-	}
-	applied := -1
-	for i, ev := range readHookTrace(t, "run-1") {
-		if ev.Type == shared.EventRecallApplied {
-			applied = i
-		}
-	}
-	if applied < 0 {
-		t.Fatal("the re-entry must be traced as a recall (recall.applied)")
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("an ordinary recorded decision writes nothing, got %q", out)
 	}
 }

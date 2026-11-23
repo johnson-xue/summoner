@@ -65,6 +65,7 @@ the script is the executable truth.
 | `invalid-usergate-decision-after-auto.jsonl` | A human decision of an auto-passed checkpoint (an auto-pass is terminal). |
 | `invalid-usergate-extend-after-auto.jsonl` | A budget extension riding an auto-passed checkpoint. |
 | `invalid-usergate-auto-twice-same-id.jsonl` | One checkpoint auto-passed twice (idempotency). |
+| `valid-recall-from-debt.jsonl` | A real-binaries run whose review-debt `continue:` took effect as a recall (phase-less `recall.applied`, `from_checkpoint_kind`). |
 | `invalid-usergate-auto-after-display.jsonl` | `checkpoint.auto` on a checkpoint that was already displayed — the human gate was shown; only a human answer concludes it. |
 | `invalid-usergate-stale-render.jsonl` | **stale 渲染**: `change.delta_applied` between a checkpoint's display and its decision — the decision bound pre-change content. |
 | `invalid-usergate-undisplayed-decision.jsonl` | Decision on a checkpoint never displayed (生成文本 ≠ 已展示). |

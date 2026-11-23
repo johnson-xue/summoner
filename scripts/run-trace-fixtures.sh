@@ -44,6 +44,7 @@ valid-usergate-criterion-redrop.jsonl|NA|NA|PASS|NA|NA
 valid-crash-recovery.jsonl|NA|NA|NA|PASS|NA
 valid-auto-pass.jsonl|NA|NA|PASS|NA|PASS
 valid-auto-pass-twice.jsonl|NA|NA|PASS|NA|NA
+valid-recall-from-debt.jsonl|NA|NA|PASS|PASS|NA
 valid-checks-ladder.jsonl|NA|NA|MISSING|NA|NA
 valid-release-probe-match.jsonl|NA|NA|NA|PASS|NA
 valid-release-probe-mismatch.jsonl|NA|NA|NA|PASS|NA
@@ -124,6 +125,7 @@ invalid-review-reuse-mismatch.jsonl|review-evidence-check|FAIL|same-digest reuse
 invalid-recovery-no-checkpoint.jsonl|recovery-check|FAIL|no recovery checkpoint
 invalid-recovery-forged-probe.jsonl|recovery-check|FAIL|forged probe
 invalid-recall-unknown-target.jsonl|recovery-check|FAIL|not real history
+valid-recall-from-debt.jsonl|recovery-check|PASS|recalls grounded
 invalid-review-recovery-rerun.jsonl|recovery-check|FAIL|producer re-run
 invalid-postgame-ended-without-completed.jsonl|post-game-check|FAIL|without a preceding post_game.completed
 invalid-postgame-emergency-instant-close.jsonl|post-game-check|FAIL|POST_GAME_PENDING

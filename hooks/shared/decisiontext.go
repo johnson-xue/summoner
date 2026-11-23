@@ -98,6 +98,20 @@ func DecisionNextSteps(cp CheckpointState) string {
 	return b.String()
 }
 
+// MappedContinueHeader opens the block that tells the model a "continue"
+// answer took effect as a recall.
+const MappedContinueHeader = "Summoner：裁决已记录——"
+
+// MappedContinueReason explains a "continue" that re-entered a phase: the
+// route had nothing left to continue into. Model-facing (PostToolUse block);
+// the Stop hook strips it as framework text by its header.
+func MappedContinueReason(rec RecallRecord, reopenedVisit string) string {
+	return MappedContinueHeader + "你在“继续”上的选择已生效。本检查点之后路线上没有未完成的阶段可继续，" +
+		"所以已回到最近已验收的开发阶段 " + rec.TargetPhaseID + "（recall 自 " + rec.TargetVisitID +
+		"；当前为 " + reopenedVisit + "，已重新开启）。" +
+		"立即在这个阶段继续工作，完成后用 summoner:phase-submit 重新提交；提交后会得到新的检查点供用户裁决。"
+}
+
 // questionRecipe spells the decision question exactly as the gate admits
 // it: the nonce and page 1's labels verbatim.
 func questionRecipe(cp CheckpointState) string {

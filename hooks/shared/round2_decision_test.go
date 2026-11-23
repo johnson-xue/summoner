@@ -232,3 +232,37 @@ func TestSkipMidRouteStillResumes(t *testing.T) {
 		t.Fatalf("mid-route skip: status %s cue %q, want ACTIVE with the cue", r.Status, r.ContinueNudgeFor)
 	}
 }
+
+// TestContinueAfterASettledReviewReachesPostGame — at the terminal
+// REVIEW_RESULT of a settled review, `continue` with nothing left on the
+// route is the finish: DONE and SKIP lead to post-game, and CONTINUE used to
+// leave the run ACTIVE with no checkpoint to close from (ship review round
+// 4, closure N3; pre-existing).
+func TestContinueAfterASettledReviewReachesPostGame(t *testing.T) {
+	useTraceDir(t)
+	r := isolatedRun(t, "fix")
+	for _, phase := range []string{"context", "diagnosis", "reproduce", "fix", "regression", "review"} {
+		openAndSubmit(t, r, phase)
+		displayCurrent(t, r)
+		decideCurrent(t, r, DecisionContinue)
+	}
+	env := testEnvelope()
+	env.RunID = r.RunID
+	if _, err := r.RequestReview(env, nil); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if err := r.MarkReviewRunning("rev-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RecordReviewResult(coveringResult(r, "rev-1", "pass")); err != nil {
+		t.Fatalf("RecordReviewResult: %v", err)
+	}
+	if cp := r.CurrentCheckpoint(); cp == nil || cp.Kind != CheckpointReviewResult {
+		t.Fatalf("after the verdict the run must sit at REVIEW_RESULT, got %+v", cp)
+	}
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	if r.Status != StatusPostGamePending {
+		t.Fatalf("CONTINUE after a settled PASS with a complete route: status = %s, want POST_GAME_PENDING", r.Status)
+	}
+}
