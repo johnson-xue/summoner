@@ -904,8 +904,8 @@ func askQuestionText(nonce string) string {
 
 // renderMessageFor builds the assistant message of the render turn: the
 // checkpoint-only canonical view produced by the SAME production renderer
-// the Stop hook verifies by whole-message equality (final-fix §2) — the
-// test never hand-writes display bytes.
+// whose block the Stop hook's display verification requires the message to
+// contain — the test never hand-writes display bytes.
 func renderMessageFor(run *shared.RunState, cp *shared.CheckpointState) string {
 	return shared.RenderCheckpointMessage(run, *cp)
 }
