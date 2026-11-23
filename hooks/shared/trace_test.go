@@ -65,8 +65,8 @@ func TestEventMarshalAllowList(t *testing.T) {
 	const run = "run-tr-1"
 
 	// Pinned size: adding a type is a schema change — do it consciously.
-	if len(allEventTypes) != 38 {
-		t.Fatalf("event allow-list must carry exactly 38 types (criterion.dropped, budget.confirmed, budget.extended included), got %d", len(allEventTypes))
+	if len(allEventTypes) != 39 {
+		t.Fatalf("event allow-list must carry exactly 39 types (criterion.dropped, budget.confirmed, budget.extended, checkpoint.auto included), got %d", len(allEventTypes))
 	}
 
 	err := AppendEvent(run, "sess-1", TraceEvent{Type: "bogus.event", Source: "trace_test"})

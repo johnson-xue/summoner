@@ -24,6 +24,14 @@
 #     budget.extended bind the SAME answering AskUserQuestion tool_use_id;
 #     drops are per-criterion-id and recorded once; budget.confirmed applies
 #     at most once per run (replays are silent)
+#   - auto-passed checkpoints (0.7.0 adaptive checkpoints): checkpoint.auto is
+#     the framework accepting a phase-submit checkpoint with NO user decision.
+#     Legal only on the phases the policy exempts from the human gate
+#     (context / reproduce / verify / regression), only for a CONFIRMED
+#     submission, at most once per checkpoint, and it must be the
+#     checkpoint's ONLY conclusion — a checkpoint that was displayed or
+#     decided can never also be auto-passed. Such a checkpoint owes no
+#     display: opened → auto is its complete trace shape.
 #
 # POSITIONAL CONTRACT (T10 carry, binding): the change-confirm checkpoint
 # (and review-result / recovery checkpoints) emits NO checkpoint.opened —
@@ -65,10 +73,15 @@ def payload(ev):
     p = ev.get("payload")
     return p if isinstance(p, dict) else {}
 
+# The phases whose checkpoint the framework may pass without a human
+# decision — the policy mirror of shared.AutoPassablePhase (0.7.0 D3).
+AUTO_PASS_PHASES = {"context", "reproduce", "verify", "regression"}
+
 # --- collect the gate surface ---------------------------------------------------
 opened = {}      # checkpoint_id -> (seq, nonce)
 displayed = {}   # checkpoint_id -> seq (first display wins)
 decided = []     # (seq, checkpoint_id, tool_use_id)
+autos = []       # (seq, checkpoint_id, phase_id, outcome)
 ask_calls = {}   # tool_use_id -> seq of AskUserQuestion tool.started
 delta_seqs = []  # change.delta_applied seqs
 change_seqs = [] # change.opened/delta_applied seqs (supersession evidence)
@@ -92,6 +105,9 @@ for seq, ev in events:
             displayed[cid] = seq
     elif typ == "checkpoint.decided":
         decided.append((seq, pl.get("checkpoint_id"), ev.get("tool_use_id")))
+    elif typ == "checkpoint.auto":
+        autos.append((seq, pl.get("checkpoint_id"), pl.get("phase_id"),
+                      pl.get("outcome")))
     elif typ == "tool.started" and pl.get("tool_name") == "AskUserQuestion":
         tid = ev.get("tool_use_id")
         if tid:
@@ -115,11 +131,42 @@ for seq, ev in events:
         budget_extended.append((seq, pl.get("checkpoint_id"),
                                 ev.get("tool_use_id")))
 
-if not decided and not opened and not displayed:
+if not decided and not opened and not displayed and not autos:
     print("N/A — no checkpoint decisions, openings or displays recorded: "
           "no user gate was crossed in this trace, so there is no gate "
           "evidence to audit")
     sys.exit(2)
+
+# --- auto-passed checkpoints -------------------------------------------------------
+# The human gate is skipped ONLY where the policy says no judgment is needed
+# and the submission was CONFIRMED: an unclear or failed self-report owes the
+# gate. An auto-pass is terminal for its checkpoint — never together with a
+# display or a decision of the same id, never twice.
+auto_passed = {}   # checkpoint_id -> seq
+for seq, cid, phase, outcome in autos:
+    if not cid or not phase:
+        fail(f"checkpoint.auto at event #{seq} is malformed: needs "
+             "payload.checkpoint_id and payload.phase_id")
+    if phase not in AUTO_PASS_PHASES:
+        fail(f"checkpoint.auto at event #{seq} names phase {phase!r}, which "
+             f"never auto-passes (only {sorted(AUTO_PASS_PHASES)} may — "
+             "diagnosis, fix and every other phase owe the human gate)")
+    if outcome != "confirmed":
+        fail(f"checkpoint.auto at event #{seq} carries outcome "
+             f"{outcome!r} — only a confirmed submission may auto-pass (an "
+             "unclear or failed report owes the human gate)")
+    if cid in auto_passed:
+        fail(f"idempotency: checkpoint {cid} auto-passed twice (events #"
+             f"{auto_passed[cid]} and #{seq})")
+    if cid in displayed:
+        fail(f"checkpoint {cid} is both auto-passed (event #{seq}) and "
+             f"displayed (event #{displayed[cid]}) — an auto-passed "
+             "checkpoint is never shown for decision, and an already "
+             "displayed checkpoint is decided by a human answer")
+    if cid in opened and opened[cid][0] >= seq:
+        fail(f"ordering: checkpoint {cid} auto-passed at event #{seq} before "
+             f"it opened at event #{opened[cid][0]}")
+    auto_passed[cid] = seq
 
 # --- decisions --------------------------------------------------------------------
 seen_decided = {}
@@ -137,6 +184,10 @@ for seq, cid, tid in decided:
         fail(f"one platform call, one decision: tool_use_id {tid} decided "
              f"both {seen_tool_decided[tid]} and {cid} — a single "
              "AskUserQuestion answer carries one decision")
+    if cid in auto_passed:
+        fail(f"checkpoint {cid} was auto-passed at event #{auto_passed[cid]} "
+             f"and is decided again at event #{seq} — an auto-pass is "
+             "terminal, it is never followed by a human decision")
     if cid not in displayed or displayed[cid] >= seq:
         fail(f"display binding: checkpoint {cid} decided at event #{seq} "
              "was never displayed before the decision — 生成文本 ≠ 已展示; "
@@ -246,6 +297,8 @@ last_change = max(change_seqs) if change_seqs else 0
 for cid, (oseq, _) in opened.items():
     if cid in displayed:
         continue
+    if cid in auto_passed:
+        continue  # auto-passed: no render is owed, no decision can land
     if resumed_cps and cid in resumed_cps:
         continue  # defensive: resumed confirm checkpoints display explicitly
     if oseq < last_change:
@@ -256,15 +309,21 @@ for cid, (oseq, _) in opened.items():
     sys.exit(3)
 
 if not decided:
-    print("N/A — checkpoints were opened/displayed but no decision was "
-          "recorded (the run is waiting on the user): no decision evidence "
-          "to audit")
-    sys.exit(2)
+    if not auto_passed:
+        print("N/A — checkpoints were opened/displayed but no decision was "
+              "recorded (the run is waiting on the user): no decision evidence "
+              "to audit")
+        sys.exit(2)
+    print(f"PASS — {len(auto_passed)} checkpoint(s) auto-passed within "
+          "policy (confirmed submissions on auto-pass phases, display-free, "
+          "idempotent); no human decision recorded")
+    sys.exit(0)
 
 extra = ""
-if drops:
-    extra = f", {len(drops)} criterion drop(s), {len(budget_confirmed)} " \
-            f"budget confirmation(s), {len(budget_extended)} extension(s)"
+if drops or budget_confirmed or budget_extended or auto_passed:
+    extra = (f", {len(drops)} criterion drop(s), {len(budget_confirmed)} "
+             f"budget confirmation(s), {len(budget_extended)} "
+             f"extension(s), {len(auto_passed)} auto-pass(es)")
 print(f"PASS — {len(decided)} checkpoint decision(s) display-bound, "
       f"decision-bound to AskUserQuestion calls, nonce-consistent and "
       f"idempotent{extra}")

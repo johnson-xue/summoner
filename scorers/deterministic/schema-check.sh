@@ -29,14 +29,14 @@ fi
 python3 - "$1" <<'PYEOF'
 import json, sys
 
-# The v2 allow-list, mirroring hooks/shared/trace.go allEventTypes (38 types:
+# The v2 allow-list, mirroring hooks/shared/trace.go allEventTypes (39 types:
 # 33 spec §7 originals + checkpoint.decision_rejected + hooks.disabled +
-# criterion.dropped + budget.confirmed + budget.extended).
+# criterion.dropped + budget.confirmed + budget.extended + checkpoint.auto).
 ALLOWED = {
     "workflow.started", "workflow.ended", "workflow.aborted",
     "phase.started", "phase.closed", "phase_submitted.rejected",
     "checkpoint.opened", "checkpoint.displayed", "checkpoint.decided",
-    "checkpoint.decision_rejected", "criterion.dropped",
+    "checkpoint.decision_rejected", "checkpoint.auto", "criterion.dropped",
     "recall.applied",
     "change.opened", "change.delta_applied", "change.resumed",
     "tool.started", "tool.result", "tool.failed",

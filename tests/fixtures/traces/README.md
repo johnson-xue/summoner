@@ -14,9 +14,9 @@ audit event-set, ordering, binding and completeness semantics only.
 
 | Scorer | Owns (spec) |
 |---|---|
-| `schema-check.sh` | v2 event-set membership (the 38-type allow-list mirrored from `hooks/shared/trace.go`), schema_version/seq/run-id shape, `workflow.started` first, terminal discipline (`post_game.completed` / `workflow.ended` exactly once each — T18) |
+| `schema-check.sh` | v2 event-set membership (the 39-type allow-list mirrored from `hooks/shared/trace.go`), schema_version/seq/run-id shape, `workflow.started` first, terminal discipline (`post_game.completed` / `workflow.ended` exactly once each — T18) |
 | `review-evidence-check.sh` | §3 证据与 verdict: reviewer identity (non-fork reviewer delegation), running-review evidence (伪造 verdict), dangling verdicts (悬空 review), rubber-stamp PASS (盖章审查), evidence-id joins (mirror of `shared.ReconcileEvidence`), per-criterion completeness, 同 digest 复用 legitimacy |
-| `user-gate-check.sh` | §1.3/1.4/§4: 展示绑定 (displayed before decided), 决策绑定 (decisions only from AskUserQuestion tool_use ids — 注入 answers), nonce presence/equality, 幂等 (one decision per checkpoint, one decision per platform call), stale 渲染 (no `change.delta_applied` between display and decision), ride-along binding (`criterion.dropped` / `budget.confirmed` / `budget.extended` bind the answering AskUserQuestion id) |
+| `user-gate-check.sh` | §1.3/1.4/§4: 展示绑定 (displayed before decided), 决策绑定 (decisions only from AskUserQuestion tool_use ids — 注入 answers), nonce presence/equality, 幂等 (one decision per checkpoint, one decision per platform call), stale 渲染 (no `change.delta_applied` between display and decision), ride-along binding (`criterion.dropped` / `budget.confirmed` / `budget.extended` bind the answering AskUserQuestion id), auto-pass policy (`checkpoint.auto` only on context / reproduce / verify / regression, only for a `confirmed` submission, display-free, terminal, idempotent) |
 | `recovery-check.sh` | §3 崩溃恢复 / §4 recall / §5 OUTCOME_UNKNOWN: probe-bound one-shot resolutions (`accepted/failed/indeterminate`), bad outcomes route to a displayed recovery checkpoint, review re-dispatch never re-runs the producer, recall targets real history and opens a new visit |
 | `post-game-check.sh` | §0 裁决 4 / §5 post-game 不豁免: `workflow.ended` only after `post_game.completed`, emergency stop stays POST_GAME_PENDING (no instant close without questionnaire evidence), started-kind shape |
 
@@ -40,6 +40,7 @@ the script is the executable truth.
 | `valid-recall.jsonl` | `recall.applied` from `diagnose` back to `context` (real history), carrying stale propagation, followed by the NEW visit of the target phase. |
 | `valid-postgame-emergency.jsonl` | STOP decision → `post_game.started(kind=emergency_minimal)` → trace ends POST_GAME_PENDING (最小 journal + 补答 later). |
 | `valid-change-loop.jsonl` | T10 requirement-change loop (inherited, canonical AppendEvent trace): mid-phase `change.opened` → `change.delta_applied` → `checkpoint.displayed` → `checkpoint.decided` → `change.resumed`. Exercises the user-gate positional contract (below). |
+| `valid-auto-pass.jsonl` | 0.7.0 adaptive checkpoints: the `context` phase-submit checkpoint is auto-passed in-gate (`checkpoint.opened` → `checkpoint.auto`, no display, no decision); `diagnosis` is never auto-passed — its checkpoint is displayed and decided by a human, then STOP (`emergency_minimal`). PASS on every applicable scorer. |
 | `valid-crash-recovery.jsonl` | T19 OUTCOME_UNKNOWN episode (inherited, canonical): two dangling mutating intents → session-start marks → one read-class probe each → probe-submit resolves the batch (`accepted`). |
 | `valid-checks-ladder.jsonl` | T19 check trust ladder (inherited, canonical): L3 BLOCKED → L2 sandbox_unproven → paired-probe L2 pass → consumed-probe encore BLOCKED → fresh probe → L1 in-gate. Ends mid-turn right after `checkpoint.opened`, so user-gate records the render evidence as MISSING (the fixture ends before the Stop hook binds the display) — expected, asserted. |
 | `valid-release-probe-match.jsonl` | T13 release reconciliation branch 1 — exists+matches（已生效）: crashed publish `git tag` intent → session-start marks → ONE read-class probe observes the tag AND all three manifests at the new version → `accepted`, run restores (no recovery checkpoint). Generated through the canonical `shared.AppendEvent` chain. |
@@ -52,6 +53,9 @@ the script is the executable truth.
 | `invalid-schema-no-start.jsonl` | Events but no `workflow.started`. |
 | `invalid-schema-double-terminal.jsonl` | Two `workflow.ended` — the CLOSED writer emits it exactly once. |
 | `invalid-usergate-injected-answers.jsonl` | **注入 answers**: a decision bound to a Bash tool_use id — decisions come only from AskUserQuestion calls. |
+| `invalid-usergate-auto-pass-diagnosis.jsonl` | `checkpoint.auto` on `diagnosis` — a phase that never auto-passes (diagnosis and fix always owe the human gate). |
+| `invalid-usergate-auto-pass-unconfirmed.jsonl` | `checkpoint.auto` with outcome `unclear` — only a confirmed submission may skip the human gate. |
+| `invalid-usergate-auto-after-display.jsonl` | `checkpoint.auto` on a checkpoint that was already displayed — the human gate was shown; only a human answer concludes it. |
 | `invalid-usergate-stale-render.jsonl` | **stale 渲染**: `change.delta_applied` between a checkpoint's display and its decision — the decision bound pre-change content. |
 | `invalid-usergate-undisplayed-decision.jsonl` | Decision on a checkpoint never displayed (生成文本 ≠ 已展示). |
 | `invalid-usergate-double-decision.jsonl` | A replayed decision recorded as a SECOND `checkpoint.decided` — idempotency violation. |
@@ -81,7 +85,7 @@ displayed-before-decided always.
 
 ## Harness
 
-- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (34
+- `scripts/run-trace-fixtures.sh` — the executable matrix: exit codes (42
   fixtures × 5 scorers), adversarial message assertions, and sidecar /
   baseline self-checks. Run it in CI and after any scorer/fixture edit.
 - `scripts/score-trace.sh --trace <file>` — scores one trace and writes the

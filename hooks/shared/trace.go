@@ -56,6 +56,17 @@ const (
 	// the answer is never recorded, and the rejection is not a hook error.
 	EventCheckpointDecisionRejected = "checkpoint.decision_rejected"
 
+	// EventCheckpointAuto records a checkpoint the framework accepted WITHOUT
+	// a user decision (0.7.0 adaptive checkpoints, D3): a phase-submit
+	// checkpoint whose submission was confirmed with evidence, on a phase
+	// that never needs a human judgment. It is the ONLY trace record of an
+	// auto-pass — never a checkpoint.decided (whose tool_use_id must be a
+	// real AskUserQuestion call) and never a checkpoint.displayed (nothing
+	// was shown to decide on). Payload: {"checkpoint_id", "phase_id",
+	// "outcome"}; the event's tool_use_id is the submitting phase-submit
+	// call, never an AskUserQuestion.
+	EventCheckpointAuto = "checkpoint.auto"
+
 	// EventCriterionDropped records ONE user-explicit criterion drop observed
 	// in an AskUserQuestion call (spec §3 冻结验收视图, T17): the criterion
 	// leaves the acceptance view from this drop on. Emitted only when the
@@ -119,7 +130,7 @@ const (
 var allEventTypes = []string{
 	EventWorkflowStarted, EventWorkflowEnded, EventWorkflowAborted,
 	EventPhaseStarted, EventPhaseClosed, EventPhaseSubmittedRejected,
-	EventCheckpointOpened, EventCheckpointDisplayed, EventCheckpointDecided, EventCheckpointDecisionRejected,
+	EventCheckpointOpened, EventCheckpointDisplayed, EventCheckpointDecided, EventCheckpointDecisionRejected, EventCheckpointAuto,
 	EventCriterionDropped,
 	EventRecallApplied,
 	EventChangeOpened, EventChangeDeltaApplied, EventChangeResumed,
