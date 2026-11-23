@@ -41,7 +41,7 @@ if [ "$DRY_RUN" = "true" ]; then
     exit 0
 fi
 
-TAG_CREATED=false COMMIT_CREATED=false RELEASE_STARTED=true
+TAG_CREATED=false COMMIT_CREATED=false
 rollback_release() {
     local exit_code=$?
     echo "❌ Error occurred (exit code: $exit_code); rolling back..." >&2

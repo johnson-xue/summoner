@@ -44,8 +44,10 @@ elif [ "$INCREMENT_MAJOR" = "true" ]; then
     NEW_VERSION="$((MAJOR+1)).0.0"; VERSION_TYPE="major"
 elif [ "$INCREMENT_MINOR" = "true" ]; then
     NEW_VERSION="$MAJOR.$((MINOR+1)).0"; VERSION_TYPE="minor"
-else
+elif [ "$INCREMENT_PATCH" = "true" ]; then
     NEW_VERSION="$MAJOR.$MINOR.$((PATCH+1))"; VERSION_TYPE="patch"
+else
+    NEW_VERSION="$MAJOR.$MINOR.$((PATCH+1))"; VERSION_TYPE="patch (default)"
 fi
 
 echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "❌ Invalid semver format: $NEW_VERSION"; exit 1; }

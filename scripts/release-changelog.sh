@@ -40,7 +40,7 @@ declare -a SECTIONS=() BULLETS=()
 add_bullet() {  # $1=title $2=bullet
     local i
     for i in "${!SECTIONS[@]}"; do
-        [ "${SECTIONS[$i]}" = "$1" ] && { BULLETS[$i]+=$'\n'"$2"; return; }
+        [ "${SECTIONS[$i]}" = "$1" ] && { BULLETS[i]+=$'\n'"$2"; return; }
     done
     SECTIONS+=("$1"); BULLETS+=("$2")
 }
@@ -48,7 +48,7 @@ while IFS='|' read -r message hash; do
     [ -z "$message" ] && continue
     case "$message" in
         "🔒"*) type_=security ;; "⚡"*) type_=perf ;;
-        "♻️"*) type_=refactor ;; "✅"*) type_=test ;;
+        "♻️"*) type_="refactor" ;; "✅"*) type_="test" ;;
         *) type_="${message%%[:,(]*}" ;;
     esac
     add_bullet "$(section_for "$type_")" "- ${message} (${hash})"
