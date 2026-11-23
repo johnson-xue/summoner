@@ -44,7 +44,7 @@ do NOT recompute hashes: they audit the event-set, ordering, binding and
 completeness **semantics**. Both layers are required; neither substitutes
 for the other.
 
-## Event vocabulary (the 38-type allow-list)
+## Event vocabulary (the 39-type allow-list)
 
 The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 (`allEventTypes`). A new event type is a spec §7 change, not a scorer edit.
@@ -60,6 +60,7 @@ The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 | `checkpoint.displayed` | `{"checkpoint_id", "nonce"}` — the Stop hook binds the render; **nonce must equal the opened nonce** |
 | `checkpoint.decided` | `{"checkpoint_id", "tool_use_id"}` — **tool_use_id must be a recorded AskUserQuestion call** (decision binding) |
 | `checkpoint.decision_rejected` | `{"checkpoint_id", "reason"}` — a failed decision attempt; the answer is never recorded |
+| `checkpoint.auto` | `{"checkpoint_id", "phase_id", "outcome"}` — the framework accepted a phase-submit checkpoint **without a user decision** (0.7.0 adaptive checkpoints). Legal only on `context` / `reproduce` / `verify` / `regression`, only for a `confirmed` submission with evidence, once per checkpoint, and never together with a `displayed` or `decided` of the same id. An auto-passed checkpoint's complete trace shape is `opened` → `auto`; the event's `tool_use_id` is the submitting phase-submit call, never an AskUserQuestion |
 | `criterion.dropped` | `{"checkpoint_id", "criterion_id"}` — per-id user drop; rides the same AskUserQuestion call as the decision |
 | `budget.confirmed` / `budget.extended` | `{"checkpoint_id", "limits"|"delta"}` — bind the answering `tool_use_id`. Since 0.6.1 budgets settle at run start with no event — `budget.confirmed` appears only in pre-0.6.1 traces (where it applied once per run); `budget.extended` stays live |
 | `recall.applied` | `{"from_phase_id", "target_phase_id", "newly_stale"?}` — target must be real history; a new visit follows |
@@ -89,6 +90,11 @@ kind, `checkpoint.displayed` is the trace-visible user-gate act, and
 `user-gate-check.sh` requires an opened→displayed nonce pairing only when an
 `opened` exists.
 
+The one exception is the **auto-passed** checkpoint: a phase-submit checkpoint
+the framework accepts without asking (`checkpoint.auto`) owes no display and
+can take no decision — `opened` → `auto` is its whole shape, and the scorer
+treats the `auto` as closing the `opened`.
+
 ## 落盘边界 (write boundary)
 
 The trace is authoritative evidence written only by the Go hooks. Scoring is
@@ -105,6 +111,10 @@ jq -c 'select(.type=="checkpoint.decided") | {seq, cp: .payload.checkpoint_id, t
 
 # a verdict's claimed evidence, ready to join against tool.started ids
 jq -c 'select(.type=="review.verdict") | {seq, id: .payload.review_id, evidence: .payload.evidence_tool_call_ids}' \
+  ~/.summoner/traces-v2/<project>/<run>.jsonl
+
+# the checkpoints the framework passed without asking (phase + outcome)
+jq -c 'select(.type=="checkpoint.auto") | {seq, cp: .payload.checkpoint_id, phase: .payload.phase_id, outcome: .payload.outcome}' \
   ~/.summoner/traces-v2/<project>/<run>.jsonl
 ```
 

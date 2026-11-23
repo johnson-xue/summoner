@@ -42,6 +42,7 @@ valid-postgame-emergency.jsonl|NA|NA|PASS|NA|PASS
 valid-change-loop.jsonl|NA|NA|PASS|NA|NA
 valid-usergate-criterion-redrop.jsonl|NA|NA|PASS|NA|NA
 valid-crash-recovery.jsonl|NA|NA|NA|PASS|NA
+valid-auto-pass.jsonl|NA|NA|PASS|NA|PASS
 valid-checks-ladder.jsonl|NA|NA|MISSING|NA|NA
 valid-release-probe-match.jsonl|NA|NA|NA|PASS|NA
 valid-release-probe-mismatch.jsonl|NA|NA|NA|PASS|NA
@@ -59,6 +60,9 @@ invalid-usergate-double-decision.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-nonce-mismatch.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-drop-replay.jsonl|NA|NA|FAIL|NA|NA
 invalid-usergate-redrop-no-reaccept.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-auto-pass-diagnosis.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-auto-pass-unconfirmed.jsonl|NA|NA|FAIL|NA|NA
+invalid-usergate-auto-after-display.jsonl|NA|NA|FAIL|NA|NA
 invalid-review-rubber-stamp.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-forged-verdict.jsonl|NA|FAIL|NA|NA|NA
 invalid-review-dangling.jsonl|NA|FAIL|NA|NA|NA
@@ -88,6 +92,9 @@ invalid-usergate-double-decision.jsonl|user-gate-check|FAIL|decided twice
 invalid-usergate-nonce-mismatch.jsonl|user-gate-check|FAIL|nonce
 invalid-usergate-drop-replay.jsonl|user-gate-check|FAIL|same answering call
 invalid-usergate-redrop-no-reaccept.jsonl|user-gate-check|FAIL|no phase re-acceptance
+invalid-usergate-auto-pass-diagnosis.jsonl|user-gate-check|FAIL|never auto-passes
+invalid-usergate-auto-pass-unconfirmed.jsonl|user-gate-check|FAIL|only a confirmed
+invalid-usergate-auto-after-display.jsonl|user-gate-check|FAIL|already displayed
 invalid-review-rubber-stamp.jsonl|review-evidence-check|FAIL|rubber-stamp
 invalid-review-forged-verdict.jsonl|review-evidence-check|FAIL|without a running review
 invalid-review-dangling.jsonl|review-evidence-check|FAIL|no review.prepared
