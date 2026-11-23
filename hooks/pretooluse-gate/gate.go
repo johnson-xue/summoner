@@ -1561,10 +1561,13 @@ func decideAskUser(in *gateInput, run *shared.RunState) decision {
 	}
 	// S1 two-turn guard: the display binding the Stop hook writes at turn end
 	// is the sole Displayed setter; without it the answer can only ever be
-	// decision_rejected — deny at the door with the instruction.
+	// decision_rejected — deny at the door with the instruction. Since 0.7.0
+	// (D2) the two turns need no USER turn between them: the Stop hook binds
+	// the pasted checkpoint and hands the turn straight back with the
+	// question to ask.
 	if !cp.Displayed {
 		return deny(fmt.Sprintf(
-			"Summoner gate: the checkpoint decision question is asked in the SAME turn as the render — the protocol is two-turn: paste the checkpoint render (checkpoint %s, nonce %s) and END the turn so the Stop hook binds the display, then ask the nonce-carrying question on the NEXT turn.",
+			"Summoner gate: the decision question cannot bind yet — checkpoint %s (nonce %s) has not been displayed. The protocol is two-turn: paste the checkpoint message (summoner-status view:checkpoint; an explanation may precede it) and END the turn — the Stop hook binds the display and immediately hands back the exact question to ask.",
 			cp.ID, cp.Nonce))
 	}
 	// S2 offered-set pinning: every nonce-carrying question's options must
@@ -1579,7 +1582,7 @@ func decideAskUser(in *gateInput, run *shared.RunState) decision {
 		}
 		if cp.MenuPageFor(offered) == nil {
 			return deny(fmt.Sprintf(
-				"Summoner gate: the decision question's options must equal one persisted menu page of checkpoint %s exactly (the offered set matches no page) — copy the current page's labels verbatim from the render's paging note; more:/back: navigation is nonce-free content feedback, not an option.",
+				"Summoner gate: the decision question's options must equal one persisted menu page of checkpoint %s exactly (the offered set matches no page) — copy ONE page's labels verbatim: page 1 is printed in the checkpoint's 请决定 section, every page in the summoner-status detail block (menu pages); more:/back: navigation is nonce-free content feedback, not an option.",
 				cp.ID))
 		}
 	}

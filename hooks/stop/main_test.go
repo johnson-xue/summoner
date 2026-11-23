@@ -126,9 +126,32 @@ func stopPayload(t *testing.T, lastMsg string) string {
 	})
 }
 
+// wantAskBlock asserts stdout is the ask block of cp: it names the bound
+// checkpoint, carries the nonce and every page-1 label verbatim, and demands
+// no re-render.
+func wantAskBlock(t *testing.T, stdout string, cp shared.CheckpointState) string {
+	t.Helper()
+	blocked, reason := decodeBlock(t, stdout)
+	if !blocked {
+		t.Fatalf("a bound checkpoint must hand back the ask block, got stdout %q", stdout)
+	}
+	if !strings.Contains(reason, "已展示并绑定") || !strings.Contains(reason, "AskUserQuestion") {
+		t.Fatalf("ask block must say the checkpoint is bound and demand the AskUserQuestion, got %q", reason)
+	}
+	if strings.Contains(reason, "渲染 checkpoint") {
+		t.Fatalf("an already-bound checkpoint must not be asked to re-render, got %q", reason)
+	}
+	for _, want := range append([]string{cp.ID, cp.Nonce}, shared.DecisionPage(cp)...) {
+		if !strings.Contains(reason, want) {
+			t.Errorf("ask block lost %q:\n%s", want, reason)
+		}
+	}
+	return reason
+}
+
 // renderBlock builds the display-act message: the checkpoint-only CANONICAL
 // view (shared.RenderCheckpointMessage — the exact production renderer the
-// Stop hook verifies by whole-message equality; final-fix §2).
+// Stop hook binds by containment; 0.7.0 D2).
 func renderBlock(run *shared.RunState, cp shared.CheckpointState) string {
 	return shared.RenderCheckpointMessage(run, cp)
 }
@@ -235,7 +258,7 @@ func TestStopBlocksUndisplayedCheckpoint(t *testing.T) {
 	if !blocked {
 		t.Fatalf("stdout %q must be a block decision", stdout)
 	}
-	want := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的完整规范消息后再结束（summoner-status view:checkpoint 提供逐字节原文；整条消息必须等于该渲染）", cp.ID, cp.Nonce)
+	want := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的规范消息后再结束：消息中须完整包含该规范块（summoner-status view:checkpoint 提供逐字节原文；可在块前写解释，尾行 ╚ 长短不限）", cp.ID, cp.Nonce)
 	if reason != want {
 		t.Fatalf("block reason = %q, want exactly %q", reason, want)
 	}
@@ -260,11 +283,12 @@ func TestStopBlocksUndisplayedCheckpoint(t *testing.T) {
 	}
 }
 
-// TestStopMarksDisplayed: the render block (checkpoint id + nonce) in
-// last_assistant_message marks the checkpoint displayed — MarkDisplayed with the
-// canonical content digest plus one checkpoint.displayed trace event — and
-// allows the stop. Re-displaying an already-displayed checkpoint is a no-op.
-func TestStopMarksDisplayed(t *testing.T) {
+// TestStopBindsTheRenderThenDemandsTheAsk (0.7.0 D2): the render block in
+// last_assistant_message IS the display act — MarkDisplayed with the
+// canonical content digest plus one checkpoint.displayed event — and the
+// hook then BLOCKS with the exact decision question to raise. The user no
+// longer types "continue" between a pasted checkpoint and its dialog.
+func TestStopBindsTheRenderThenDemandsTheAsk(t *testing.T) {
 	useStopEnv(t)
 	r := startRun(t)
 	cp := waitUserCheckpoint(t, r, "diagnosis")
@@ -273,20 +297,18 @@ func TestStopMarksDisplayed(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	if blocked, _ := decodeBlock(t, stdout); blocked {
-		t.Fatalf("rendered checkpoint must allow the stop, got block %q", stdout)
-	}
+	reason := wantAskBlock(t, stdout, cp)
 
 	disk := reloadRun(t, "run-1")
 	got := currentCheckpoint(t, disk)
 	if !got.Displayed {
-		t.Fatal("checkpoint must be marked displayed when the render block is present")
+		t.Fatal("the render block must mark the checkpoint displayed")
 	}
 	if want := shared.CheckpointContentDigest(cp, disk.RequirementsVersion); got.DisplayDigest != want {
 		t.Fatalf("display digest = %s, want canonical content digest %s", got.DisplayDigest, want)
 	}
-	if disk.Status != shared.StatusWaitUser {
-		t.Fatalf("status = %s, want WAIT_USER (display advances nothing)", disk.Status)
+	if disk.Status != shared.StatusWaitUser || got.Decided {
+		t.Fatalf("status = %s decided = %v, want WAIT_USER undecided (binding advances nothing)", disk.Status, got.Decided)
 	}
 	evs := readStopTrace(t, "run-1")
 	shown := eventsOfType(evs, shared.EventCheckpointDisplayed)
@@ -298,22 +320,20 @@ func TestStopMarksDisplayed(t *testing.T) {
 			shown[0].Source, shown[0].Payload, cp.ID, cp.Nonce)
 	}
 
-	// Idempotent re-display: already displayed → allow, no second event, no
-	// state rewrite (DisplayedAt must not move — the binding is stable).
-	code, stdout, stderr = callStop(t, stopPayload(t, renderBlock(r, cp)))
-	if code != 0 {
-		t.Fatalf("re-fire exit = %d, want 0 (stderr: %q)", code, stderr)
+	// Idempotent re-fire: the same message yields the byte-identical ask
+	// block (required under the platform's consecutive-block cap) and no
+	// second display event.
+	_, stdout2, _ := callStop(t, stopPayload(t, renderBlock(r, cp)))
+	if _, reason2 := decodeBlock(t, stdout2); reason2 != reason {
+		t.Fatalf("re-fire ask block differs:\n%q\n%q", reason, reason2)
 	}
-	if blocked, _ := decodeBlock(t, stdout); blocked {
-		t.Fatalf("already-displayed checkpoint must allow the stop, got %q", stdout)
-	}
-	evs = readStopTrace(t, "run-1")
-	if n := len(eventsOfType(evs, shared.EventCheckpointDisplayed)); n != 1 {
+	if n := len(eventsOfType(readStopTrace(t, "run-1"), shared.EventCheckpointDisplayed)); n != 1 {
 		t.Fatalf("checkpoint.displayed events after re-fire = %d, want 1 (idempotent no-op)", n)
 	}
 
-	// WAIT_USER with the checkpoint ALREADY displayed (bound by another path)
-	// allows the stop silently.
+	// Displayed by another path and a plain sign-off: still the ask block —
+	// a displayed checkpoint that was never asked is exactly the stall the
+	// incident spent 62 minutes in.
 	useStopEnv(t)
 	r2 := startRun(t)
 	cp2 := waitUserCheckpoint(t, r2, "diagnosis")
@@ -322,11 +342,185 @@ func TestStopMarksDisplayed(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	if blocked, _ := decodeBlock(t, stdout); blocked {
-		t.Fatalf("displayed checkpoint must not re-block, got %q", stdout)
-	}
+	wantAskBlock(t, stdout, cp2)
 	if n := len(eventsOfType(readStopTrace(t, "run-1"), shared.EventCheckpointDisplayed)); n != 0 {
 		t.Fatalf("the stop must not duplicate the earlier display binding, got %d events", n)
+	}
+	if disk := reloadRun(t, "run-1"); disk.Status != shared.StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER kept", disk.Status)
+	}
+}
+
+// TestStopExplanationThenBlockBindsAndAsks: an explanation may precede the
+// block. The incident's model wrote one line of root cause in front of a
+// byte-perfect block and was blocked for it — whole-message equality made
+// "explain, then show" illegal.
+func TestStopExplanationThenBlockBindsAndAsks(t *testing.T) {
+	for name, msg := range map[string]string{
+		"explanation before": "根因已定位：TaskModule.handle() 对 player.SubTask 解引用前未判空。\n证据见下方检查点，请裁决。\n\n",
+		"stop word in it":    "复现步骤：先停止服务再启动，错误出现。\n\n",
+	} {
+		useStopEnv(t)
+		r := startRun(t)
+		cp := waitUserCheckpoint(t, r, "diagnosis")
+		before := len(eventsOfType(readStopTrace(t, "run-1"), shared.EventCheckpointDisplayed))
+
+		code, stdout, stderr := callStop(t, stopPayload(t, msg+renderBlock(r, cp)))
+		if code != 0 {
+			t.Fatalf("%s: exit = %d, want 0 (stderr: %q)", name, code, stderr)
+		}
+		wantAskBlock(t, stdout, cp)
+		if got := currentCheckpoint(t, reloadRun(t, "run-1")); !got.Displayed {
+			t.Fatalf("%s: an explanation in front of the block must not stop the binding", name)
+		}
+		if n := len(eventsOfType(readStopTrace(t, "run-1"), shared.EventCheckpointDisplayed)) - before; n != 1 {
+			t.Fatalf("%s: checkpoint.displayed events added = %d, want 1", name, n)
+		}
+	}
+}
+
+// TestStopBindsWhateverTheTailLooksLike: the tail rule is the one line a
+// paste may get wrong without changing what the user read — shorter, longer
+// or missing, the block still binds.
+func TestStopBindsWhateverTheTailLooksLike(t *testing.T) {
+	const canonicalTail = "╚════════════════════════════════════\n"
+	for name, tail := range map[string]string{
+		"shorter": "╚═══\n",
+		"longer":  "╚" + strings.Repeat("═", 60) + "\n",
+		"none":    "",
+	} {
+		useStopEnv(t)
+		r := startRun(t)
+		cp := waitUserCheckpoint(t, r, "diagnosis")
+		full := renderBlock(r, cp)
+		if !strings.HasSuffix(full, canonicalTail) {
+			t.Fatalf("fixture: the canonical render no longer ends with the expected tail")
+		}
+		msg := strings.TrimSuffix(full, canonicalTail) + tail
+
+		code, stdout, stderr := callStop(t, stopPayload(t, msg))
+		if code != 0 {
+			t.Fatalf("%s: exit = %d, want 0 (stderr: %q)", name, code, stderr)
+		}
+		wantAskBlock(t, stdout, cp)
+		if got := currentCheckpoint(t, reloadRun(t, "run-1")); !got.Displayed {
+			t.Fatalf("%s tail: the block must bind", name)
+		}
+	}
+}
+
+// TestStopStaleAndCurrentBlockBindOnlyTheCurrent: an old-nonce block pasted
+// next to the current one binds the CURRENT checkpoint only — the stale one
+// stays undisplayed and undecidable.
+func TestStopStaleAndCurrentBlockBindOnlyTheCurrent(t *testing.T) {
+	useStopEnv(t)
+	r := startRun(t)
+	old := waitUserCheckpoint(t, r, "diagnosis")
+	stale := renderBlock(r, old)
+	// A WAIT_USER-entered requirement change supersedes cp-1 and opens the
+	// change-confirm checkpoint cp-2.
+	if err := r.OpenRequirementChange("cover the logout flow too"); err != nil {
+		t.Fatalf("OpenRequirementChange: %v", err)
+	}
+	if _, err := r.ApplyRequirementDelta(shared.RequirementDelta{Note: "add logout", Changed: []string{"crit-a"}}); err != nil {
+		t.Fatalf("ApplyRequirementDelta: %v", err)
+	}
+	cur := r.CurrentCheckpoint()
+	if cur == nil || cur.ID == old.ID {
+		t.Fatalf("fixture must have a successor checkpoint, got %+v", cur)
+	}
+
+	code, stdout, stderr := callStop(t, stopPayload(t, stale+"\n"+renderBlock(r, *cur)))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	wantAskBlock(t, stdout, *cur)
+	disk := reloadRun(t, "run-1")
+	for _, c := range disk.Checkpoints {
+		switch c.ID {
+		case old.ID:
+			if c.Displayed || !c.Superseded {
+				t.Fatalf("the stale block must bind nothing: cp %s displayed = %v superseded = %v", c.ID, c.Displayed, c.Superseded)
+			}
+		case cur.ID:
+			if !c.Displayed {
+				t.Fatalf("the current block must bind cp %s", c.ID)
+			}
+		}
+	}
+	if n := len(eventsOfType(readStopTrace(t, "run-1"), shared.EventCheckpointDisplayed)); n != 1 {
+		t.Fatalf("checkpoint.displayed events = %d, want exactly 1 (the current checkpoint)", n)
+	}
+}
+
+// TestStopDisplayedUndecidedHonorsStopAck: stopping stays possible at a
+// displayed checkpoint — an explicit stop acknowledgment ends the turn with
+// state kept. Anything else is the ask block.
+func TestStopDisplayedUndecidedHonorsStopAck(t *testing.T) {
+	for _, msg := range []string{"Stopped. The run is aborted per your request.", "用户要求终止，已停止。"} {
+		useStopEnv(t)
+		r := startRun(t)
+		cp := waitUserCheckpoint(t, r, "diagnosis")
+		displayCheckpoint(t, r, cp)
+		code, stdout, stderr := callStop(t, stopPayload(t, msg))
+		if code != 0 {
+			t.Fatalf("%q: exit = %d, want 0 (stderr: %q)", msg, code, stderr)
+		}
+		if blocked, reason := decodeBlock(t, stdout); blocked {
+			t.Fatalf("%q: stopping must stay possible at a displayed checkpoint, got block %q", msg, reason)
+		}
+		if disk := reloadRun(t, "run-1"); disk.Status != shared.StatusWaitUser {
+			t.Fatalf("%q: status = %s, want WAIT_USER kept", msg, disk.Status)
+		}
+	}
+}
+
+// TestStopDecidedCheckpointNeedsNoAsk: once the decision landed the run is
+// out of WAIT_USER — the Stop hook neither blocks nor asks.
+func TestStopDecidedCheckpointNeedsNoAsk(t *testing.T) {
+	useStopEnv(t)
+	r := startRun(t)
+	cp := waitUserCheckpoint(t, r, "diagnosis")
+	displayCheckpoint(t, r, cp)
+	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, "tu-ask-1"); err != nil {
+		t.Fatalf("decide CONTINUE: %v", err)
+	}
+	code, stdout, _ := callStop(t, stopPayload(t, "继续下一阶段。"))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if blocked, reason := decodeBlock(t, stdout); blocked {
+		t.Fatalf("a decided checkpoint must not be asked again, got block %q", reason)
+	}
+}
+
+// TestStopAskBlockNamesTheExtendRide: at budget exhaustion the decision call
+// must also carry the extend ride-along — the ask block spells out its two
+// persisted labels so the model cannot invent them.
+func TestStopAskBlockNamesTheExtendRide(t *testing.T) {
+	useStopEnv(t)
+	r, err := shared.StartRun("run-1", hookSession, "fix", shared.BudgetLimits{PhaseToolCalls: 1})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	r.CountToolCall("tu-1")
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	if cp.ExtendAsk == nil {
+		t.Fatal("fixture: the checkpoint opened at exhaustion must carry the extend offer")
+	}
+	_, stdout, _ := callStop(t, stopPayload(t, renderBlock(r, cp)))
+	reason := wantAskBlock(t, stdout, cp)
+	if !strings.Contains(reason, cp.ExtendAsk.ExtendLabel) || !strings.Contains(reason, cp.ExtendAsk.HoldLabel) {
+		t.Fatalf("at exhaustion the ask block must name the extend ride's two labels, got %q", reason)
 	}
 }
 
@@ -380,9 +574,8 @@ func TestStopFullRenderBindsDisplayDespiteMenuLabels(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	if blocked, reason := decodeBlock(t, stdout); blocked {
-		t.Fatalf("a full render must allow the stop after binding, got block %q", reason)
-	}
+	// Bound, then the ask block — never a demand to re-render.
+	wantAskBlock(t, stdout, cp)
 	disk := reloadRun(t, "run-1")
 	got := currentCheckpoint(t, disk)
 	if !got.Displayed {

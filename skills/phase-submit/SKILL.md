@@ -90,8 +90,16 @@ why it is believed, and what is still undecided.
   Omit when the phase ran no mechanical checks.
 
 On success the gate atomically closes the phase and opens its checkpoint
-(WAIT_USER). The next step is rendering the checkpoint — run
-`${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and paste its output
-verbatim (`../../references/checkpoint-protocol.md` is the render contract). Never
-submit twice for one phase; never submit while a checkpoint is pending or a
-requirement change is open (CHANGE_OPEN) — both are rejected.
+(WAIT_USER). Then:
+
+1. Run `${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status` and paste the
+   checkpoint message it ends with, verbatim. A short explanation of the
+   conclusion may precede it (`../../references/checkpoint-protocol.md` is
+   the render contract).
+2. END the turn at once. The Stop hook binds the display and hands back the
+   exact decision question — raise it with AskUserQuestion in the continued
+   turn (nonce in the question, options = the labels it listed). Raise it
+   before ending the turn again.
+
+Submit once per phase; a submission while a checkpoint is pending or a
+requirement change is open (CHANGE_OPEN) is rejected.

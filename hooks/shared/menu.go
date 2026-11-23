@@ -8,20 +8,20 @@ package shared
 // the kind) plus two kind-relevant actions, with `more:`/`back:` navigation
 // labels. Every legal action is reachable in ≤2 pages for the shipped kinds.
 //
-// The projection bounds only what ONE decision question may offer. The full
-// menu stays visible in the display-verified render block (summoner-status
-// prints it plus a paging note); the PreToolUse gate pins any nonce-carrying
-// question's offered labels to one page EXACTLY. Navigation between pages is
-// nonce-free content feedback — never a decision, never state, never an
-// event; the page validation is the whole enforcement.
+// The projection bounds only what ONE decision question may offer. The
+// checkpoint message prints page 1; the status detail view prints every page
+// (DecisionPage / CheckpointDetail); the PreToolUse gate pins any
+// nonce-carrying question's offered labels to one page EXACTLY. Navigation
+// between pages is nonce-free content feedback — never a decision, never
+// state, never an event; the page validation is the whole enforcement.
 
 import (
 	"strings"
 	"unicode"
 )
 
-// Navigation labels of the paging note: rendered lines, not question options
-// (a page's ≤4 option slots belong to decisions alone).
+// Navigation labels between pages: rendered lines, not question options (a
+// page's ≤4 option slots belong to decisions alone).
 const (
 	MenuNavNext = "more: 查看其余选项"
 	MenuNavPrev = "back: 返回上一页"
@@ -33,8 +33,8 @@ const menuPageMaxOptions = 4
 
 // MenuPage is one page of the paged-menu projection persisted on
 // CheckpointState: the decision option labels a single question may offer,
-// plus the navigation labels the render's paging note prints when a
-// next/previous page exists.
+// plus the navigation labels the status detail prints when a next/previous
+// page exists.
 type MenuPage struct {
 	Labels  []string `json:"labels"`
 	NavNext string   `json:"nav_next,omitempty"`

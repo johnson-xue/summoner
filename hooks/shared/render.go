@@ -318,13 +318,24 @@ func extendOfferKey(l BudgetLimits) string {
 	return strings.Join(axes, ", ")
 }
 
-// VerifyDisplayMessage is the whole-message display binding (C4): the
-// normalized last_assistant_message must equal the normalized canonical
-// render of the CURRENT checkpoint, ENTIRELY. Two substrings, a correct
-// block plus false prose, or a stale render all fail.
-func VerifyDisplayMessage(run *RunState, cp CheckpointState, message string) bool {
-	want := RenderCheckpointMessage(run, cp)
-	return NormalizePrompt(message) == NormalizePrompt(want)
+// DisplayBlock is the canonical message minus its tail line — the text the
+// Stop hook's display binding looks for. The tail is excluded on purpose: it
+// is the one line a paste may get wrong (a longer or shorter ╚ rule)
+// without changing a word of what the user was shown.
+func DisplayBlock(run *RunState, cp CheckpointState) string {
+	return strings.TrimSuffix(RenderCheckpointMessage(run, cp), renderFrameTail)
+}
+
+// VerifyDisplayContainment is the display binding (0.7.0 D2, replacing
+// whole-message equality): the normalized last_assistant_message must
+// CONTAIN the canonical block of the CURRENT checkpoint, entire and
+// contiguous. An explanation before it and prose after it are fine — the
+// model may say what it found and then show the checkpoint; the incident of
+// 2026-11-23 lost an hour to equality rejecting exactly that. A truncated
+// block, an altered line, a hand-written frame or the render of another
+// (stale) checkpoint all fail: only the real block binds.
+func VerifyDisplayContainment(run *RunState, cp CheckpointState, message string) bool {
+	return strings.Contains(NormalizePrompt(message), NormalizePrompt(DisplayBlock(run, cp)))
 }
 
 // PlannedScopeOf projects the staged planned scope from the snapshot. Kept as
