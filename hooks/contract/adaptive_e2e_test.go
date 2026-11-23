@@ -7,6 +7,7 @@ package contract
 // artifacts, not the in-process packages.
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -104,4 +105,105 @@ func TestAdaptiveRenderLeadsWithConclusionOverBinaries(t *testing.T) {
 	if s := strings.TrimPrefix(lines[b+1], "║   "); !strings.HasPrefix(s, strings.Repeat("查", 40)) || utf8.RuneCountInString(s) != 200 {
 		t.Fatalf("the conclusion summary must be the first line of 结论 at its full 200-rune cap, got %d runes:\n%s", utf8.RuneCountInString(s), out)
 	}
+}
+
+// TestAdaptiveExplainThenAskOverBinaries — acceptance criteria 4 and 5 end
+// to end, in the platform's real event order: the model explains, pastes the
+// checkpoint and ends the turn → the Stop hook binds the display and BLOCKS
+// with the exact question → the gate admits that question → the platform's
+// answer decides. No user "continue" anywhere in the sequence.
+func TestAdaptiveExplainThenAskOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-ask", "fix")
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun("run-ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := *run.CurrentCheckpoint()
+	if cp.Displayed || cp.Decided {
+		t.Fatalf("fixture must sit at an undisplayed checkpoint: %+v", cp)
+	}
+
+	// The turn's final message: one line of explanation, then the canonical
+	// block exactly as the viewer serves it.
+	block := statusView(t, `{"session_id":"`+contractSession+`","view":"checkpoint"}`)
+	code, out, stderr := runBinary(t, "stop", stopRenderPayload(t, "context 已确认：Go 1.16 单仓，入口 cmd/server。\n证据见下方检查点，请裁决。\n\n"+block), nil)
+	if code != 0 {
+		t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	var stopOut struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(out), &stopOut); err != nil || stopOut.Decision != "block" {
+		t.Fatalf("the Stop hook must hand back the ask block after binding, got (err %v) %q", err, out)
+	}
+	page := shared.DecisionPage(cp)
+	for _, want := range append([]string{"已展示并绑定", cp.ID, cp.Nonce, "AskUserQuestion"}, page...) {
+		if !strings.Contains(stopOut.Reason, want) {
+			t.Errorf("ask block lost %q:\n%s", want, stopOut.Reason)
+		}
+	}
+
+	run, err = shared.LoadRun("run-ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run.CurrentCheckpoint(); got == nil || !got.Displayed || got.Decided {
+		t.Fatalf("the pasted block must bind the display and decide nothing: %+v", got)
+	}
+
+	// A sign-off that is neither the question nor a stop acknowledgment
+	// keeps getting the ask block (idempotent, byte-identical).
+	_, out2, _ := runBinary(t, "stop", stopRenderPayload(t, "等待你的决定。"), nil)
+	if !strings.Contains(out2, `"decision":"block"`) || !strings.Contains(out2, cp.Nonce) {
+		t.Fatalf("a displayed, un-asked checkpoint must keep demanding the question, got %q", out2)
+	}
+
+	// The gate admits exactly the question the block spelled out.
+	code, _, stderr = runBinary(t, "pretooluse-gate", askQuestionPayload(t, "tu-ask-1", cp.Nonce, page), nil)
+	if code != 0 {
+		t.Fatalf("page-1 ask after display: exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	// The platform's answer (CONTINUE) lands through PostToolUse.
+	code, _, stderr = runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "AskUserQuestion",
+		"tool_use_id":     "tu-ask-1",
+		"tool_input":      askQuestionInput(page, cp.Nonce),
+		"tool_response":   map[string]interface{}{"answers": map[string]interface{}{askQuestionText(cp.Nonce): page[0]}},
+	}), nil)
+	if code != 0 {
+		t.Fatalf("posttooluse decision: exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err = shared.LoadRun("run-ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusActive {
+		t.Fatalf("status after CONTINUE = %s, want ACTIVE", run.Status)
+	}
+	for _, c := range run.Checkpoints {
+		if c.ID == cp.ID && (!c.Decided || c.Decision != shared.DecisionContinue || c.DecisionToolUseID != "tu-ask-1") {
+			t.Fatalf("the answer must decide cp %s CONTINUE via tu-ask-1, got %+v", cp.ID, c)
+		}
+	}
+}
+
+// askQuestionInput is the tool_input half of askQuestionPayload (what
+// PostToolUse re-receives with the platform's answer).
+func askQuestionInput(page []string, nonce string) map[string]interface{} {
+	opts := make([]interface{}, 0, len(page))
+	for _, l := range page {
+		opts = append(opts, map[string]interface{}{"label": l, "description": "decision option"})
+	}
+	return map[string]interface{}{"questions": []interface{}{map[string]interface{}{
+		"question":    askQuestionText(nonce),
+		"header":      "Checkpoint",
+		"options":     opts,
+		"multiSelect": false,
+	}}}
 }

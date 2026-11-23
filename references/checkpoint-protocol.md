@@ -20,10 +20,11 @@ The render comes from the binary — run it and paste its output VERBATIM:
 
 (or `/summoner:status`, which does the same). NEVER hand-write, summarize, or
 reformat a status or checkpoint render. Display verification (Stop hook)
-requires the assistant message to carry the pending checkpoint's **id and
-nonce**; pasting the binary's output satisfies it by construction, and the
-reducer separately binds the decision to the checkpoint's content digest —
-a stale or altered render can never produce a valid decision.
+requires the assistant message to CONTAIN the pending checkpoint's canonical
+block — an explanation may precede it and the tail line may differ; pasting
+the binary's output satisfies it by construction, and the reducer separately
+binds the decision to the checkpoint's content digest — a stale or altered
+render can never produce a valid decision.
 
 ## PHASE START (entering a phase)
 
@@ -193,20 +194,32 @@ the visits and who is awaited.
 
 ## The decision channel (AskUserQuestion) — TWO-TURN by construction
 
-The protocol is **two-turn**: turn N pastes the render and **ENDS the turn**
-— the Stop hook verifies the display and binds it (checkpoint id + nonce +
-content digest; that binding is the sole `Displayed` setter). Turn N+1 asks
-the decision question. A nonce-carrying ask in the render turn itself is
-DENIED by the gate (exit 2, two-turn instruction), and a same-turn answer is
-always `decision_rejected` — the display binding does not exist yet. UX cost,
-stated plainly: every checkpoint costs one nudge turn between render and ask.
-This is deliberate — display verification must bind BEFORE any answer can,
+The protocol is **two-turn** — and since 0.7.0 the two turns need no user
+turn between them:
+
+1. Turn N carries the checkpoint message (an explanation may precede it) and
+   **ends**. The Stop hook verifies the display — the message must contain
+   the canonical block — binds it (checkpoint id + nonce + content digest;
+   that binding is the sole `Displayed` setter), and **blocks with the exact
+   question to ask**: the nonce and page 1's labels, verbatim.
+2. The platform continues the turn; turn N+1 IS that ask.
+
+A nonce-carrying ask before the display is bound is DENIED by the gate (exit
+2, two-turn instruction), and such an answer is always `decision_rejected` —
+the display binding does not exist yet. A displayed checkpoint whose question
+was never asked gets the same block on every later sign-off until the
+question is raised: the user never types "continue" to bring a dialog up.
+Stopping stays possible at every step — an explicit stop acknowledgment ends
+the turn with the state kept.
+
+The order is fixed: display verification must bind BEFORE any answer can,
 otherwise nothing the user was shown constrains what they decided.
 
 After the display is bound, ask ONE question:
 
 - **Question text carries the nonce**, e.g.
-  `Checkpoint cp-2 (nonce 1a2b3c4d): 如何推进？`
+  `Checkpoint cp-2 (nonce 1a2b3c4d): 如何推进？` — the Stop hook's block
+  hands back the nonce and the labels; copy them from there.
 - **Options = ONE PAGE of the rendered menu, verbatim** — at most 4 (the
   platform caps 4 options per question). The gate rejects any offered set
   that is not EXACTLY one persisted page (subset, superset, foreign label,

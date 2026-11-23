@@ -379,8 +379,9 @@ type CheckpointState struct {
 	// MenuPages is the persisted paged-menu projection (T16): pages of ≤4
 	// option labels a decision question may offer at once (the platform caps
 	// 4 options/question), set at checkpoint open and never rewritten. The
-	// render shows the FULL menu plus a paging note; the gate pins any
-	// nonce-carrying question's offered labels to one page exactly.
+	// checkpoint message shows page 1; the status detail view shows every
+	// page; the gate pins any nonce-carrying question's offered labels to
+	// one page exactly.
 	MenuPages []MenuPage `json:"menu_pages,omitempty"`
 	// BudgetAsk (T18, retired 0.6.1) is inert legacy state: the run-start
 	// budget question no longer exists (budgets settle at StartRun), no new
