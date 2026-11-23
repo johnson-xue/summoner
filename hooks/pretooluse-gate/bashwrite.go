@@ -90,6 +90,15 @@ var (
 		"bunx": true, "uvx": true,
 		// `source` and `.` run a script file.
 		"source": true, ".": true,
+		// File writers by category (ship review round 3): remove a directory,
+		// change a group, remove a link, make a node, wipe, make a temp file,
+		// split a file, apply a patch.
+		"rmdir": true, "chgrp": true, "unlink": true, "mkfifo": true, "shred": true,
+		"mktemp": true, "split": true, "patch": true,
+		// Process writers.
+		"kill": true, "pkill": true, "killall": true,
+		// The other shells (ship review round 3): dash, ksh, fish … run code.
+		"dash": true, "ksh": true, "mksh": true, "fish": true, "csh": true, "tcsh": true, "ash": true, "busybox": true,
 		"__ambiguous_wrapper__": true,
 	}
 
@@ -157,6 +166,10 @@ var (
 		"explain": true, "why": true, "licenses": true,
 	}
 
+	// shellNames are the shells that run their argument as code.
+	shellNames = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "mksh": true,
+		"fish": true, "csh": true, "tcsh": true, "ash": true, "busybox": true}
+
 	// goToolReadSubcommands are `go tool` subcommands that only read.
 	goToolReadSubcommands = map[string]bool{"nm": true, "cover": true, "objdump": true, "addr2line": true, "buildid": true}
 
@@ -193,6 +206,10 @@ var (
 	awkSystemRe  = regexp.MustCompile(`system\s*\(`)
 	awkPipeCmdRe = regexp.MustCompile(`\|\s*["']`)
 	sedWriteRe   = regexp.MustCompile(`(?:^|[^[:alnum:]_\\])w\s+[^\s;{}]`)
+	// sedExecRe: GNU sed's `e` command — `1e cmd`, `/re/e cmd`, `e cmd` — and
+	// the `e` flag of a substitution (`s/x/y/e`), both of which run a shell
+	// command. macOS sed has neither.
+	sedExecRe = regexp.MustCompile(`(?:^|[;{}])\s*(?:[0-9]+|\$|/[^/\n;]*/[Ig]?|\\)?\s*e\b|s/[^/\n;]*/[^/\n;]*/[a-zA-Z0-9]*e`)
 
 	// shellReservedWords may precede the verb of a command: `then rm x`,
 	// `time make`, `! rm`, `{ rm; }`, `coproc rm`, `function f {…}`. They
@@ -287,8 +304,12 @@ func isDevTarget(t string) bool {
 	case "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty":
 		return true
 	}
-	return strings.HasPrefix(t, "/dev/fd/")
+	return devFDRe.MatchString(t)
 }
+
+// devFDRe: `/dev/fd/N` only — a prefix match let `/dev/fd/../../tmp/x`
+// through (on Linux /dev/fd resolves under /proc, where `..` escapes).
+var devFDRe = regexp.MustCompile(`^/dev/fd/[0-9]+$`)
 
 // verbRule judges every command of the token stream and returns the first
 // rule that matches. Commands are separated by the break operators, and a
@@ -304,11 +325,18 @@ func verbRule(toks []shTok) string {
 	}
 	outer := []*[]shTok{} // the commands suspended by an open substitution / arithmetic
 	outerIn := []bool{}   // their stdin-live state
+	var parens []parenFrame
 	words := []shTok{}
-	stdinLive := false
-	skipTarget := false // the next word is an input redirect's target
+	stdinLive, procArg := false, false
+	skipTarget := false  // the next word is an input redirect's target
+	targetSubst := false // this substitution is an input redirect's target
+	var outerSkip []bool // per suspended command: skip the word after its substitution closes
+	var outerProc []bool // per suspended command: its computed-program flag
 	for idx := 0; idx < len(toks); idx++ {
 		t := toks[idx]
+		if n := len(parens); n > 0 && t.text != ")" {
+			parens[n-1].saw = true
+		}
 		if t.kind == shWord {
 			if skipTarget {
 				skipTarget = false
@@ -322,8 +350,10 @@ func verbRule(toks []shTok) string {
 			suspended := words // by value: the variable is reused for the nested command
 			outer = append(outer, &suspended)
 			outerIn = append(outerIn, stdinLive)
+			outerProc = append(outerProc, procArg)
+			outerSkip = append(outerSkip, targetSubst)
 			words = []shTok{}
-			stdinLive = false
+			stdinLive, procArg, targetSubst = false, false, false
 			continue
 		case opSubstClose, opArithClose:
 			if n := len(outer); n > 0 {
@@ -331,28 +361,90 @@ func verbRule(toks []shTok) string {
 				outer = outer[:n-1]
 				stdinLive = outerIn[n-1]
 				outerIn = outerIn[:n-1]
+				procArg = outerProc[len(outerProc)-1]
+				outerProc = outerProc[:len(outerProc)-1]
+				skipTarget = outerSkip[len(outerSkip)-1] // `<<<"$(…)"`: its word is the target
+				outerSkip = outerSkip[:len(outerSkip)-1]
 			}
 			continue
 		}
+		if t.text == "(" {
+			// Every "(" opens a frame; when words precede it, the frame is an
+			// ARGUMENT-position process substitution (`python3 <(echo code)`
+			// runs the descriptor as its program) — the outer command then
+			// takes a computed program, judged when its frame closes.
+			suspended := words
+			f := parenFrame{words: &suspended, stdin: stdinLive, proc: procArg}
+			parens = append(parens, f)
+			if len(words) > 0 {
+				f.proc = true
+				parens[len(parens)-1] = f
+			}
+			words = []shTok{}
+			stdinLive, procArg = false, false
+			continue
+		}
+		if t.text == ")" && len(parens) > 0 {
+			if rule := commandRule(words, stdinLive || procArg); rule != "" {
+				return rule
+			}
+			f := parens[len(parens)-1]
+			if f.proc && !f.saw {
+				// `f() { …; }` — a function definition, not a process
+				// substitution: the parens are plain command breaks.
+				parens = parens[:len(parens)-1]
+				words, stdinLive, procArg = []shTok{}, false, false
+				continue
+			}
+			parens = parens[:len(parens)-1]
+			words, stdinLive = *f.words, f.stdin
+			procArg = f.proc
+			continue
+		}
 		if shBreaks[t.text] {
-			if rule := commandRule(words, stdinLive); rule != "" {
+			if rule := commandRule(words, stdinLive || procArg); rule != "" {
 				return rule
 			}
 			words = []shTok{}
 			// A pipe hands this command's stdout to the NEXT command's
 			// stdin — `echo '…' | python3` runs the interpreter on it.
 			stdinLive = t.text == "|" || t.text == "|&"
+			procArg = false
 			continue
 		}
-		if inputRedirectOps[t.text] && idx+1 < len(toks) && toks[idx+1].kind == shWord {
-			// `python3 <<'EOF'`, `python3 < script.py`: the word after the
-			// operator is the delimiter / file / herestring — data, not an
-			// argument. `<(` is NOT a redirect: its body is a command.
-			stdinLive = true
-			skipTarget = true
+		if inputRedirectOps[t.text] && idx+1 < len(toks) {
+			if n := len(words); n > 0 && !words[n-1].expanded && isDigits(words[n-1].text) {
+				// `python3 0<<EOF`: the digit word is the redirect's fd, not
+				// an operand of the command.
+				words = words[:n-1]
+			}
+			switch next := toks[idx+1]; {
+			case next.kind == shWord:
+				// `python3 <<'EOF'`, `python3 < script.py`: the word after the
+				// operator is the delimiter / file / herestring — data, not
+				// an argument. `< /dev/null` delivers nothing.
+				if next.text != "/dev/null" {
+					stdinLive = true
+				}
+				skipTarget = true
+			case next.text == opSubstOpen:
+				// `<<<"$(…)"`, `< "$(cat f)"`: a computed value supplies stdin.
+				stdinLive, targetSubst = true, true
+			case next.text == "(":
+				stdinLive = true // `< <(…)`: a process substitution feeds stdin
+			}
 		}
 	}
-	return commandRule(words, stdinLive)
+	return commandRule(words, stdinLive || procArg)
+}
+
+// parenFrame is one "(" frame: the words and stdin state suspended behind
+// it, and whether it is an argument-position process substitution (proc).
+type parenFrame struct {
+	words *[]shTok
+	stdin bool
+	proc  bool
+	saw   bool // a token was seen inside: a process substitution's body
 }
 
 // inputRedirectOps feed a command's stdin from the command text.
@@ -361,13 +453,33 @@ var inputRedirectOps = map[string]bool{"<": true, "<<": true, "<<-": true, "<<<"
 // hasPositional reports whether any argument is a bare word (a script file
 // for an interpreter). Option VALUES read as positionals here: callers use
 // it only to stay quiet when a program is named.
-func hasPositional(args []string) bool {
-	for _, a := range args {
+// noValueLong are the long options every interpreter spells the same way:
+// they take no separate value.
+var noValueLong = map[string]bool{"--version": true, "--help": true, "-V": true, "-h": true}
+
+// operandNamesProgram walks an interpreter's options and reports whether an
+// operand — a script file — is named. An option that takes a separate VALUE
+// consumes the next word (valueShort: the short letters that do; every long
+// option without "=" does unless it is in noValueLong): with stdin live,
+// `python3 -W ignore` still runs the program on stdin, so "ignore" is not a
+// script (ship review round 3).
+func operandNamesProgram(args []string, valueShort string) bool {
+	for k := 0; k < len(args); k++ {
+		a := args[k]
 		if a == "--" {
-			continue
+			return k+1 < len(args)
 		}
 		if !strings.HasPrefix(a, "-") {
 			return true
+		}
+		if strings.HasPrefix(a, "--") {
+			if !strings.Contains(a, "=") && !noValueLong[a] {
+				k++
+			}
+			continue
+		}
+		if strings.ContainsRune(valueShort, rune(a[len(a)-1])) {
+			k++
 		}
 	}
 	return false
@@ -462,7 +574,7 @@ func commandRule(words []shTok, stdinLive bool) string {
 	for i, w := range words {
 		texts[i] = w.text
 	}
-	verbIdx, verb := resolveVerb(texts)
+	verbIdx, verb := resolveVerbTok(words)
 	if verbIdx < 0 {
 		return ""
 	}
@@ -482,18 +594,43 @@ func commandRule(words []shTok, stdinLive bool) string {
 		}
 	}
 	args := texts[verbIdx+1:]
-	if rule := verbTableRule(verb, args, stdinLive); rule != "" {
+	expanded := make([]bool, len(args))
+	for i := range args {
+		expanded[i] = words[verbIdx+1+i].expanded
+	}
+	if scanningWrapper(strings.ToLower(verb)) && wrapperRunsComputedCommand(words[verbIdx+1:]) {
+		return verb + " … (the wrapped command is computed at run time — unknown until it runs)"
+	}
+	if rule := verbTableRule(verb, args, stdinLive, expanded); rule != "" {
 		return rule
 	}
 	// macOS's default filesystem is case-insensitive: `RM -rf x` runs rm.
 	// An exact-case verb the tables do not know is judged by its lower form.
 	if lower := strings.ToLower(verb); lower != verb {
-		if rule := verbTableRule(lower, args, stdinLive); rule != "" {
+		if rule := verbTableRule(lower, args, stdinLive, expanded); rule != "" {
 			return rule
 		}
-		return scanningWrapperRule(lower, args)
+		return scanningWrapperRule(lower, args, stdinLive)
 	}
-	return scanningWrapperRule(verb, args)
+	return scanningWrapperRule(verb, args, stdinLive)
+}
+
+// wrapperRunsComputedCommand reports whether a scanning wrapper's arguments
+// hold a command word computed at run time: `timeout 5 $(echo rm) -rf x`
+// runs whatever the substitution prints, and the wrapper scan — which
+// matches table verbs by spelling — saw nothing (ship review round 3).
+func wrapperRunsComputedCommand(args []shTok) bool {
+	for _, w := range args {
+		a := w.text
+		if a == "--" || strings.HasPrefix(a, "-") || envAssign.MatchString(a) || isDigits(a) {
+			continue // a wrapper option, an assignment or a duration
+		}
+		// The first operand is the wrapped command: a bare substitution
+		// there is the command itself. Elsewhere (`timeout 5 echo $(date)`)
+		// it an ordinary computed argument.
+		return w.expanded && a == ""
+	}
+	return false
 }
 
 // literalBasename splits an expanded command word into its final path
@@ -512,10 +649,10 @@ func literalBasename(text string) (string, bool) {
 
 // verbTableRule is the per-verb table: "" when the verb, with these
 // arguments, is read-class.
-func verbTableRule(verb string, args []string, stdinLive bool) string {
+func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) string {
 	switch {
 	case verb == "git":
-		return gitRule(args)
+		return gitRule(args, expanded)
 	case awkNames[verb]:
 		return awkRule(verb, args)
 	case verb == "find":
@@ -554,7 +691,7 @@ func verbTableRule(verb string, args []string, stdinLive bool) string {
 		return unzipRule(args)
 	case verb == "make":
 		return makeRule(args)
-	case verb == "sh" || verb == "bash" || verb == "zsh":
+	case shellNames[verb]:
 		if syntaxCheckOnly(args) {
 			return "" // -n parses without running anything
 		}
@@ -575,19 +712,37 @@ func verbTableRule(verb string, args []string, stdinLive bool) string {
 // verb; the first the table names wins. The cost is one over-block when an
 // argument happens to equal a table verb (`timeout 5 grep rm notes.txt`);
 // the alternative is letting a wrapped writer through.
-func scanningWrapperRule(verb string, args []string) string {
+func scanningWrapper(verb string) bool {
 	switch verb {
 	case "timeout", "nice", "watch", "time", "doas", "strace", "ltrace", "setsid", "arch", "caffeinate",
 		"parallel", "stdbuf", "script", "xcrun", "flock", "taskset", "ionice", "chrt", "prlimit":
-	default:
+		return true
+	}
+	return false
+}
+
+// commandStringWrappers run an argument as a COMMAND STRING: `watch -n 2
+// 'rm -rf x'`, `script -c 'cmd'`, `flock lock -c 'cmd'`. The string is one
+// opaque word to a spelling match, so it is lexed and judged as a command.
+var commandStringWrappers = map[string]bool{"watch": true, "script": true, "flock": true}
+
+func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
+	if !scanningWrapper(verb) {
 		return ""
 	}
 	for k, w := range args {
 		if w == "--" || strings.HasPrefix(w, "-") || envAssign.MatchString(w) {
 			continue
 		}
-		if rule := verbTableRule(w, args[k+1:], false); rule != "" {
+		// stdinLive travels with the line: `nice python3 < s.py` runs the
+		// interpreter on the file's contents.
+		if rule := verbTableRule(w, args[k+1:], stdinLive, nil); rule != "" {
 			return verb + " … " + rule
+		}
+		if commandStringWrappers[verb] {
+			if rule := ruleFor(lexShell(w)); rule != "" {
+				return verb + " … " + rule
+			}
 		}
 	}
 	return ""
@@ -598,10 +753,14 @@ func scanningWrapperRule(verb string, args []string) string {
 // gitRule judges a git invocation. Read-only subcommands pass; the
 // argument-dependent ones are judged by their own forms; everything else —
 // the write table and any subcommand outside both tables — writes.
-func gitRule(args []string) string {
+func gitRule(args []string, expanded []bool) string {
+	isExpanded := func(j int) bool { return j < len(expanded) && expanded[j] }
 	for j := 0; j < len(args); j++ {
 		a := args[j]
 		if gitFlagsWithValue[a] {
+			if isExpanded(j) {
+				continue // `-C$(pwd)`: the value rides inside this word
+			}
 			if j+1 >= len(args) {
 				if a == "--exec-path" {
 					return "" // bare: prints the path
@@ -617,9 +776,12 @@ func gitRule(args []string) string {
 		}
 		if strings.HasPrefix(a, "-") {
 			if (strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") ||
-				strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--exec-path=")) && strings.HasSuffix(a, "=") && j+1 < len(args) {
-				// `--git-dir="$(pwd)/.git"`: the substitution split the
-				// value into its own word — consume it as the value.
+				strings.HasPrefix(a, "--namespace=") || strings.HasPrefix(a, "--exec-path=")) && strings.HasSuffix(a, "=") &&
+				j+1 < len(args) && isExpanded(j+1) {
+				// `--git-dir=$(pwd)/.git`: the substitution split the value
+				// into its own EXPANDED word — consume it as the value. A
+				// literal next word is the subcommand after an empty value
+				// (`git --namespace= push`), never a value.
 				j++
 				continue
 			}
@@ -634,6 +796,11 @@ func gitRule(args []string) string {
 			return "git (unknown option " + a + ")"
 		}
 		rest := args[j+1:]
+		for _, flag := range rest {
+			if strings.HasPrefix(flag, "--output=") || flag == "--output" {
+				return "git " + a + " --output (writes the output to a file)"
+			}
+		}
 		switch a {
 		case "stash":
 			if len(rest) > 0 && (rest[0] == "list" || rest[0] == "show") {
@@ -756,15 +923,19 @@ func firstWord(words []string) string {
 func branchMutation(args []string) bool {
 	listing := false
 	pattern := false // only --list / -l take bare arguments as patterns
+	value := false   // a listing option that takes a separate value was just seen
 	for _, a := range args {
 		switch {
-		case a == "-t" || a == "--track" || a == "--no-track" || a == "--set-upstream-to":
+		case a == "-t" || a == "--track" || a == "--no-track" || a == "--set-upstream-to" || a == "-u" ||
+			a == "--unset-upstream" || strings.HasPrefix(a, "--set-upstream-to="):
 			return true // tracking options name a NEW branch (ship review r2)
 		case a == "--list" || a == "-l":
 			listing, pattern = true, true
-		case a == "--show-current" || a == "--contains" || a == "--no-contains" ||
-			a == "--merged" || a == "--no-merged" || a == "--points-at" || a == "--column" || a == "--no-column" ||
-			a == "--sort" || a == "--format" || a == "--ignore-case" || a == "-i" || a == "--efilter":
+		case a == "--contains" || a == "--no-contains" || a == "--merged" || a == "--no-merged" ||
+			a == "--points-at" || a == "--sort" || a == "--format" || a == "--efilter":
+			listing, value = true, true // the NEXT word is this option's value
+		case a == "--show-current" || a == "--column" || a == "--no-column" ||
+			a == "--ignore-case" || a == "-i":
 			listing = true
 		case strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=") || strings.HasPrefix(a, "--points-at=") ||
 			strings.HasPrefix(a, "--contains=") || strings.HasPrefix(a, "--merged=") || strings.HasPrefix(a, "--efilter="):
@@ -776,6 +947,9 @@ func branchMutation(args []string) bool {
 			}
 		case strings.HasPrefix(a, "-"):
 			return true
+		case value:
+			value = false // `git branch --contains HEAD`: HEAD is the value
+			continue
 		case pattern:
 			continue // a pattern behind --list / -l
 		case !listing:
@@ -936,6 +1110,9 @@ func sedRule(args []string) string {
 		if sedWriteRe.MatchString(a) {
 			return "sed w (writes a file)"
 		}
+		if sedExecRe.MatchString(a) {
+			return "sed e (runs a shell command — GNU sed)"
+		}
 	}
 	return ""
 }
@@ -956,6 +1133,16 @@ func findRule(args []string) string {
 // spelling — bundled short options (-xzf, -czf), long forms, and the
 // old-style `tar xzf`.
 func tarRule(args []string) string {
+	for _, a := range args {
+		if a == "--to-command" || strings.HasPrefix(a, "--to-command=") {
+			return "tar --to-command (pipes the archive into a command)"
+		}
+	}
+	for _, a := range args {
+		if a == "--to-stdout" {
+			return "" // everything goes to stdout: nothing is unpacked to disk
+		}
+	}
 	for k, a := range args {
 		if tarLongWrites[a] {
 			return "tar " + a + " (unpacks or repacks)"
@@ -1087,7 +1274,7 @@ func goRule(args []string) string {
 	}
 	switch args[0] {
 	case "test":
-		for _, a := range args[1:] {
+		for k, a := range args[1:] {
 			if a == "-c" || strings.HasPrefix(a, "-c=") || a == "--compile" {
 				return "go test -c (writes a test binary)"
 			}
@@ -1097,6 +1284,11 @@ func goRule(args []string) string {
 			}
 			switch name {
 			case "-o", "-coverprofile", "-cpuprofile", "-memprofile", "-blockprofile", "-mutexprofile", "-trace":
+				// A space-separated value is the next word: `go test
+				// -coverprofile /dev/null ./...` writes nothing.
+				if value == "" && k+1 < len(args[1:]) && args[1:][k+1] == "/dev/null" {
+					continue
+				}
 				if value != "/dev/null" {
 					return "go test " + name + " (writes a file)"
 				}
@@ -1122,6 +1314,13 @@ func goRule(args []string) string {
 	}
 	if args[0] == "tool" {
 		if len(args) > 1 && goToolReadSubcommands[args[1]] {
+			if args[1] == "cover" {
+				for _, a := range args[2:] {
+					if a == "-o" || a == "--output" || strings.HasPrefix(a, "-o=") || strings.HasPrefix(a, "--output=") {
+						return "go tool cover -o (writes a file)"
+					}
+				}
+			}
 			return ""
 		}
 		return "go tool (builds, installs or changes the tree)"
@@ -1154,6 +1353,9 @@ func packageManagerRule(verb string, args []string) string {
 		return ""
 	}
 	if sub == "audit" {
+		if len(args) > 1 && (args[1] == "fix" || args[1] == "--fix") {
+			return verb + " audit fix (installs and rewrites the lockfile)"
+		}
 		return "" // reads the dependency tree; installs nothing
 	}
 	if sub == "get" {
@@ -1207,6 +1409,9 @@ func pythonRule(verb string, args []string, stdinLive bool) string {
 		if len(a) >= 2 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a[1:], 'c') {
 			return verb + " -c (inline code)"
 		}
+		if strings.HasPrefix(a, "-m") && len(a) > 2 {
+			return verb + " -m <module> (runs a module)" // the attached spelling: -mjson.tool
+		}
 		if a == "-m" {
 			if k+1 >= len(args) {
 				return verb + " -m <module> (runs a module)"
@@ -1217,7 +1422,7 @@ func pythonRule(verb string, args []string, stdinLive bool) string {
 			return "" // a read-only module consumes its input as DATA
 		}
 	}
-	if stdinLive && !hasPositional(args) {
+	if stdinLive && !operandNamesProgram(args, "WXQ") {
 		return verb + " (program read from stdin)"
 	}
 	return ""
@@ -1233,8 +1438,12 @@ func pythonModuleRule(verb, module string, rest []string) string {
 	case "pip":
 		if len(rest) > 0 {
 			switch rest[0] {
-			case "list", "show", "check", "freeze", "--version", "-V", "help", "--help":
+			case "list", "show", "check", "freeze", "--version", "-V", "help", "--help", "index":
 				return ""
+			case "cache":
+				if len(rest) > 1 && (rest[1] == "list" || rest[1] == "info") {
+					return ""
+				}
 			}
 		}
 	case "site":
@@ -1263,7 +1472,7 @@ func nodeRule(args []string, stdinLive bool) string {
 			return "node (inline code or a preloaded module)"
 		}
 	}
-	if stdinLive && !hasPositional(args) {
+	if stdinLive && !operandNamesProgram(args, "") {
 		return "node (program read from stdin)"
 	}
 	return ""
@@ -1279,8 +1488,11 @@ func perlRule(args []string, stdinLive bool) string {
 		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "ieE") {
 			return "perl -i/-e/-E (in-place or inline code)"
 		}
+		if strings.HasPrefix(a, "-M") || strings.HasPrefix(a, "-m") {
+			return "perl -m/-M (loads a module)" // -M POSIX, -MPOSIX, -mfoo: code loads
+		}
 	}
-	if stdinLive && !hasPositional(args) {
+	if stdinLive && !operandNamesProgram(args, "IMmCFDx") {
 		return "perl (program read from stdin)"
 	}
 	return ""
@@ -1289,8 +1501,8 @@ func perlRule(args []string, stdinLive bool) string {
 // unzipRule: listing, testing and printing members read; extraction writes.
 func unzipRule(args []string) string {
 	for _, a := range args {
-		if len(a) > 1 && a[0] == '-' && strings.ContainsAny(a[1:2], "lvtpZ") {
-			return "" // -l list, -v verbose list, -t test, -p print, -Z zipinfo
+		if len(a) > 1 && a[0] == '-' && strings.ContainsAny(a[1:2], "lvtcpZ") {
+			return "" // -l list, -v verbose list, -t test, -p/-c print to stdout, -Z zipinfo
 		}
 	}
 	return "write-class verb: unzip"
@@ -1310,9 +1522,15 @@ func makeRule(args []string) string {
 
 // syntaxCheckOnly: `bash -n file` parses the file without running anything.
 func syntaxCheckOnly(args []string) bool {
+	// Bash stops parsing options at the first operand and at -c's string:
+	// `bash -c 'rm x' -n` RUNS the code (the trailing -n is $0). Only a
+	// leading -n parses without running (ship review round 3).
 	for _, a := range args {
 		if a == "-n" || a == "--noexec" {
 			return true
+		}
+		if !strings.HasPrefix(a, "-") || a == "-c" {
+			return false
 		}
 	}
 	return false
@@ -1321,19 +1539,35 @@ func syntaxCheckOnly(args []string) bool {
 // inlineCodeRule: ruby -e, php -r and lua -e take a program on the command
 // line, alone or inside a short cluster.
 func inlineCodeRule(verb string, args []string, stdinLive bool) string {
-	flag := "e"
-	if verb == "php" {
-		flag = "r"
+	flag, valueShort := "e", ""
+	switch verb {
+	case "php":
+		flag, valueShort = "r", "dctz"
+	case "ruby":
+		valueShort = "ICFK0xy"
+	case "lua":
+		valueShort = "\x00" // no value-taking option; -l loads a module (code)
 	}
+	named := false
 	for _, a := range args {
 		if a == "--" {
 			return ""
 		}
+		if a == "-" && verb == "ruby" {
+			return "ruby - (program read from stdin)"
+		}
+		if strings.HasPrefix(a, "-f") && verb == "php" {
+			named = true // php -f <file>: the script is the option's value
+		}
 		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a[1:], rune(flag[0])) {
 			return verb + " -" + flag + " (inline code)"
 		}
+		// ruby -r / lua -l load a library: code runs.
+		if !strings.HasPrefix(a, "--") && (strings.HasPrefix(a, "-r") && verb == "ruby" || strings.HasPrefix(a, "-l") && verb == "lua") {
+			return verb + " " + a[:2] + " (loads a module)"
+		}
 	}
-	if stdinLive && !hasPositional(args) {
+	if stdinLive && !named && !operandNamesProgram(args, valueShort) {
 		return verb + " (program read from stdin)"
 	}
 	return ""
@@ -1487,22 +1721,34 @@ func isJSONObjectLiteral(tok string) bool {
 // their base name (/bin/rm → rm). Returns the verb's word index, or -1 when
 // no verb remains (e.g. a bare `env`).
 func resolveVerb(words []string) (int, string) {
+	toks := make([]shTok, len(words))
+	for i, w := range words {
+		toks[i] = shTok{text: w}
+	}
+	return resolveVerbTok(toks)
+}
+
+// resolveVerbTok is resolveVerb over lexed tokens: a value-taking option
+// whose own word carries an expansion (`env -u$(echo FOO) rm x`) holds its
+// value already and must not swallow the command word. The wrapper names
+// match without case: macOS's default filesystem runs `ENV` and `NOHUP`.
+func resolveVerbTok(words []shTok) (int, string) {
 	i := 0
 	for i < len(words) {
 		// Leading assignments before anything else: FOO=1 rm x
-		if envAssign.MatchString(words[i]) {
+		if envAssign.MatchString(words[i].text) {
 			i++
 			continue
 		}
-		base := words[i]
+		base := words[i].text
 		if strings.ContainsRune(base, '/') {
 			base = path.Base(base)
 		}
-		switch base {
+		switch strings.ToLower(base) {
 		case "env":
 			i++
 			for i < len(words) {
-				a := words[i]
+				a := words[i].text
 				if a == "--" {
 					i++
 					break
@@ -1512,6 +1758,10 @@ func resolveVerb(words []string) (int, string) {
 					continue
 				}
 				if a == "-u" || a == "--unset" || a == "-C" || a == "--chdir" {
+					if words[i].expanded {
+						i++
+						continue
+					}
 					if i+1 >= len(words) {
 						return i, "__ambiguous_wrapper__"
 					}
@@ -1529,21 +1779,21 @@ func resolveVerb(words []string) (int, string) {
 			}
 		case "command", "builtin":
 			i++
-			for i < len(words) && (words[i] == "-p" || words[i] == "--") {
+			for i < len(words) && (words[i].text == "-p" || words[i].text == "--") {
 				i++
 			}
-			if i < len(words) && (words[i] == "-v" || words[i] == "-V") {
+			if i < len(words) && (words[i].text == "-v" || words[i].text == "-V") {
 				return -1, ""
 			}
-			if i < len(words) && strings.HasPrefix(words[i], "-") {
+			if i < len(words) && strings.HasPrefix(words[i].text, "-") {
 				return i, "__ambiguous_wrapper__"
 			}
 		case "nohup":
 			i++
-			if i < len(words) && words[i] == "--" {
+			if i < len(words) && words[i].text == "--" {
 				i++
 			}
-			if i < len(words) && strings.HasPrefix(words[i], "-") {
+			if i < len(words) && strings.HasPrefix(words[i].text, "-") {
 				return i, "__ambiguous_wrapper__"
 			}
 		default:

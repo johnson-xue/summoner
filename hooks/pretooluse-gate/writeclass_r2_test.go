@@ -81,6 +81,93 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"read", "watch -n 2 'git status'"},
 		// a heredoc body's substitution is an argument, not a command
 		{"read", "cat <<EOF\nToday is $(date)\nEOF\necho done"},
+		// ---- ship review round 3 (classifier): holes the round-2 fixes opened ----
+		{"write", "bash -c 'rm -rf x' -n"}, // -n AFTER the code is $0: the code runs
+		{"write", "bash script.sh -n"},
+		{"read", "bash -n script.sh"},
+		{"read", "bash -n -c 'rm -rf x'"},
+		{"write", "echo 'print(42)' | python3 -W ignore"}, // an option's VALUE is not a script
+		{"write", "python3 -X dev < s.py"},
+		{"write", "perl -I lib < s.pl"},
+		{"write", "ruby -I lib < s.rb"},
+		{"write", "php -d foo=bar < s.php"},
+		{"write", "node --inspect-port 9229 < s.js"},
+		{"write", "lua -l mod < s.lua"},
+		{"read", "python3 script.py < in.txt"}, // the program is the file; stdin is data
+		{"read", "python3 -W ignore script.py < in.txt"},
+		{"write", "python3 < <(echo 'print(1)')"},
+		{"write", "node < <(echo code)"},
+		{"write", "python3 <(echo 'import os')"},
+		{"write", "env -u$(echo FOO) rm x"}, // the value rides inside the option word
+		{"write", "env -u$(echo FOO) make"},
+		{"read", "env -u$(echo FOO) printenv PATH"},
+		{"write", "git --git-dir=$(echo .git) push"},
+		{"write", "git --work-tree=$(echo /tmp) clean"},
+		{"write", "git --namespace=$(echo ns) stash"},
+		{"write", "git --exec-path=$(echo /p) push"},
+		{"write", "git --namespace= push"}, // an EMPTY value: the next word is the subcommand
+		{"write", "git --exec-path= push"},
+		{"read", "git --namespace= status"},
+		{"read", "git --git-dir=$(pwd)/.git status"}, // pins attachedAfter (the suffix word)
+		{"write", "npm audit fix"},
+		{"write", "npm audit fix --force"},
+		{"write", "go tool cover -html=c.out -o out.html"},
+		{"read", "go tool cover -func=c.out"},
+		{"write", "timeout 5 $(echo rm) -rf x"}, // a wrapper runs the computed command
+		{"write", `timeout 5 "$(echo rm)" -rf x`},
+		{"write", "nice $(echo rm) x"},
+		{"write", "/usr/bin/time $(echo rm) x"},
+		{"write", "watch -n 2 $(echo rm) x"},
+		{"write", "doas $(echo rm) x"},
+		{"write", "xcrun $(echo rm) x"},
+		{"write", "dash -c 'rm -rf x'"},
+		{"write", "ksh -c 'rm -rf x'"},
+		{"write", "ENV FOO=1 rm x"}, // the case-insensitive filesystem runs env
+		{"write", "NOHUP rm x"},
+		{"write", "echo x > /dev/fd/../../tmp/x"},
+		{"read", "echo x > /dev/fd/2"},
+		{"write", "sed '1e rm -rf x' /dev/null"}, // GNU sed's e command
+		{"write", "sed -E 's/x/y/e' f"},
+		{"read", "sed 's/a/b/g' f"},
+		{"read", "sed -n '1,5p' f"},
+		{"read", "sed '/^e/d' f"},
+		{"write", "watch -n 2 'rm -rf x'"}, // wrappers that run a command STRING
+		{"write", "script -c 'rm -rf x' /dev/null"},
+		{"write", "flock /tmp/lock -c 'rm -rf x'"},
+		{"read", "git branch --contains HEAD"}, // listing options with a value
+		{"read", "git branch --merged main"},
+		{"read", "git branch --points-at HEAD"},
+		{"read", "cat <<'EOF'\n$(rm -rf x)\nEOF"}, // a quoted delimiter: no expansion
+		{"write", "cat <<EOF\n$(rm -rf x)\nEOF"},
+		{"read", "unzip -c x.zip"},
+		{"read", "tar -x --to-stdout -f x.tar"},
+		{"read", "go test -coverprofile /dev/null ./..."},
+		{"read", "python3 --version < /dev/null"},
+		{"read", "node --version < /dev/null"},
+		{"read", "python3 -m pip cache list"},
+		{"read", "python3 -m pip index versions x"},
+		// ---- the author's own pass over the round-3 machinery ----
+		{"write", "python3 0<<'EOF'\nopen(\"x\",\"w\")\nEOF"}, // the fd digit is not an operand
+		{"write", "nice python3 < s.py"},                      // stdin state travels into the wrapper
+		{"write", "timeout 5 python3 <<'EOF'\nprint(1)\nEOF"},
+		{"read", "timeout 5 echo $(date)"}, // a computed ARGUMENT is not the command
+		{"write", "ruby - < prog.rb"},
+		{"read", "php -f script.php < in.txt"},
+		{"write", "env python3 < s.py"},
+		{"write", "python3<<<\"$(echo code)\""},
+		{"read", "cat <<\"EOF\"\n$(rm -rf x)\nEOF"},
+		{"read", "(cd /tmp && ls)"},
+		{"write", "(cd /tmp && rm x)"},
+		{"read", "f() { ls; }; f"},
+		{"write", "python3 -mjson.tool x.json"}, // the attached module spelling
+		{"write", "perl -MPOSIX -e 1"},          // a loaded module is code
+		{"write", "perl -M POSIX < s.pl"},
+		{"write", "git diff --output=d.txt"}, // a read-only subcommand writing its output
+		{"write", "git log --output=log.txt"},
+		{"write", "rmdir build"}, // file writers by category
+		{"write", "patch -p1 < x.patch"},
+		{"read", "git diff --stat"},
+		{"read", "git log --oneline -3"},
 		// ---- controls: forms that already work must keep working ----
 		{"write", `git -C "$(pwd)" push`},
 		{"write", `env -u "$(echo FOO)" rm x`},

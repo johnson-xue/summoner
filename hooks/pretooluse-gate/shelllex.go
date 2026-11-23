@@ -110,6 +110,9 @@ const shBoundaries = " \t\n;&|<>()"
 type pendingHeredoc struct {
 	delim     string
 	stripTabs bool
+	// quoted: the delimiter was quoted (`<<'EOF'`). bash then performs NO
+	// expansion in the body, so a `$(…)` there is text, not a command.
+	quoted bool
 }
 
 type lexer struct {
@@ -125,6 +128,7 @@ type lexer struct {
 	pending        []pendingHeredoc
 	depth          int  // nesting level of this text (see maxLexDepth)
 	arithContext   bool // arithmetic text: its words are numbers, not commands
+	openedByQuote  bool // the current word was opened by a quote (a quoted heredoc delimiter)
 }
 
 // maxLexDepth bounds substitution / arithmetic / conditional nesting. Text
@@ -165,10 +169,12 @@ func (l *lexer) flush() {
 		l.toks = append(l.toks, shTok{kind: shWord, text: text, expanded: l.wordExpanded})
 		if l.awaitDelim != nil {
 			l.awaitDelim.delim = text
+			l.awaitDelim.quoted = l.openedByQuote
 			l.awaitDelim = nil
 		}
 	}
 	l.word.Reset()
+	l.openedByQuote = false
 	l.wordOpen = false
 	l.wordHasLiteral = false
 	l.wordExpanded = false
@@ -254,6 +260,9 @@ func (l *lexer) run() {
 				j++
 			}
 			l.word.WriteString(string(l.r[l.i+1 : j]))
+			if !l.wordOpen {
+				l.openedByQuote = true
+			}
 			l.wordOpen = true
 			l.i = j + 1
 			continue
@@ -264,6 +273,9 @@ func (l *lexer) run() {
 				// the word going: `"$(x)"/bin/tool` is one word, so the
 				// substitution is not the whole of it.
 				l.toks[l.pendingClose].attachedAfter = true
+			}
+			if !dquote && !l.wordOpen {
+				l.openedByQuote = true
 			}
 			dquote = !dquote
 			l.wordOpen = true
@@ -671,6 +683,18 @@ func (l *lexer) heredocBody(h pendingHeredoc) {
 		line := l.r[l.i:end]
 		for h.stripTabs && len(line) > 0 && line[0] == '\t' {
 			line = line[1:]
+		}
+		if h.quoted {
+			// A quoted delimiter: the body is literal text — nothing in it
+			// runs. Only find the delimiter line.
+			l.i = end
+			if end < len(l.r) {
+				l.i = end + 1
+			}
+			if strings.TrimSuffix(string(line), "\r") == h.delim {
+				return
+			}
+			continue
 		}
 		// CRLF text ends its lines with "\r": bash compares the delimiter
 		// without it, and a body that never ended would swallow the command
