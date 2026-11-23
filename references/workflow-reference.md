@@ -28,7 +28,9 @@ covered by its tools' spellings:
   / install forms; `pip`, `pipx`, `poetry`, `uv` installs;
 - remote and copy (`ssh`, `rsync`, `scp`); downloads (`curl` when it saves,
   `wget`); unpacking and repacking (`tar` x / c / r / u / A, `unzip`);
-  `find -exec`; wrappers that run a command (`timeout`, `nice`, …);
+  `find -exec`; and whatever a transparent wrapper runs is judged in its
+  place (`timeout 5 make` writes, `timeout 5 x` reads — while `sudo`,
+  `exec`, `xargs` are write-class by themselves);
 - every git subcommand outside the read-only table (`status`, `log`, `diff`,
   `rev-parse`, `ls-files`, …).
 

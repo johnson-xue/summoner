@@ -63,7 +63,7 @@ The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 | `checkpoint.auto` | `{"checkpoint_id", "phase_id", "outcome"}` — the framework accepted a phase-submit checkpoint **without a user decision** (0.7.0 adaptive checkpoints). Legal only on `context` / `reproduce` / `verify` / `regression`, only for a `confirmed` submission with evidence, once per checkpoint, and never together with a `displayed` or `decided` of the same id. An auto-passed checkpoint's complete trace shape is `opened` → (`check.result` …) → `auto` — the submission's own mechanical checks land between the open and the auto, and any `fail` among them means the auto-pass is illegal (`opened` → `auto` only when the submission carried no checks); the event's `tool_use_id` is the submitting phase-submit call, never an AskUserQuestion |
 | `criterion.dropped` | `{"checkpoint_id", "criterion_id"}` — per-id user drop; rides the same AskUserQuestion call as the decision |
 | `budget.confirmed` / `budget.extended` | `{"checkpoint_id", "limits"|"delta"}` — bind the answering `tool_use_id`. Since 0.6.1 budgets settle at run start with no event — `budget.confirmed` appears only in pre-0.6.1 traces (where it applied once per run); `budget.extended` stays live |
-| `recall.applied` | `{"from_phase_id", "target_phase_id", "newly_stale"?}` — target must be real history; a new visit follows |
+| `recall.applied` | `{"from_phase_id", "target_phase_id", "target_visit_id", "provenance", "label", "reason", "run_rework"}` — target must be real history; a new visit follows (`phase.started`). From a phase-less checkpoint (review-debt, review-result, recovery, change-confirm) `from_phase_id` is empty and `from_checkpoint_kind` names where the recall came from |
 | `change.opened` / `change.delta_applied` / `change.resumed` | change loop (§1): frozen position / `{"requirements_version", "newly_stale"?, "preserved"?}` / `{"checkpoint_id"}` |
 | `tool.started` | `{"tool_name", "read_class"?, "sandbox_probe"?, "l2_check"?}` — the pre-execution intent record |
 | `tool.result` / `tool.failed` | observed outcome (`{"tool_name","response_sha256"}` / failure fields) |
@@ -84,8 +84,8 @@ The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 ### Positional contract
 
 Only the phase-submit path emits `checkpoint.opened`. The change-confirm
-checkpoint (its id is the one `change.resumed` names), review-result
-checkpoints and recovery checkpoints emit NO `checkpoint.opened` — for every
+checkpoint (its id is the one `change.resumed` names), review-result,
+review-debt and recovery checkpoints emit NO `checkpoint.opened` — for every
 kind, `checkpoint.displayed` is the trace-visible user-gate act, and
 `user-gate-check.sh` requires an opened→displayed nonce pairing only when an
 `opened` exists.

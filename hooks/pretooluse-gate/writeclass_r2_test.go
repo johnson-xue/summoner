@@ -218,3 +218,20 @@ func TestWriteClassDeepNestingFailsClosed(t *testing.T) {
 	}
 	_ = fmt.Sprintf
 }
+
+// TestWriteClassTarToStdoutInAnyPosition — the doc says `tar -O` reads; the
+// round-4 closure review found only the glued spelling did (ship review r4, N6).
+func TestWriteClassTarToStdoutInAnyPosition(t *testing.T) {
+	for _, cmd := range []string{
+		"tar -O -xf x.tar", "tar -x -O -f x.tar", "tar -xf x.tar -O", "tar xf x.tar -O", "tar -O --extract -f x.tar", "tar -xOf x.tar path",
+	} {
+		if rule := writeClassRule(cmd); rule != "" {
+			t.Errorf("%s: read expected (stdout), got %q", cmd, rule)
+		}
+	}
+	for _, cmd := range []string{"tar -r -O -f x.tar", "tar --delete -f x.tar -O", "tar -Af a.tar b.tar", "tar -cf out.tar dir"} {
+		if rule := writeClassRule(cmd); rule == "" {
+			t.Errorf("%s: an archive is modified, want write", cmd)
+		}
+	}
+}

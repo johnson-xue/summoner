@@ -1,8 +1,7 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev9（S0–S6 已实现；ship 审查第 1、2 轮的发现均已修复，第 3 轮
-  （闭合核验 + 分类器对抗）的发现已修复，见 §9–§11；等第 4 轮终审。
-  rev5 = 评审闭合 + D5.5 已裁决）
+- 状态: rev10（S0–S6 已实现；ship 审查第 1–4 轮的发现均已修复，见
+  §9–§12；第 4 轮分类器终审的结论待记。rev5 = 评审闭合 + D5.5 已裁决）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -496,3 +495,30 @@ id、不做过期回退、不校验结论、评分器放行 diagnosis、Go 策�
 （`python3 x.py`）与表外工具（docker/kubectl/sqlite3/cargo/brew/zip/gzip）
 仍是「未知动词缺省判读」，等用户对白名单缺省的裁决；GNU tar
 `--checkpoint-action=exec`、`sort -o` 等未建模。
+
+## 12. Ship 审查第 4 轮（rev10）
+
+两路 @ `ed6d186`：**闭合终审**判 NEEDS-FIX（第 3 轮 8 条全部按声明闭合；新报
+3 条 Important + 若干建议）；分类器终审见本节末尾的补记。
+
+| 发现 | 处理 |
+|---|---|
+| **N1（回归，Important）**：第 3 轮给请求关联式加的裸「应/依」会匹配「停止响**应**你的要求」——普通诊断 prose 在已展示检查点上直接结束回合（`6d66e84` 的二进制不会） | 去掉裸 应/依，只在句子/从句边界后认；另加否定守卫（「没有按要求停止」「I did not stop because you asked」不算停止）。全部句子进回归表，两档都必须不结束回合 |
+| **N2（Important）**：审查欠账 continue 的 recall 写出的 `recall.applied` 里 `from_phase_id` 为空，自带评分器判为畸形 | trace 增加 `from_checkpoint_kind`；评分器只对「有阶段的检查点」要求 `from_phase_id`；用真实二进制跑出该路径的 trace 作为 fixture（`valid-recall-from-debt.jsonl`，53 fixture / 315 断言） |
+| **N3（Important，既有）**：PASS 之后在 REVIEW_RESULT 上点 continue 同样是死路 | 已结清审查时 continue = 收尾（post-game），与 done/skip 同处；审查未结清（NEEDS-FIX/BLOCKED）且路线走完时 = 回到开发阶段（同欠账检查点） |
+| N4：映射后的 continue 对模型是静默的 | PostToolUse 回一个块，写明回到了哪个阶段（recall 自哪个 visit、当前是哪个 visit） |
+| N5：宽松档裸停止词开头时对后半句不设限（「已停止响应。」「The service stopped responding after SIGTERM.」会结束回合） | 开头型停止词：前导只能是感叹/第一人称词，后半句有界（中文只许「了」与句末标点；英文至多三个短词且不是 -ing 分词）；结尾型：尾短且前文 ≤10 字 |
+| N6：`tar -O` 只有紧贴写法被当成读；文档把包装器说成一律判写 | `-O`/`--to-stdout` 任意位置都算读（修改归档的 -r/-u/-A/--delete 除外）；文档改为「包装器内被执行的命令按其本身判定」 |
+| N7：trace-protocol 的 `recall.applied` 字段、review-debt 不发 `checkpoint.opened`、recall 的提供范围、reducer 报错文案 | 均已对齐 |
+| N8：六处承重守卫无测试（宽松档字数上限、选项讨论否决、粘贴守卫、展示先于停止判定、未走完路线不得映射、项目扫描不得浮现已关闭的 run） | 各补一条测试 |
+| N9：唯一的状态损坏时 stdout 只说「无活动 run」 | stdout 加一行说明有 N 个会话无法读取 |
+
+**回归的教训**（已写入记忆）：每放宽一个匹配器都要用「普通诊断 prose」做反向
+表——这类放宽在三轮里两次造出事故级的停摆。
+
+**本轮未钉住的一角**：钩子里「已结清 PASS 时 continue 不映射为 recall」这半个条
+件没有钩子级测试（reducer 分支有 `TestContinueAfterASettledReviewReachesPostGame`
+钉住；钩子侧构造「已结清 + 路线走完」的状态成本高）。变异检查其余各行全红：
+裸 应/依、否定守卫、开头停止词的有界尾、映射块、tar -O、项目扫描（关闭的 run /
+首个损坏会话）。
+

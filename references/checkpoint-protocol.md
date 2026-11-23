@@ -345,8 +345,16 @@ After the display is bound, ask ONE question:
 route phases remain unsettled the run resumes there. When every route phase
 is already settled there is nothing to resume into, and the run used to sit
 ACTIVE with nothing to open and no checkpoint to close from; `continue:`
-then re-enters the latest accepted phase — the default recall, recorded and
-traced as one. `skip:` there is the explicit UNREVIEWED finish (post-game).
+then re-enters the last accepted DEVELOPMENT phase (the latest accepted one
+when every accepted phase is the review) — a recall, recorded and traced as
+one, and PostToolUse answers with a block that names the phase it re-opened.
+`skip:` there is the explicit UNREVIEWED finish (post-game).
+
+`continue:` at a REVIEW_RESULT checkpoint follows the same rule: while
+phases remain it resumes the route; with the route complete it re-enters
+development when the review did not conclude PASS (NEEDS-FIX, BLOCKED), and
+it IS the finish (post-game) when the review is settled — there `continue`,
+`done` and `skip` all lead to the same place.
 
 ### Rejected answers are visible (0.7.0) and content feedback
 
@@ -356,7 +364,9 @@ reads: the reason, what the same callback already changed (a recorded drop,
 an applied extension — those are not rolled back; never re-ask a settled
 extend, it would extend twice), and the legal next step at the checkpoint.
 The whole stdout is that one JSON object; a recorded decision writes
-nothing.
+nothing — with one exception: a `continue:` that took effect as a recall
+(above) answers with a block naming the re-entered phase, because the
+effect differs from what the user clicked.
 
 Any reply that is not an option choice is content feedback — the user typed
 words. Text never advances the run. While the run waits, the phase is closed
@@ -366,7 +376,8 @@ and writes are denied, so only these moves exist, and the block names them:
    Grep / LSP / read-only Bash), report the conclusion, then re-ask the
    decision question exactly (nonce + page 1's labels).
 2. **The direction is wrong** — the user chooses `recall:` to reopen the
-   phase (offered at phase / review-result / recovery checkpoints).
+   phase (offered at phase / review-result / review-debt / recovery
+   checkpoints).
 3. **The requirement itself moved** — `Skill(summoner:change)` (open →
    apply → accept).
 4. **None of these** — only the user's `stop:` ends it (state kept).
