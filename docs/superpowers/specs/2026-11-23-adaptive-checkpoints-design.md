@@ -1,6 +1,6 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev4（已按两轮独立评审修订；待用户批准）
+- 状态: rev5（评审闭合 + D5.5 已裁决；用户已批准开工）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -200,20 +200,17 @@
      `echo "$(cat "a>b")"`（词法边角）。
    - `isWriteClassCommand` 改为同时返回命中的规则，拒绝消息注明。
 4. **TaskStop**: 本版不放行。
-5. **写类判定的范围（待用户裁决）**。评审核实的现状: 诊断期的写类判定只
-   认一张短动词表（rm/mv/cp/tee/chmod/chown/touch/mkdir/dd/truncate/ln/
-   install/sudo/xargs/eval/exec/sh/bash/zsh）、表内的 git 写子命令、以及
-   任意 `>`（bashwrite.go:44-60）。其余在诊断未被接受时全部放行:
+5. **写类判定的范围 — 已裁决 (a)**（用户 2026-11-23: 都按建议）。诊断期
+   把以下全部判为写类（`find -exec` 一律判写）:
    - 带内联代码的解释器（`python3 -c`、`node -e`、`perl -i`、awk 的
      `system()`）；
    - 构建与运行（`make`、`go run`、`npm i`、`npx`、`pip install`）；
    - 远程与复制（`ssh`、`rsync`、`scp`）、下载落盘（`curl -o`、`wget -O`）、
      解包（`tar -x`、`unzip`）；
    - 表外的 git 写子命令（`restore`、`am`、`bundle create`、
-     `filter-branch`——未知 git 子命令判只读，gate.go:161-177）；
-   - `find -exec`。
-   选项: (a) 诊断期把以上判为写类（建议；`find -exec` 一律判写）；
-   (b) 维持现状，只把过时的 residual 注释改对。
+     `filter-branch`）；未知 git 子命令改判写（不再默认只读）；
+   - `bashwrite.go:32-36` 的 residual 注释按新范围重写。
+   铁律文案同步: 诊断期的可执行面只剩只读动词 + LSP。
 
 ### D6 协议与文档同步
 
@@ -268,7 +265,9 @@ past a checkpoint without a recorded AskUserQuestion decision"）、
    解析为单个 JSON 对象，含 `decision: block`、下一步指令，以及本次已
    生效部分的披露。
 8. verdict status `BLOCKED` 不再被拒。
-9. D5.3 列出的每个边界: 只读形态诊断期放行，写形态仍拒。
+9. D5.3 列出的每个边界: 只读形态诊断期放行，写形态仍拒；D5.5 裁决
+   (a) 的每个类别诊断期被拒（`python3 -c "…"`, `make`, `go run`, `ssh`,
+   `rsync`, `curl -o`, `npm i`, `tar -x`, `git restore`, `find -exec`）。
 10. SessionStart 在 `CLAUDE_ENV_FILE` 存在时向其追加 export 行；
     `summoner-status` 无 session_id 时按该变量解析 `{}`；变量不存在时
     退回现状。
@@ -303,6 +302,8 @@ past a checkpoint without a recorded AskUserQuestion decision"）、
 - rev3（评审六项）: D4 改为 stdout 可见通道；D3 保留检查点记录、审查
   结果独立切片、补续跑兜底；D1 定上限并入摘要；D2 加停止豁免与代码内
   文案；D5.3 写死规则并改签名；验收改写为可断言；新增 D5.5。
+- rev5: D5.5 用户裁决落定——诊断期解释器/构建/远程/解包/表外 git 写子命令/
+  find -exec 一律判写；铁律文案与验收同步。
 - rev4（复核: ②③⑤⑥ 未闭合 + B1–B7）: D3 新开 `AutoPassCheckpoint`
   入口、事件入三份白名单、自动过排除 ExtendAsk 与检查 FAIL（B1）、兜底
   条件按生命周期事件并定义"一次"；D1 行数口径与字符上限、上限改 ≤42、
