@@ -1,5 +1,13 @@
 ---
-description: 修 Bug 全链路 — context → diagnosis（铁律）→ reproduce → fix → regression → review，每阶段经检查点由用户裁决。Phase 2-5 可按条件显式跳过（标 UNVERIFIED/UNREVIEWED）。「排查」类短语默认路由到这里（repair-bias）；仅当用户明确只要原因不要改码时才用 /summoner:debug。
+description: 修 Bug 全链路 — context → diagnosis（铁律）→ reproduce → fix → regression → review，每阶段经检查点由用户裁决。Phase 2-5 可按条件显式跳过（标 UNVERIFIED/UNREVIEWED）。「排查」「修一下」类短语默认路由到这里（repair-bias）；仅当用户明确只要原因不要改码时才用 /summoner:debug。
+allowed-tools:
+  - Skill
+  - Read
+  - Write
+  - Edit
+  - Bash
+  - AskUserQuestion
+  - Agent
 ---
 
 # /summoner:fix
@@ -20,9 +28,10 @@ context → diagnosis(M) → reproduce → fix → regression → review → pos
 
 ## Rules
 
-1. Loop per `${CLAUDE_PLUGIN_ROOT}/skills/summoner/SKILL.md`: work → `summoner:phase-submit` (only
-   channel) → paste the summoner-status render verbatim → AskUserQuestion
-   (nonce in question, keyword-led labels).
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
+   (the only submission channel) → paste the summoner-status render verbatim
+   and end the turn → next turn AskUserQuestion (nonce in the question,
+   keyword-led labels from the persisted menu page).
 2. Skips are proposed at the checkpoint against the auto-skip table
    (`${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`) — only the user confirms; skipped
    phases are marked UNVERIFIED/UNREVIEWED.

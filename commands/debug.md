@@ -1,5 +1,11 @@
 ---
 description: 仅诊断 — context → diagnosis，止于诊断检查点，不改任何代码。快速、轻量。仅当用户明确只要原因、不要改码（'先别改代码'/'只告诉我原因'/'我自己来修'）时使用；未说明的「排查」类短语默认走 /summoner:fix。
+allowed-tools:
+  - Skill
+  - Read
+  - Bash
+  - AskUserQuestion
+  - Agent
 ---
 
 # /summoner:debug
@@ -20,8 +26,10 @@ context → diagnosis → 检查点（结束）
 
 ## Rules
 
-1. Loop per `${CLAUDE_PLUGIN_ROOT}/skills/summoner/SKILL.md`: work → `summoner:phase-submit` →
-   paste the summoner-status render verbatim → AskUserQuestion.
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
+   (the only submission channel) → paste the summoner-status render verbatim
+   and end the turn → next turn AskUserQuestion (nonce in the question,
+   keyword-led labels from the persisted menu page).
 2. NO code changes, no test files — the write gate enforces this until
    diagnosis is accepted, and the workflow ends there anyway.
 3. 诊断报告 = 根因、影响范围、修复建议（给用户的输入，不是修复承诺）。

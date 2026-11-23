@@ -1,5 +1,5 @@
 ---
-description: 只读状态视图 — 渲染当前 run 的阶段路线/visit 状态/已验产物版本/未满足标准/等待谁/默认 recall/预算余量/沙箱档位；有 pending checkpoint 时附检查点块。只读，不改任何状态。
+description: 只读状态视图 — 渲染当前 run 的阶段路线/visit 状态/已验产物版本/未满足标准/等待谁/默认 recall/预算余量/沙箱档位；有 pending checkpoint 时附检查点块。只读，不改任何状态。「现在什么状态」「run 到哪了」类意图路由到这里。
 allowed-tools:
   - Bash("${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{}')
   - Bash("${CLAUDE_PLUGIN_ROOT}/hooks/bin/summoner-status" <<< '{"session_id":"*"}')
@@ -8,6 +8,9 @@ allowed-tools:
 # /summoner:status
 
 Read-only viewer. It never starts, advances, or mutates a run — rendering only.
+No phase loop applies here (per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`); the
+shared disciplines still do: render verbatim, decisions only via
+AskUserQuestion at a rendered checkpoint.
 
 ## Steps
 

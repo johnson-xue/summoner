@@ -1,5 +1,11 @@
 ---
-description: 发版前审查 — 单一独立 reviewer 覆盖完整 rubric → merge 报告 → GO/NO-GO 决策。敏感变更增加标准，不增加 reviewer。
+description: 发版前审查 — 单一独立 reviewer 覆盖完整 rubric → merge 报告 → GO/NO-GO 决策。敏感变更增加标准，不增加 reviewer。「上线前把把关」「发版前审查」类意图路由到这里。
+allowed-tools:
+  - Skill
+  - Read
+  - Bash
+  - AskUserQuestion
+  - Agent
 ---
 
 # /summoner:ship
@@ -33,7 +39,10 @@ four phases). The manifest maps CAPABILITIES, never topology. In practice:
 
 ## Rules
 
-1. Checkpoints + AskUserQuestion per `${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`.
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
+   (the only submission channel) → paste the summoner-status render verbatim
+   and end the turn → next turn AskUserQuestion (nonce in the question,
+   keyword-led labels from the persisted menu page).
 2. Cite existing review/verification evidence instead of re-running it —
    same-digest artifacts with a still-valid result reuse once.
 3. Rollback plan is MANDATORY before any GO.

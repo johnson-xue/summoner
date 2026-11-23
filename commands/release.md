@@ -1,15 +1,22 @@
 ---
-description: 版本发布全流程 — planning → changelog → publish，三份版本清单同步（plugin.json / .claude-plugin/plugin.json / marketplace.json）；publish 是变更阶段，必须先声明只读对账探针（tag-已存在/版本-已一致）。
+description: 版本发布全流程 — planning → changelog → publish，三份版本清单同步（plugin.json / .claude-plugin/plugin.json / marketplace.json）；publish 是变更阶段，必须先声明只读对账探针（tag-已存在/版本-已一致）。「发版」「publish 0.x.y」类意图路由到这里。
+allowed-tools:
+  - Skill
+  - Read
+  - Edit
+  - Bash
+  - AskUserQuestion
 ---
 
 # /summoner:release
 
 Version release on the framework route **planning → changelog → publish**
-(fixed in `hooks/shared/workflow.go` — commands define topology; the manifest
-maps capabilities, never routes). User gates, trace, budgets and post-game
-run through the SAME single-loop reducer as every workflow: phase closes →
-checkpoint render → AskUserQuestion decision (`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`);
-never auto-advance. Red flags / auto-skip table: `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`.
+(fixed in `hooks/shared/workflow.go`; this command describes its own route
+only — the manifest maps capabilities, never routes). User gates, trace,
+budgets and post-game run through the SAME single-loop reducer as every
+workflow: phase closes → checkpoint render → AskUserQuestion decision
+(`${CLAUDE_PLUGIN_ROOT}/references/checkpoint-protocol.md`); never auto-advance. Red flags /
+auto-skip table: `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`.
 
 ## Capability
 
@@ -21,7 +28,11 @@ options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
 
 ## Rules
 
-1. **对账探针是 publish 的准入条件** — publish mutates (version writes,
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
+   (the only submission channel) → paste the summoner-status render verbatim
+   and end the turn → next turn AskUserQuestion (nonce in the question,
+   keyword-led labels from the persisted menu page).
+2. **对账探针是 publish 的准入条件** — publish mutates (version writes,
    commit, tag, push), so the capability list must declare the read-only
    reconciliation probe set (tag-已存在 / 版本-已一致) BEFORE the release
    enters it: 无探针声明不得进变更阶段. Probes are read-only 对账 resolved
@@ -29,9 +40,9 @@ options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
    checkpoint (CONTINUE/RECALL/STOP) — never a mutating fix, never silently
    passed (`${CLAUDE_PLUGIN_ROOT}/skills/summoner-release/SKILL.md` §只读对账探针; fixtures
    `${CLAUDE_PLUGIN_ROOT}/tests/fixtures/traces/valid-release-probe-*.jsonl`).
-2. Safety lives in the skill: auto rollback (delete tag / reset commit),
-   pre-flight (git repo, `jq`, uncommitted-change warning), validation
-   (semver, new > current, tag-conflict).
+3. Safety lives in the release skill and its scripts: auto rollback (delete
+   tag / reset commit), pre-flight (git repo, `jq`, uncommitted-change
+   notice), validation (semver, new > current, tag-conflict).
 
 ## Requirements
 

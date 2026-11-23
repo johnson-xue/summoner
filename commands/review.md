@@ -1,5 +1,11 @@
 ---
-description: 独立代码审查 — verification_spec 路线（manifest phases.review），单一独立 reviewer 黑盒重查，不改代码。回答「这份变更有哪些问题」。
+description: 独立代码审查 — verification_spec 路线（manifest phases.review），单一独立 reviewer 黑盒重查，不改代码。回答「这份变更有哪些问题」。「审查/看看这份变更有什么问题」类意图路由到这里；要 GO/NO-GO 决策用 /summoner:ship。
+allowed-tools:
+  - Skill
+  - Read
+  - Bash
+  - AskUserQuestion
+  - Agent
 ---
 
 # /summoner:review
@@ -24,22 +30,25 @@ and post-game flow through the same reducer as every workflow.
 
 ## Rules
 
-1. One typed `reviewer` Agent (non-fork, tool-restricted, no project memory):
+1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
+   (the only submission channel) → paste the summoner-status render verbatim
+   and end the turn → next turn AskUserQuestion (nonce in the question,
+   keyword-led labels from the persisted menu page).
+2. One typed `reviewer` Agent (non-fork, tool-restricted, no project memory):
    the gate binds the delegation to the PREPARED review id — build and
-   register the envelope first. Once the check registry exists (manifest
-   check registry task), every mechanical criterion's envelope entry MUST
-   carry the frozen `check_id@digest` form in `verification_scope.check_ids`
-   — bare/missing/malformed entries are rejected (hooks/shared/envelope.go
-   is the authority).
-2. Evidence discipline: every claim cites real tool calls
+   register the envelope first. Every mechanical criterion's envelope entry
+   MUST carry the frozen `check_id@digest` form in
+   `verification_scope.check_ids` — bare/missing/malformed entries are
+   rejected (hooks/shared/envelope.go is the authority).
+3. Evidence discipline: every claim cites real tool calls
    (`evidence_tool_call_ids` reconciled against the reviewer's transcript);
    a PASS with empty evidence is a protocol error. grep 命中只是定位，不是证明。
-3. Output: findings graded Critical / Important / Suggestion, each with
+4. Output: findings graded Critical / Important / Suggestion, each with
    criterion id + path:line + failure + suggestion. No next-phase choice —
    that is the user's checkpoint decision.
-4. Review only — never modify code. Artifacts changing mid-review void the
+5. Review only — never modify code. Artifacts changing mid-review void the
    result and force a re-review.
-5. Nothing to review (empty diff / merge-commit only) → say so and stop.
+6. Nothing to review (empty diff / merge-commit only) → say so and stop.
 
 ## Post-Game Review
 
