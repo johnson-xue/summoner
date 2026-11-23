@@ -654,6 +654,9 @@ func (r *RunState) OpenPhase(id string) error {
 			s.Counters.PhaseToolCalls = 0
 			s.ChargedToolUseIDs = nil
 		}
+		// 0.7.0 D3: the next phase opened — an auto-pass's continuation cue
+		// is spent.
+		s.AutoPassNudgeFor = ""
 		return nil
 	})
 }
@@ -945,7 +948,7 @@ func (r *RunState) freezeAcceptance(p *PhaseState, cp *CheckpointState) {
 		Artifacts:          artifacts,
 		SourceVisitID:      p.VisitID,
 		SourceCheckpointID: cp.ID,
-		AcceptedBy:         cp.DecisionToolUseID,
+		AcceptedBy:         cp.acceptanceActor(),
 	}
 	// Complete semantics from the staged snapshot: requirement content and
 	// artifact refs, planned scope, criteria meaning.
@@ -1037,7 +1040,7 @@ func (r *RunState) freezeAcceptance(p *PhaseState, cp *CheckpointState) {
 	}
 	r.Acceptance.Environment = ObserveVerificationEnvironment(cp.Snapshot.Environment)
 	r.Acceptance.SourceCheckpointID = cp.ID
-	r.Acceptance.AcceptedBy = cp.DecisionToolUseID
+	r.Acceptance.AcceptedBy = cp.acceptanceActor()
 	r.Acceptance.Version = r.RequirementsVersion
 }
 

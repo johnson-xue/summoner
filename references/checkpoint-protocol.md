@@ -2,11 +2,13 @@
 
 ## Purpose
 
-Every phase ends at a human checkpoint — the run's ONLY advancement surface.
+Every phase ends at a checkpoint — the run's ONLY advancement surface.
 The reducer (Go hooks) owns the state machine: a phase closes into WAIT_USER,
-and only a decision recorded from the platform's AskUserQuestion
-tool_response moves the run on. A skill starting, the model claiming "done",
-or a reviewer PASS never authorizes anything. This file is the CANONICAL
+and a decision recorded from the platform's AskUserQuestion tool_response
+moves the run on. One recorded exception exists (0.7.0): the **auto-pass**
+(below) — the framework itself accepts a checkpoint that needs no judgment,
+under fixed conditions, and traces it as `checkpoint.auto`. A skill starting,
+the model claiming "done", or a reviewer PASS never authorizes anything. This file is the CANONICAL
 render + decision-channel spec; commands and skills point here and never
 inline a variant.
 
@@ -356,6 +358,40 @@ start (user ruling 2026-11-23: 不必在工作流开始时询问 budget):
   call's tool_use_id. Run-start settlement emits no budget event (it is
   configuration, visible in the run state and the status render);
   `budget.confirmed` appears only in pre-0.6.1 traces.
+
+## Adaptive checkpoints (auto-pass, 0.7.0)
+
+Most checkpoints exist to collect a judgment; the ones that collect none
+cost a dialog each. A phase-submit checkpoint therefore **passes without
+asking** when ALL of these hold:
+
+| Condition | Rule |
+|-----------|------|
+| phase | `context`, `reproduce`, `verify`, `regression` — never `diagnosis`, `fix` or any other phase |
+| submission | `outcome: confirmed` AND at least one `evidence` item (a listed open question forces `unclear`) |
+| checks | no FAIL among the submission's own mechanical checks |
+| budget | no extension offer on the checkpoint, and the budget not exhausted |
+
+An auto-pass does exactly what a CONTINUE does, with the framework as the
+actor: the checkpoint record is kept and marked decided (`AUTO_PASS`, no
+tool_use id), the phase is frozen into the acceptance view
+(`accepted_by: auto-pass`), the next visit's budget bucket is authorized,
+the run returns to ACTIVE, and one `checkpoint.auto` is traced — never a
+`checkpoint.decided` (that needs a real AskUserQuestion call) and never a
+`checkpoint.displayed`.
+
+A passed phase renders no checkpoint, so the run keeps moving two ways:
+
+- `summoner-status` prints `auto-passed: 阶段 X 已自动通过 → 立即进入 Y`.
+- If the turn ends right after the pass, the Stop hook blocks once with the
+  phase to enter — at most once per pass.
+- The pass stays visible afterwards: the visit reads `accepted (自动通过)`
+  and every later checkpoint's `经过` block shows `✓ 自动通过`.
+
+Everything that owes a judgment stays a human checkpoint: an `unclear` or
+`failed` submission, a confirmed one without evidence, a FAIL among its
+checks, a checkpoint opened at budget exhaustion. Review-result checkpoints
+are never auto-passed.
 
 ## CHANGE_CONFIRM checkpoint (requirement-change close)
 

@@ -297,6 +297,7 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	fmt.Fprintf(&b, "⚡ SUMMONER STATUS — run %s · workflow %s · %s\n", run.RunID, run.Workflow, run.Status)
 	b.WriteString(routeLine(run))
 	b.WriteString(visitLines(run))
+	b.WriteString(autoPassLine(run))
 	b.WriteString(artifactLines(run))
 	b.WriteString(unmetLines(run))
 	b.WriteString(changeLines(run))
@@ -337,15 +338,47 @@ func routeLine(run *shared.RunState) string {
 }
 
 // visitState names one visit's state in the run's own vocabulary.
-func visitState(p shared.PhaseState) string {
+func visitState(run *shared.RunState, p shared.PhaseState) string {
 	switch {
 	case p.Open:
 		return "open"
 	case p.Outcome == "":
 		return "submitted (awaiting decision)"
+	case p.Outcome == "accepted" && decidedByAutoPass(run, p.CheckpointID):
+		return "accepted (自动通过)"
 	default:
 		return p.Outcome // accepted | skipped | recalled
 	}
+}
+
+// decidedByAutoPass reports whether a visit's checkpoint was accepted by the
+// framework rather than a human decision.
+func decidedByAutoPass(run *shared.RunState, checkpointID string) bool {
+	for _, cp := range run.Checkpoints {
+		if cp.ID == checkpointID {
+			return cp.Decision == shared.DecisionAutoPass
+		}
+	}
+	return false
+}
+
+// autoPassLine names the run's latest step while that step is an auto-pass:
+// "阶段 X 已自动通过 → 立即进入 Y". It is the model's cue to go straight on
+// (0.7.0 D3) — no checkpoint renders for a passed phase — and it disappears
+// as soon as a later step supersedes it.
+func autoPassLine(run *shared.RunState) string {
+	if run.Status != shared.StatusActive || len(run.Checkpoints) == 0 {
+		return ""
+	}
+	cp := &run.Checkpoints[len(run.Checkpoints)-1]
+	if !cp.Decided || cp.Decision != shared.DecisionAutoPass {
+		return ""
+	}
+	target := "路线已走完"
+	if next := shared.NextExpectedPhase(run); next != "" {
+		target = "立即进入 " + next
+	}
+	return fmt.Sprintf("auto-passed: 阶段 %s 已自动通过 → %s（无需裁决，直接继续）\n", cp.PhaseID, target)
 }
 
 func visitLines(run *shared.RunState) string {
@@ -355,7 +388,7 @@ func visitLines(run *shared.RunState) string {
 	var b strings.Builder
 	b.WriteString("visits:\n")
 	for _, p := range run.Phases {
-		fmt.Fprintf(&b, "  - %s: %s\n", p.ID, visitState(p))
+		fmt.Fprintf(&b, "  - %s: %s\n", p.ID, visitState(run, p))
 	}
 	return b.String()
 }
