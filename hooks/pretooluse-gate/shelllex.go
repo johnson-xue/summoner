@@ -574,6 +574,7 @@ func (l *lexer) arithmetic(inner string, attachedBefore, attachedAfter bool) {
 		return
 	}
 	openedByQuote := l.wordOpen && !l.wordHasLiteral
+	l.wordExpanded = true // the prefix of a word that continues with the arithmetic is computed
 	l.flush()
 	l.toks = append(l.toks, shTok{kind: shOp, text: opArithOpen}, shTok{kind: shOp, text: ";"})
 	l.toks = append(l.toks, lexShellCtx(inner, l.depth+1, true)...)
@@ -675,40 +676,48 @@ func (l *lexer) heredocBodies() {
 // heredocBody consumes one heredoc body: text up to its delimiter line. No
 // operators live in it, but command substitutions do, so they are lexed.
 func (l *lexer) heredocBody(h pendingHeredoc) {
+	// The body is ONE span ending at the delimiter line: a substitution may
+	// open on one line and close lines later (`$( ⏎ rm -rf x ⏎ )`), and a
+	// line-by-line splice never saw its second line (ship review round 4, C2).
+	start := l.i
 	for l.i < len(l.r) {
 		end := l.i
 		for end < len(l.r) && l.r[end] != '\n' {
 			end++
 		}
-		line := l.r[l.i:end]
-		for h.stripTabs && len(line) > 0 && line[0] == '\t' {
-			line = line[1:]
+		if strings.TrimSuffix(string(l.r[l.i:end]), "\r") == h.delim {
+			break
 		}
-		if h.quoted {
-			// A quoted delimiter: the body is literal text — nothing in it
-			// runs. Only find the delimiter line.
-			l.i = end
-			if end < len(l.r) {
-				l.i = end + 1
-			}
-			if strings.TrimSuffix(string(line), "\r") == h.delim {
-				return
-			}
-			continue
-		}
-		// CRLF text ends its lines with "\r": bash compares the delimiter
-		// without it, and a body that never ended would swallow the command
-		// after it.
-		if strings.TrimSuffix(string(line), "\r") == h.delim {
-			l.i = end + 1 // past the delimiter's newline
-			return
-		}
-		l.spliceLine(line, false)
 		if end >= len(l.r) {
 			l.i = end // unterminated body: it runs to the end of the text
-			return
+			break
 		}
 		l.i = end + 1
+	}
+	body := l.r[start:l.i]
+	if h.stripTabs {
+		var stripped []rune
+		atLineStart := true
+		for _, r := range body {
+			if atLineStart && r == '\t' {
+				continue
+			}
+			stripped = append(stripped, r)
+			atLineStart = r == '\n'
+		}
+		body = stripped
+	}
+	if !h.quoted && len(body) > 0 {
+		// A quoted delimiter means literal text (nothing in it runs);
+		// otherwise the live parts — substitutions, their arithmetic — are
+		// spliced once over the whole body.
+		l.spliceLine(body, false)
+	}
+	for l.i < len(l.r) && l.r[l.i] != '\n' {
+		l.i++ // the delimiter line (or an unterminated body's last line)
+	}
+	if l.i < len(l.r) {
+		l.i++
 	}
 }
 

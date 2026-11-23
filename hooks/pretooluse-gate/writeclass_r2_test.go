@@ -162,7 +162,7 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"read", "(cd /tmp && ls)"},
 		{"write", "(cd /tmp && rm x)"},
 		{"read", "f() { ls; }; f"},
-		{"write", "python3 -mjson.tool x.json"}, // the attached module spelling
+		{"write", "python3 -mhttp.server 8000"}, // the attached module spelling, a module that acts
 		{"write", "perl -MPOSIX -e 1"},          // a loaded module is code
 		{"write", "perl -M POSIX < s.pl"},
 		{"write", "git diff --output=d.txt"}, // a read-only subcommand writing its output
@@ -171,6 +171,83 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"write", "patch -p1 < x.patch"},
 		{"read", "git diff --stat"},
 		{"read", "git log --oneline -3"},
+		// ---- ship review round 4 (classifier): what the round-3 fixes opened ----
+		{"write", `X="$(pwd)" rm -rf x`}, // an assignment before the verb must not hide it
+		{"write", `X="$(pwd)" make`},
+		{"write", `X="$(pwd)" git push`},
+		{"write", `env X="$(pwd)" rm -rf x`},
+		{"write", `! X="$(pwd)" rm -rf x`},
+		{"write", `X="a$(pwd)" rm -rf x`},
+		{"write", "X=`pwd` rm -rf x"},
+		{"read", `X="$((1))"; git status`},
+		{"read", `X="$((1))" git status`},
+		{"write", "cat <<EOF\n$(\nrm -rf x\n)\nEOF"}, // a substitution spanning lines in an unquoted body
+		{"write", "cat <<EOF\n`\nrm -rf x\n`\nEOF"},
+		{"write", "cat <<EOF\n${x:-$(echo a\nrm -rf x)}\nEOF"},
+		{"write", "python3 /dev/stdin < s.py"}, // the operand IS stdin
+		{"write", "cat s.py | python3 /dev/stdin"},
+		{"write", "python3 /dev/fd/0 < s.py"},
+		{"write", "node /dev/stdin < s.js"},
+		{"write", "php -f /dev/stdin < s.php"},
+		{"write", "sed -f /dev/stdin < prog.sed"},
+		{"write", "timeout 5 RM -rf x"}, // wrapper scans: case, arity, computed words
+		{"write", "nice MAKE test"},
+		{"write", "timeout 10s $(echo rm) -rf x"},
+		{"write", "timeout 5.5 $(echo rm) -rf x"},
+		{"write", "timeout -s KILL 5 $(echo rm) -rf x"},
+		{"write", "doas -u root $(echo rm) -rf x"},
+		{"write", "flock -w 5 /tmp/lock $(echo rm) -rf x"},
+		{"write", "strace -o /dev/null $(echo rm) x"},
+		{"write", "xcrun --sdk macosx $(echo rm) -rf x"},
+		{"write", "caffeinate -t 5.5 $(echo rm) x"},
+		{"write", `nice "$RM" -rf x`},
+		{"write", "nice $RM -rf x"},
+		{"write", `timeout 5 "$MAKE" test`},
+		{"write", `timeout 5 "$BASH" -c 'rm -rf x'`},
+		{"write", "watch -n 2 'FOO=1 rm -rf x'"}, // a command string that opens with an assignment
+		{"write", `script -q /dev/null -c 'X="$(pwd)" make'`},
+		{"write", `flock /tmp/l -c 'X="$(pwd)" rm -rf x'`},
+		{"write", "trap 'rm -rf x' EXIT"},
+		{"write", "trap rm EXIT"},
+		{"read", "trap 'echo done' EXIT"},
+		{"write", "parallel 'rm -rf x' ::: a"},
+		{"write", "sed 's,x,y,e' f"}, // GNU sed: other delimiters, addresses, attached -e, -f
+		{"write", "sed '/x/!e rm -rf x' f"},
+		{"write", `sed -e'1e rm -rf x' f`},
+		{"write", "sed --expression='1e rm -rf x' f"},
+		{"write", "sed -f prog.sed f"},
+		{"write", "sed -f <(echo '1e rm -rf x') /etc/hosts"},
+		{`write`, `"/bin/$(echo rm)" -rf x`}, // the basename comes from a later token
+		{"write", `"/usr/bin/$(echo rm)" -rf x`},
+		{"write", `"/usr/$(echo bin)/rm" -rf x`},
+		{`write`, `php -B 'file_put_contents("x","y");'`}, // php inline flags beyond -r
+		{"write", "php -R 'x();' < in"},
+		{"write", "php -E 'x();'"},
+		{"write", "php -H 'x();'"},
+		{"write", "php --run 'x();'"},
+		{"write", "php --process-begin 'x();'"},
+		{"write", `\time -a rm -rf x`}, // the external time runs the utility
+		{"write", `\time --format %e rm -rf x`},
+		{"write", "python3 =(echo code)"}, // zsh's =(...) is a process substitution too
+		// false denials the round-4 sweep found (all rare, all cheap to fix)
+		{"read", "node --no-warnings tools/report.js < data.json"},
+		{"read", "ruby --disable-gems x.rb < in"},
+		{"read", "php --syntax-check x.php < in"},
+		{"read", "perl -Ilib tools/x.pl"},
+		{"read", "perl tools/x.pl -verbose"},
+		{"read", "go tool pprof -top ./bin/x cpu.prof"},
+		{"read", "go tool vet ./..."},
+		{"read", "python3 -mjson.tool x.json"},
+		{"read", "git config --bool --get core.bare"},
+		{"read", "git config --default x --get user.name"},
+		{"read", "git apply --summary x.patch"},
+		{"read", "git whatchanged --oneline -3"},
+		{"read", "git status --help"},
+		{"read", "sed 's/-w // f"},
+		{"read", "sed 's/a/w /g' f"},
+		{"read", "echo x | python3 --version"},
+		{"write", "sed '1w out.txt' f"},
+		{"write", "sed -n '/start/,/end/w out.txt' f"},
 		// ---- controls: forms that already work must keep working ----
 		{"write", `git -C "$(pwd)" push`},
 		{"write", `env -u "$(echo FOO)" rm x`},
