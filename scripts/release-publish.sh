@@ -33,6 +33,9 @@ command -v jq >/dev/null 2>&1 || { echo "❌ jq not installed" >&2; exit 1; }
 if [ "$SKIP_CHANGELOG" != "true" ] && { [ -z "$CHANGELOG_FILE" ] || [ ! -f "$CHANGELOG_FILE" ]; }; then
     echo "❌ --changelog-file <path> is required unless --skip-changelog" >&2; exit 1
 fi
+if [ "$GH_RELEASE" = "true" ] && [ "$SKIP_CHANGELOG" = "true" ]; then
+    echo "❌ --gh-release needs release notes: pass --changelog-file (not --skip-changelog)" >&2; exit 1
+fi
 git tag -l "v$VERSION" | grep -q . && { echo "❌ Tag v$VERSION already exists" >&2; exit 1; }
 
 # Dry-run: preview, stop before mutation
@@ -57,14 +60,18 @@ rollback_release() {
 }
 trap rollback_release ERR
 
-# ALL THREE manifests (root plugin.json included)
-update_version() {  # $1=file, $2=jq version path
-    jq --arg v "$VERSION" "$2 = \$v" "$1" > /tmp/rel.json && \
-        mv /tmp/rel.json "$1" && echo "✅ Updated $1"
-}
-update_version .claude-plugin/plugin.json '.version'
-update_version .claude-plugin/marketplace.json '.plugins[0].version'
-update_version plugin.json '.version'
+# ALL THREE manifests — staged: every jq runs before any file is swapped, so
+# a malformed manifest leaves all originals intact (no partial bump window),
+# and each run stages under its own mktemp dir (no fixed /tmp clobber).
+STAGE=$(mktemp -d) || { echo "❌ mktemp failed" >&2; exit 1; }
+jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > "$STAGE/p.json" || { rm -rf "$STAGE"; echo "❌ jq failed on .claude-plugin/plugin.json" >&2; exit 1; }
+jq --arg v "$VERSION" '.plugins[0].version = $v' .claude-plugin/marketplace.json > "$STAGE/m.json" || { rm -rf "$STAGE"; echo "❌ jq failed on .claude-plugin/marketplace.json" >&2; exit 1; }
+jq --arg v "$VERSION" '.version = $v' plugin.json > "$STAGE/r.json" || { rm -rf "$STAGE"; echo "❌ jq failed on plugin.json" >&2; exit 1; }
+mv "$STAGE/p.json" .claude-plugin/plugin.json
+mv "$STAGE/m.json" .claude-plugin/marketplace.json
+mv "$STAGE/r.json" plugin.json
+rm -rf "$STAGE"
+echo "✅ Updated 3 manifests"
 
 # CHANGELOG.md: insert below header (create if absent)
 if [ "$SKIP_CHANGELOG" != "true" ]; then
@@ -103,12 +110,21 @@ if [ "$NO_PUSH" != "true" ]; then
     git push origin "v$VERSION"
     echo "✅ Pushed to remote"
 fi
-if [ "$GH_RELEASE" = "true" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh release create "v$VERSION" --title "v$VERSION" --notes-file "$CHANGELOG_FILE"
-    echo "✅ Created GitHub Release"
-fi
-
+# The remote is now authoritative — local rollback can never undo a push, so
+# the ERR trap disarms HERE (before gh), and gh failure degrades to a warning
+# with a manual command instead of a pointless local tag/commit rollback.
 trap - ERR
+if [ "$GH_RELEASE" = "true" ]; then
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        if gh release create "v$VERSION" --title "v$VERSION" --notes-file "$CHANGELOG_FILE"; then
+            echo "✅ Created GitHub Release"
+        else
+            echo "⚠️ gh release create failed — create it manually: gh release create v$VERSION --notes-file $CHANGELOG_FILE"
+        fi
+    else
+        echo "⚠️ gh not installed/authed — GitHub Release NOT created (manual: gh release create v$VERSION)"
+    fi
+fi
 
 # --- summoner-ctx persistence (optional; every path warns and continues)
 if ! command -v summoner-ctx >/dev/null 2>&1; then

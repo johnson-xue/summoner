@@ -24,7 +24,7 @@ auto-skip table: `${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`.
 the default framework implementation (`${CLAUDE_PLUGIN_ROOT}/skills/summoner-release/SKILL.md` —
 version planning, changelog from conventional commits, publish with rollback;
 options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
---skip-changelog`). No manifest → the default, disclosed「未配置项目专属能力」.
+--skip-changelog/--gh-release`). No manifest → the default, disclosed「未配置项目专属能力」.
 
 ## Rules
 

@@ -388,8 +388,10 @@ fi
 # translated view) bound summoner/SKILL.md at 13527B.
 # 2026-11-19: 13568→13632 — runtime pointer qualification (../../-prefixed
 # references in skills; section 3b — user-reported dead links).
+# 2026-11-23: 3072→3200 (commands) — release.md carries the release options
+# list including --gh-release; binds at 96% rather than 1 byte of headroom.
 CEIL_SKILL=13632
-CEIL_CMD=3072
+CEIL_CMD=3200
 OVER=0
 while IFS= read -r f; do
   size=$(wc -c < "$f" | tr -d ' ')

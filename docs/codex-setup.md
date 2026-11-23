@@ -4,7 +4,7 @@ Codex CLI doesn't have a plugin system like Claude Code. Summoner integrates via
 
 ## Installation
 
-1. Copy Summoner's SKILL.md content into your Codex instructions:
+1. Copy Summoner's loop contract into your Codex instructions:
    ```bash
    mkdir -p .codex
    cp ~/.claude/plugins/summoner/references/single-loop.md .codex/summoner-instructions.md

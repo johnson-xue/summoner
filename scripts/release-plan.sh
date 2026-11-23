@@ -53,5 +53,13 @@ fi
 echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "❌ Invalid semver format: $NEW_VERSION"; exit 1; }
 git tag -l "v$NEW_VERSION" | grep -q . && { echo "❌ Tag v$NEW_VERSION already exists"; exit 1; }
 
+# New must be strictly greater than current (BSD sort has no -V; awk compare)
+if ! awk -v a="$CURRENT_VERSION" -v b="$NEW_VERSION" 'BEGIN{
+    split(a,A,"."); split(b,B,".");
+    for (i=1;i<=3;i++) { if (B[i]>A[i]) exit 0; if (B[i]<A[i]) exit 1 }
+    exit 1 }'; then
+    echo "❌ $NEW_VERSION must be greater than current $CURRENT_VERSION"; exit 1
+fi
+
 echo "✅ Version: $CURRENT_VERSION → $NEW_VERSION ($VERSION_TYPE)"
 echo "PROPOSED v$NEW_VERSION ($VERSION_TYPE)"

@@ -68,7 +68,6 @@ GO/NO-GO，不重复同一审查。`commands/review.md` 与 `commands/ship.md` �
 
 | 注册 | 层 | user-invocable | 触发措辞（精确 description，防自动触发竞争） |
 |---|---|---|---|
-| skill `summoner` | 控制 | yes | "Routes user intent through summoner.yaml manifest … Use when user invokes any /summoner:* command or expresses intent matching a Summoner workflow." |
 | skill `summoner-setup` | 控制 | yes | "Initialize or repair a project's Summoner configuration when the user explicitly requests it, or guide them when they ask about the missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration."——薄指针 → `${CLAUDE_PLUGIN_ROOT}/scripts/summoner-setup.sh`（T11 收敛 plugin.json 描述与 SKILL.md 一致；0.6.0 起并入原 auto-setup 入口的触发纪律） |
 | skill `summoner-release` | 控制（默认实现） | yes | "Version release automation … Keeps ALL THREE version manifests synchronized … Use when user invokes /summoner:release." |
 | skill `phase-submit` | 控制通道 | **false** | "ONLY to submit a completed phase result — invoke when a phase's work is done; never for anything else" |

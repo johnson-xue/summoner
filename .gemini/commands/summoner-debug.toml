@@ -10,8 +10,8 @@ memory/, e.g. ~/.claude/plugins/cache/summoner-marketplace/summoner/<version>/):
 
   1. <plugin-root>/references/single-loop.md  — loop contract + suite routing
   2. <plugin-root>/commands/debug.md          — this workflow's specific rules
-  3. References the SKILL.md pointers name (workflow-reference, checkpoint-protocol,
-     memory-chain, ...) are loaded on demand — follow them.
+  3. References named by single-loop.md §3 and the command file
+     are loaded on demand — follow them.
 
 Phase 0 memory retrieval, checkpoint pauses (enter/skip/done/recall/stop) and the
 post-game review all follow the canonical files, never a local restatement.
