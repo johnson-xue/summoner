@@ -651,10 +651,12 @@ type RunState struct {
 	// call ids (one call charges exactly once, hook replay included).
 	UpcomingVisit     bool     `json:"upcoming_visit,omitempty"`
 	ChargedToolUseIDs []string `json:"charged_tool_use_ids,omitempty"`
-	// AutoPassNudgeFor (0.7.0 D3) is the one-shot continuation cue of an
-	// auto-passed checkpoint: its id, from the pass until the Stop hook
-	// nudges once or the next phase opens. Empty = nothing to nudge.
-	AutoPassNudgeFor string `json:"auto_pass_nudge_for,omitempty"`
+	// ContinueNudgeFor (0.7.0) is the one-shot continuation cue of the
+	// decision that last returned the run to ACTIVE — the framework's
+	// auto-pass or the user's continue / skip: the checkpoint's id, from the
+	// decision until the Stop hook nudges once or the next phase opens.
+	// Empty = nothing to nudge.
+	ContinueNudgeFor string `json:"continue_nudge_for,omitempty"`
 	// BudgetConfirmed (T18) is TRUE from run start since 0.6.1 — the budget
 	// settled as configuration (BudgetSettledBy = "run-start"; pre-0.6.1
 	// state may carry an answering tool_use_id instead). BudgetExtensions

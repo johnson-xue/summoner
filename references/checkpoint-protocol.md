@@ -391,6 +391,9 @@ asking** when ALL of these hold:
 | submission | `outcome: confirmed` AND at least one `evidence` item (a listed open question forces `unclear`) |
 | checks | no FAIL among the submission's own mechanical checks |
 | budget | no extension offer on the checkpoint, and the budget not exhausted |
+| evidence & conclusion | at least one non-blank `evidence` item and a non-blank `conclusion.summary` (blank items are not evidence) |
+| not yet shown | the checkpoint was never displayed — once the user has seen it, the decision is theirs |
+| something follows | another phase is still owed on the route (an auto-pass opens no checkpoint to decide `done` / `stop` from) |
 
 An auto-pass does exactly what a CONTINUE does, with the framework as the
 actor: the checkpoint record is kept and marked decided (`AUTO_PASS`, no
@@ -405,6 +408,11 @@ A passed phase renders no checkpoint, so the run keeps moving two ways:
 - `summoner-status` prints `auto-passed: 阶段 X 已自动通过 → 立即进入 Y`.
 - If the turn ends right after the pass, the Stop hook blocks once with the
   phase to enter — at most once per pass.
+
+The same one-shot nudge covers the user's own `continue:` / `skip:`: a
+decision that returns the run to ACTIVE renders nothing, so a sign-off
+right after it ("好的，继续下一阶段。") is answered once with the phase to
+enter — the user never types "continue" to keep the run alive.
 - The pass stays visible afterwards: the visit reads `accepted (自动通过)`
   and every later checkpoint's `经过` block shows `✓ 自动通过`.
 

@@ -170,7 +170,7 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 	}
 	// 0.7.0 D3: an auto-pass opens no checkpoint, so nothing tells the model
 	// to go on — the continuation backstop nudges it once.
-	if run.Status == shared.StatusActive && nudgeAfterAutoPass(run, in, outW, errW) {
+	if run.Status == shared.StatusActive && nudgeContinuation(run, in, outW, errW) {
 		return 0
 	}
 
@@ -279,43 +279,54 @@ func waitUserStop(run *shared.RunState, in *stopInput, outW, errW io.Writer) int
 	return 0
 }
 
-// nudgeAfterAutoPass is the continuation backstop of adaptive checkpoints
-// (0.7.0 D3). A phase the framework passed itself leaves the run ACTIVE with
-// no checkpoint to render, so a model that submitted it and ended its turn
-// used to stall there until the user typed something. When the run sits
-// right after such a pass (shared.AutoPassNudgePending: the cue is set and
-// the trace's last lifecycle event is that checkpoint.auto), the hook
-// consumes the cue and BLOCKS once with the phase to enter. Consuming
-// BEFORE blocking bounds it: at most one nudge per auto-pass, even when the
-// block is lost to the platform's consecutive-block cap. An explicit stop
-// acknowledgment ends the turn as always. Reports whether it blocked.
-func nudgeAfterAutoPass(run *shared.RunState, in *stopInput, outW, errW io.Writer) bool {
-	if run.AutoPassNudgeFor == "" {
+// nudgeContinuation is the continuation backstop (0.7.0 D3, extended in
+// the ship review). A decision that returns the run to ACTIVE renders
+// nothing: not the framework's own auto-pass, and not the user's click on
+// continue / skip in the dialog. A model that submitted or asked and then
+// ended its turn with a sign-off used to stall there until the user typed
+// something — the incident's "每检查点要用户打 continue". When the run sits
+// right after such a decision (shared.ContinueNudgePending: the cue is set
+// and the trace's last lifecycle event is that checkpoint.auto or
+// checkpoint.decided), the hook consumes the cue and BLOCKS once with the
+// phase to enter. Consuming BEFORE blocking bounds it: at most one nudge
+// per decision, even when the block is lost to the platform's consecutive-
+// block cap. A stop acknowledgment ends the turn as always. Reports whether
+// it blocked.
+func nudgeContinuation(run *shared.RunState, in *stopInput, outW, errW io.Writer) bool {
+	if run.ContinueNudgeFor == "" {
 		return false
 	}
-	pending, err := shared.AutoPassNudgePending(run)
+	pending, err := shared.ContinueNudgePending(run)
 	if err != nil {
-		fmt.Fprintf(errW, "summoner stop: auto-pass nudge skipped — trace unreadable: %v\n", err)
+		fmt.Fprintf(errW, "summoner stop: continuation nudge skipped — trace unreadable: %v\n", err)
 		return false
 	}
 	if !pending || shared.IsStopAcknowledgment(run, nil, in.LastAssistantMessage, false) {
 		return false
 	}
-	passed, cue := "", run.AutoPassNudgeFor
+	passed, settled, cue := "", "", run.ContinueNudgeFor
 	for i := range run.Checkpoints {
 		if run.Checkpoints[i].ID == cue {
 			passed = run.Checkpoints[i].PhaseID
+			switch run.Checkpoints[i].Decision {
+			case shared.DecisionAutoPass:
+				settled = "已自动通过（提交已确认且有证据，无需用户裁决）"
+			case shared.DecisionSkip:
+				settled = "已由用户选择 skip"
+			default:
+				settled = "已由用户选择 continue"
+			}
 		}
 	}
-	if err := run.ClearAutoPassNudge(); err != nil {
-		fmt.Fprintf(errW, "summoner stop: auto-pass nudge skipped — the cue could not be consumed (state unchanged): %v\n", err)
+	if err := run.ClearContinueNudge(); err != nil {
+		fmt.Fprintf(errW, "summoner stop: continuation nudge skipped — the cue could not be consumed (state unchanged): %v\n", err)
 		return false
 	}
 	target := "路线已走完 — 运行 summoner-status 查看收尾步骤"
 	if next := shared.NextExpectedPhase(run); next != "" {
 		target = "立即进入 " + next + "：按该阶段的能力开始工作，完成后用 summoner:phase-submit 提交。不要等待用户输入。"
 	}
-	emitBlock(outW, fmt.Sprintf("阶段 %s 已自动通过（提交已确认且有证据，无需用户裁决）→ %s", passed, target))
+	emitBlock(outW, fmt.Sprintf("阶段 %s %s → %s", passed, settled, target))
 	return true
 }
 

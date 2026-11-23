@@ -242,7 +242,7 @@ func TestAdaptiveAutoPassOverBinaries(t *testing.T) {
 	if run.Status != shared.StatusActive || run.CurrentCheckpoint() != nil {
 		t.Fatalf("after the auto-pass: status %s, pending %+v", run.Status, run.CurrentCheckpoint())
 	}
-	if run.AutoPassNudgeFor == "" {
+	if run.ContinueNudgeFor == "" {
 		t.Fatal("the pass must leave the continuation cue")
 	}
 
@@ -274,7 +274,7 @@ func TestAdaptiveAutoPassOverBinaries(t *testing.T) {
 	}
 	code, out, stderr = runBinary(t, "stop", stopRenderPayload(t, "context 阶段已提交。"), nil)
 	if code != 0 || strings.Contains(out, "block") {
-		t.Fatalf("one auto-pass nudges at most once — second stop: (code, stdout) = (%d, %q)", code, out)
+		t.Fatalf("one continuation nudges at most once — second stop: (code, stdout) = (%d, %q)", code, out)
 	}
 
 	// The real binary-produced trace is what the gate scorer expects.
@@ -434,5 +434,71 @@ func TestAdaptiveStopIgnoresFrameworkTextOverBinaries(t *testing.T) {
 	}
 	if run, _ = shared.LoadRun("run-ack"); run.Status != shared.StatusWaitUser {
 		t.Fatalf("status = %s, want WAIT_USER kept", run.Status)
+	}
+}
+
+// TestAdaptiveContinuationAfterHumanDecisionOverBinaries — ship review
+// round 1: the user clicks `continue:` and the model signs off instead of
+// going on. Over the real binaries: the decision lands, the Stop hook
+// nudges once naming the phase to enter and how the phase was settled, a
+// second sign-off is silent, and once the next phase is started nothing
+// is nudged.
+func TestAdaptiveContinuationAfterHumanDecisionOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-go", "fix")
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun("run-go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := *run.CurrentCheckpoint()
+	block := statusView(t, `{"session_id":"`+contractSession+`","view":"checkpoint"}`)
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, block), nil); code != 0 {
+		t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	page := shared.DecisionPage(cp)
+	code, stdout, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      contractSession,
+		"tool_name":       "AskUserQuestion",
+		"tool_use_id":     "tu-ask-1",
+		"tool_input":      askQuestionInput(page, cp.Nonce),
+		"tool_response":   map[string]interface{}{"answers": map[string]interface{}{askQuestionText(cp.Nonce): page[0]}},
+	}), nil)
+	if code != 0 || strings.Contains(stdout, "block") {
+		t.Fatalf("the CONTINUE must land silently: (code, stdout, stderr) = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if run, _ = shared.LoadRun("run-go"); run.Status != shared.StatusActive {
+		t.Fatalf("status after CONTINUE = %s, want ACTIVE", run.Status)
+	}
+
+	stop := func(id, msg string) string {
+		t.Helper()
+		code, out, stderr := runBinary(t, "stop", mustJSON(t, map[string]interface{}{
+			"hook_event_name": "Stop", "session_id": contractSession, "stop_hook_active": id == "again",
+			"last_assistant_message": msg,
+		}), nil)
+		if code != 0 {
+			t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		return out
+	}
+	out := stop("first", "好的，按你的选择继续下一阶段。")
+	for _, want := range []string{`"decision":"block"`, "context", "已由用户选择 continue", "立即进入 diagnosis"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the nudge must carry %q, got %q", want, out)
+		}
+	}
+	if out = stop("again", "好的，按你的选择继续下一阶段。"); strings.Contains(out, "block") {
+		t.Fatalf("one decision nudges at most once, got %q", out)
+	}
+
+	// The next phase starts (the provider skill opens it): nothing to nudge.
+	code, _, stderr = runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-skill-1", map[string]interface{}{"skill": "my-debug-skill"}), nil)
+	if code != 0 {
+		t.Fatalf("provider skill: exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if out = stop("later", "开始诊断。"); strings.Contains(out, "block") {
+		t.Fatalf("with the next phase started the stop is silent, got %q", out)
 	}
 }

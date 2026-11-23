@@ -260,3 +260,27 @@ func TestDiagnosisAndFixNeverAutoPass(t *testing.T) {
 		}
 	}
 }
+
+// TestBlankEvidenceDoesNotAutoPass (ship review round 1): a confirmed claim
+// whose only "evidence" is blank items stays with the user — through the
+// real gate, where the payload was accepted before the fix.
+func TestBlankEvidenceDoesNotAutoPass(t *testing.T) {
+	for name, args := range map[string]string{
+		"blank evidence":   `{"phase_id":"context","outcome":"confirmed","conclusion":{"summary":"context established","evidence":[""],"approach":"read"}}`,
+		"blank conclusion": `{"phase_id":"context","outcome":"confirmed","conclusion":{"summary":"  ","evidence":["go.mod:3"],"approach":"read"}}`,
+	} {
+		useGateEnv(t)
+		startFixRun(t, shared.BudgetLimits{})
+		code, stderr := gateSubmit(t, "tu-ps-1", args)
+		if code != 0 {
+			t.Fatalf("%s: exit %d, want 0 — the submission itself is valid (stderr: %q)", name, code, stderr)
+		}
+		after := reloadRun(t, "run-1")
+		if after.Status != shared.StatusWaitUser || after.CurrentCheckpoint() == nil || after.CurrentCheckpoint().Decided {
+			t.Errorf("%s: a confirmed claim without real evidence/conclusion must stay with the user — got %s / %+v", name, after.Status, after.CurrentCheckpoint())
+		}
+		if n := countType(readGateTrace(t, "run-1"), shared.EventCheckpointAuto); n != 0 {
+			t.Errorf("%s: checkpoint.auto events = %d, want 0", name, n)
+		}
+	}
+}

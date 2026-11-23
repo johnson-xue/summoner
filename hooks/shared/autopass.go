@@ -18,9 +18,10 @@ package shared
 //
 // An auto-pass is never a shortcut around a decision the user owns:
 //
-//   - the submission must be CONFIRMED on evidence — an unclear or failed
-//     self-report, or one contradicted by a FAIL among its own mechanical
-//     checks, owes the human gate;
+//   - the submission must be CONFIRMED, state a conclusion, and carry real
+//     evidence — an unclear or failed self-report, blank items, or one
+//     contradicted by a FAIL among its own mechanical checks, owes the human
+//     gate; a checkpoint the user has already SEEN is theirs to decide;
 //   - no budget question may ride the checkpoint (an extension offer) and
 //     the budget must not read exhausted — passing would swallow the user's
 //     budget decision and drop the run back into "exhausted, cannot work";
@@ -62,10 +63,14 @@ func AutoPassBlocker(run *RunState, cp CheckpointState, checkFailed bool) string
 		return fmt.Sprintf("only a phase-submit checkpoint can auto-pass (kind %s)", cp.Kind)
 	case !AutoPassablePhase(cp.PhaseID):
 		return fmt.Sprintf("phase %s owes the human gate (only context, reproduce, verify and regression may auto-pass)", cp.PhaseID)
+	case cp.Displayed:
+		return "the checkpoint was already displayed — the user has seen it, so the decision is theirs"
 	case cp.Outcome != ConclusionConfirmed:
 		return fmt.Sprintf("the submission is not confirmed (outcome %q)", cp.Outcome)
-	case cp.Conclusion == nil || len(cp.Conclusion.Evidence) == 0:
-		return "a confirmed submission needs evidence to auto-pass"
+	case cp.Conclusion == nil || strings.TrimSpace(cp.Conclusion.Summary) == "":
+		return "a confirmed submission needs a stated conclusion to auto-pass"
+	case !hasRealEvidence(cp.Conclusion.Evidence):
+		return "a confirmed submission needs evidence to auto-pass (at least one non-blank item)"
 	case len(cp.Conclusion.OpenQuestions) > 0:
 		return "the conclusion lists open questions"
 	case cp.ExtendAsk != nil:
@@ -76,7 +81,54 @@ func AutoPassBlocker(run *RunState, cp CheckpointState, checkFailed bool) string
 	if exhausted, why := run.BudgetExhausted(); exhausted {
 		return "the budget is exhausted (" + why + ")"
 	}
+	if routeCompleteAfter(run, cp.PhaseID) {
+		return "nothing follows on the route — an auto-pass would leave the run with no checkpoint to decide from"
+	}
 	return ""
+}
+
+// hasRealEvidence reports whether at least one evidence item says something.
+// A blank item is not evidence: `evidence: [""]` is a confirmed claim with
+// nothing behind it (ship review round 1).
+func hasRealEvidence(items []string) bool {
+	for _, it := range items {
+		if strings.TrimSpace(it) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// routeCompleteAfter reports whether nothing would be owed on the route once
+// phaseID settles — no shipped route ends with an auto-passable phase, so an
+// auto-pass there would strand the run ACTIVE with no checkpoint to offer
+// done or stop from. An unknown route counts as complete: nothing may be
+// assumed about it.
+func routeCompleteAfter(run *RunState, phaseID string) bool {
+	seq, err := WorkflowPhases(run.Workflow)
+	if err != nil {
+		return true
+	}
+	for _, id := range seq {
+		if id == phaseID {
+			continue // the passing phase counts as settled
+		}
+		var last *PhaseState
+		for i := range run.Phases {
+			if run.Phases[i].ID == id {
+				last = &run.Phases[i]
+			}
+		}
+		if last == nil {
+			return false
+		}
+		switch last.Outcome {
+		case "accepted", "skipped":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // AutoPassCheckpoint accepts the CURRENT open phase checkpoint without a
@@ -84,8 +136,8 @@ func AutoPassBlocker(run *RunState, cp CheckpointState, checkFailed bool) string
 // kept: it is marked decided with DecisionAutoPass (no tool_use_id — no
 // platform answer exists), the phase is frozen into the acceptance view with
 // the framework as the accepting actor, and the next visit's budget bucket
-// is authorized exactly as a CONTINUE authorizes it. AutoPassNudgeFor is set
-// so the Stop hook can nudge the model on once (see AutoPassNudgePending).
+// is authorized exactly as a CONTINUE authorizes it. ContinueNudgeFor is set
+// so the Stop hook can nudge the model on once (see ContinueNudgePending).
 //
 // Everything that owes the human gate is refused inside the commit and
 // leaves the state untouched: a non-current checkpoint, a phase outside the
@@ -111,30 +163,32 @@ func (r *RunState) AutoPassCheckpoint(checkpointID string, checkFailed bool) err
 		// pre-provider work charges the upcoming bucket; OpenPhase adopts.
 		s.newVisitBucket()
 		s.Status = StatusActive
-		s.AutoPassNudgeFor = cp.ID
+		s.ContinueNudgeFor = cp.ID
 		return nil
 	})
 }
 
-// ClearAutoPassNudge consumes the one-shot continuation cue (the Stop hook
-// calls it before nudging, so each auto-pass nudges at most once even if
+// ClearContinueNudge consumes the one-shot continuation cue (the Stop hook
+// calls it before nudging, so each continuation nudges at most once even if
 // the block is lost). Harmless when nothing is set.
-func (r *RunState) ClearAutoPassNudge() error {
+func (r *RunState) ClearContinueNudge() error {
 	return r.commit(func(s *RunState) error {
-		s.AutoPassNudgeFor = ""
+		s.ContinueNudgeFor = ""
 		return nil
 	})
 }
 
-// AutoPassNudgePending reports whether the run sits "right after" an
-// auto-pass with nothing started since: the cue is set, and the trace's
-// LAST lifecycle event (phase.* / checkpoint.*) is the checkpoint.auto it
-// names. Tool and check events do not count — after a submit there are
-// always tool.result and check.result lines, so "the auto is the last
-// event" could never hold — and a later phase.started ends it. An unreadable
-// trace is an error: the caller then nudges nothing (never a guess).
-func AutoPassNudgePending(run *RunState) (bool, error) {
-	if run.AutoPassNudgeFor == "" {
+// ContinueNudgePending reports whether the run sits "right after" a
+// decision that returned it to ACTIVE — the framework's auto-pass
+// (checkpoint.auto) or the user's continue / skip (checkpoint.decided) —
+// with nothing started since: the cue is set, and the trace's LAST
+// lifecycle event (phase.* / checkpoint.*) is that decision, naming the
+// cued checkpoint. Tool and check events do not count — after a submit or
+// an answer there are always tool.result lines — and a later phase.started
+// ends it (a recall opens its target phase at once). An unreadable trace is
+// an error: the caller then nudges nothing (never a guess).
+func ContinueNudgePending(run *RunState) (bool, error) {
+	if run.ContinueNudgeFor == "" {
 		return false, nil
 	}
 	evs, err := LoadRunEvents(run.RunID)
@@ -147,11 +201,11 @@ func AutoPassNudgePending(run *RunState) (bool, error) {
 			last = &evs[i]
 		}
 	}
-	if last == nil || last.Type != EventCheckpointAuto {
+	if last == nil || (last.Type != EventCheckpointAuto && last.Type != EventCheckpointDecided) {
 		return false, nil
 	}
 	id, _ := last.Payload["checkpoint_id"].(string)
-	return id == run.AutoPassNudgeFor, nil
+	return id == run.ContinueNudgeFor, nil
 }
 
 // isLifecycleEvent names the phase/checkpoint events that mark run

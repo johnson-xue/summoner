@@ -611,7 +611,13 @@ func CheckpointContentDigest(cp CheckpointState, requirementsVersion int) string
 	}
 	// 0.7.0 D1: the conclusion is display-bound content. Written only when
 	// something is there, so a pre-0.7.0 checkpoint keeps its digest.
-	if cp.Outcome != "" || cp.Conclusion != nil {
+	// Folded only when there is content to protect: a conclusion, or an
+	// outcome that claims something. `unclear` is the stored default of a
+	// conclusion-free submission — hashing it would change every such
+	// checkpoint's digest, and a checkpoint displayed under 0.7.0 would then
+	// be undecidable under 0.6.1, whose Stop hook never re-binds (ship
+	// review round 1).
+	if cp.Conclusion != nil || (cp.Outcome != "" && cp.Outcome != ConclusionUnclear) {
 		if b, err := json.Marshal(cp.Conclusion); err == nil {
 			fmt.Fprintf(h, "outcome=%s\nconclusion=%s\n", cp.Outcome, b)
 		}
@@ -656,7 +662,7 @@ func (r *RunState) OpenPhase(id string) error {
 		}
 		// 0.7.0 D3: the next phase opened — an auto-pass's continuation cue
 		// is spent.
-		s.AutoPassNudgeFor = ""
+		s.ContinueNudgeFor = ""
 		return nil
 	})
 }
@@ -1506,6 +1512,9 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 			// pre-provider work charges the upcoming bucket; OpenPhase adopts.
 			s.newVisitBucket()
 			s.Status = StatusActive
+			// 0.7.0 (ship review): the run is ACTIVE with nothing rendered —
+			// leave the cue the Stop hook's one-shot nudge keys on.
+			s.ContinueNudgeFor = cp.ID
 		}
 	case DecisionSkip:
 		// Recovery round C3: SKIP on a retry-pending review-result checkpoint
@@ -1529,6 +1538,7 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 		// the next visit's bucket (post-game skips never reach here).
 		s.newVisitBucket()
 		s.Status = StatusActive
+		s.ContinueNudgeFor = cp.ID // as CONTINUE: nothing is rendered next
 	case DecisionDone:
 		// M4 / spec §0 item 2 (ruling 72, controller QA-2): on a workflow
 		// WITH a fixed review phase, a DONE whose terminal ⑤ is unsettled
@@ -1661,6 +1671,9 @@ func (r *RunState) openRequirementChange(note string, position DevPosition) erro
 			PriorStatus:   s.Status,
 			SavedPosition: copyDevPosition(position),
 		}
+		// A change open right after a passed phase makes "go straight on to
+		// the next phase" false (OpenPhase refuses while it is open).
+		s.ContinueNudgeFor = ""
 		return nil
 	})
 }
@@ -2146,6 +2159,7 @@ func (s *RunState) skipReviewRetry(cp *CheckpointState) error {
 	// Work resumes: the next visit's bucket is authorized (I1 semantics).
 	s.newVisitBucket()
 	s.Status = StatusActive
+	s.ContinueNudgeFor = cp.ID // work resumes with nothing rendered next
 	return nil
 }
 
