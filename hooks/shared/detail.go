@@ -141,7 +141,7 @@ func CheckpointDetail(run *RunState, cp CheckpointState) string {
 // spelled out, so the checkpoint message itself carries no model-facing
 // text.
 func DecisionAskInstruction(cp CheckpointState) string {
-	return "paste the checkpoint message (an explanation may precede it) and END the turn — the Stop hook binds the display and hands back the exact question; raise it with ONE AskUserQuestion whose question carries nonce " + cp.Nonce +
+	return "paste the checkpoint message (an explanation may precede it) and end the turn right here — the end-of-turn hook binds the display and hands back the exact question; raise it with ONE AskUserQuestion whose question carries nonce " + cp.Nonce +
 		" and whose options equal page 1's labels verbatim (more:/back: navigate pages — never an option)."
 }
 

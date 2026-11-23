@@ -23,9 +23,11 @@
 // the counter; cap exhaustion degrades to "turn ends, run state kept", which
 // is exactly the stop-asymmetry contract: state is NEVER deleted here, and
 // stopping must always remain possible:
-//   - an explicit stop/halt/abort acknowledgment (the documented marker list)
-//     allows the stop at an undisplayed checkpoint, and at a displayed one
-//     whose question was never asked, keeping state;
+//   - a stop acknowledgment (shared.IsStopAcknowledgment: judged over the
+//     model's OWN words — framework-rendered text never counts) allows the
+//     stop, keeping state. Lenient before the display; strict once the
+//     checkpoint is displayed and its question is owed — there a false hit
+//     is the stall and a miss costs one click on `stop:`;
 //   - OUTCOME_UNKNOWN entries are strictly retained (留档不清理) — the
 //     reconciliation debt outlives the turn;
 //   - NO mtime sweeping of v2 run state, EVER: a WAIT_USER run may legally
@@ -42,7 +44,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 
 	shared "github.com/johnson-xue/summoner/hooks/shared"
@@ -54,31 +55,6 @@ const stopSource = "stop"
 // Platform event name (ruling 2). Empty is tolerated — the field is common
 // but not guaranteed on every payload generation.
 const eventStop = "Stop"
-
-// stopAckRe is the DOCUMENTED stop-acknowledgment marker list (ruling 3): an
-// explicit stop/halt/abort (English inflections or Chinese 停止/终止) as the
-// dominant intent of last_assistant_message. Stopping must always be possible
-// (§1.6), so a match allows the stop without the render block; the cost of a
-// wrong guess is bounded by the 8-block cap on the opposite error. The regex
-// alone is NOT the ack test — see stopAck: every rendered decision menu
-// contains a "stop: …" line, so the canonical labels are stripped first (T16
-// carry from T10: a full status render must never satisfy the ack).
-var stopAckRe = regexp.MustCompile(`(?i)\b(?:stop(?:ped|ping)?|halt(?:ed|ing)?|abort(?:ed|ing)?)\b|停止|终止`)
-
-// stopAck reports an explicit stop acknowledgment in the message OUTSIDE the
-// canonical decision-menu labels: each label of the pending checkpoint's kind
-// (e.g. "stop: 停止——保留状态退出") is removed before the marker regex runs,
-// so pasting the full render — the display act — can never pose as an ack
-// and skip display binding. A genuine acknowledgment ("Stopped as you
-// asked.") survives the strip untouched.
-func stopAck(msg string, cp *shared.CheckpointState) bool {
-	if cp != nil {
-		for _, label := range shared.DecisionMenuLabels(cp.Kind) {
-			msg = strings.ReplaceAll(msg, label, "")
-		}
-	}
-	return stopAckRe.MatchString(msg)
-}
 
 // stopInput is the parsed Stop payload: exactly the typed fields the hook
 // needs (ruling 2). stop_hook_active is carried for documentation — this hook
@@ -202,7 +178,7 @@ func runStop(stdin io.Reader, outW, errW io.Writer) int {
 	// POST_GAME_PENDING …): allow, keep state. A non-emergency stop of a live
 	// run owes the post-game review — remind, delete nothing (the mandatory
 	// questionnaire wiring itself lands in T8/T13).
-	if !stopAck(in.LastAssistantMessage, run.CurrentCheckpoint()) {
+	if !shared.IsStopAcknowledgment(run, run.CurrentCheckpoint(), in.LastAssistantMessage, false) {
 		fmt.Fprintf(errW, "\n⚡ Summoner: run %s is still %s (not CLOSED) — the post-game review is still owed; run state was kept and can be resumed in a later session.\n\n",
 			run.RunID, run.Status)
 	}
@@ -257,39 +233,49 @@ func markDanglingIntents(run *shared.RunState, in *stopInput, errW io.Writer) {
 //   - UNDISPLAYED checkpoint: a message that carries the canonical block
 //     (shared.VerifyDisplayContainment — an explanation may precede it and
 //     the tail may differ) IS the display act: the hook binds it and BLOCKS
-//     with the exact decision question to raise. Without the block, an
-//     explicit stop acknowledgment ends the turn with state kept; anything
-//     else is blocked with the demand to render.
-//   - DISPLAYED and undecided: the question is owed now. A stop
-//     acknowledgment still ends the turn (stopping is always possible);
-//     every other sign-off is blocked with the same question.
+//     with the exact decision question to raise. Without the block, a stop
+//     acknowledgment ends the turn with state kept (shared.
+//     IsStopAcknowledgment, lenient: an explicit "as you asked" stop, or a
+//     short bare one); anything else is blocked with the demand to render.
+//   - DISPLAYED and undecided: the question is owed now. Only an explicit
+//     acknowledgment of the USER'S stop request ends the turn (the strict
+//     strength); every other sign-off is blocked with the same question —
+//     whose `stop:` label is the recorded way to stop.
 //
-// The containment test runs BEFORE the stop-ack test: a pasted block is the
-// display act whatever words the explanation around it uses ("先停止服务再
-// 复现" is not a request to halt the run). Before 0.7.0 the hook allowed the
-// stop right after binding — a model that pasted the checkpoint and ended
-// its turn left the user with a dialog that never came (run df0ed2e6 waited
-// 62 minutes on exactly that). Each block demands one tool call, and every
-// tool call resets the platform's consecutive-block counter.
+// The containment test runs BEFORE the stop test: a pasted block is the
+// display act whatever words the explanation around it uses. And the stop
+// test runs over the model's OWN words only — the framework's (the
+// checkpoint's conclusion says 停止 whenever a service does) never count.
+// Before 0.7.0 the hook allowed the stop right after binding — a model that
+// pasted the checkpoint and ended its turn left the user with a dialog that
+// never came (run df0ed2e6 waited 62 minutes on exactly that). Each block
+// demands one tool call, and every tool call resets the platform's
+// consecutive-block counter.
 func waitUserStop(run *shared.RunState, in *stopInput, outW, errW io.Writer) int {
 	cp := run.CurrentCheckpoint()
 	if cp == nil {
 		return 0 // WAIT_USER with nothing owed
 	}
-	if !cp.Displayed {
+	// A displayed checkpoint whose content no longer matches its binding is
+	// as good as undisplayed: the reducer refuses every answer against a
+	// drifted binding, and nothing but a fresh display act re-binds — without
+	// this the checkpoint could never be decided again.
+	bound := cp.Displayed && cp.DisplayDigest == shared.CheckpointContentDigest(*cp, run.RequirementsVersion)
+	extras := []string{renderReason(cp, run), askReason(cp, run)}
+	if !bound {
 		if shared.VerifyDisplayContainment(run, *cp, in.LastAssistantMessage) {
 			return bindDisplay(run, cp, in, outW, errW)
 		}
-		if stopAck(in.LastAssistantMessage, cp) {
+		if shared.IsStopAcknowledgment(run, cp, in.LastAssistantMessage, false, extras...) {
 			return 0 // explicit stop signal: allow, keep state, emit nothing
 		}
-		emitRenderBlock(outW, cp, run)
+		emitBlock(outW, renderReason(cp, run))
 		return 0
 	}
-	if stopAck(in.LastAssistantMessage, cp) {
-		return 0 // stopping stays possible at a displayed checkpoint
+	if shared.IsStopAcknowledgment(run, cp, in.LastAssistantMessage, true, extras...) {
+		return 0 // the user asked to stop and the model said so; state kept
 	}
-	emitAskBlock(outW, cp, run)
+	emitBlock(outW, askReason(cp, run))
 	return 0
 }
 
@@ -312,7 +298,7 @@ func nudgeAfterAutoPass(run *shared.RunState, in *stopInput, outW, errW io.Write
 		fmt.Fprintf(errW, "summoner stop: auto-pass nudge skipped — trace unreadable: %v\n", err)
 		return false
 	}
-	if !pending || stopAck(in.LastAssistantMessage, nil) {
+	if !pending || shared.IsStopAcknowledgment(run, nil, in.LastAssistantMessage, false) {
 		return false
 	}
 	passed, cue := "", run.AutoPassNudgeFor
@@ -343,7 +329,7 @@ func nudgeAfterAutoPass(run *shared.RunState, in *stopInput, outW, errW io.Write
 func bindDisplay(run *shared.RunState, cp *shared.CheckpointState, in *stopInput, outW, errW io.Writer) int {
 	if err := run.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(*cp, run.RequirementsVersion)); err != nil {
 		fmt.Fprintf(errW, "summoner stop: binding display of checkpoint %s failed (state unchanged): %v\n", cp.ID, err)
-		emitRenderBlock(outW, cp, run)
+		emitBlock(outW, renderReason(cp, run))
 		return 0
 	}
 	if err := shared.AppendEvent(run.RunID, in.SessionID, shared.TraceEvent{
@@ -355,7 +341,7 @@ func bindDisplay(run *shared.RunState, cp *shared.CheckpointState, in *stopInput
 		// trace is evidence. Warn and continue rather than hard-fail the turn.
 		fmt.Fprintf(errW, "summoner stop: checkpoint.displayed trace append failed (display binding kept): %v\n", err)
 	}
-	emitAskBlock(outW, cp, run)
+	emitBlock(outW, askReason(cp, run))
 	return 0
 }
 
@@ -372,35 +358,40 @@ func emitBlock(outW io.Writer, reason string) {
 	}
 }
 
-// emitRenderBlock demands the canonical render of THIS checkpoint (obtainable
+// renderReason demands the canonical render of THIS checkpoint (obtainable
 // byte-exact from `summoner-status` view:checkpoint). The message only has
 // to CONTAIN the block: an explanation may precede it and the tail line may
 // differ.
-func emitRenderBlock(outW io.Writer, cp *shared.CheckpointState, run *shared.RunState) {
+func renderReason(cp *shared.CheckpointState, run *shared.RunState) string {
 	reason := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的规范消息后再结束：消息中须完整包含该规范块（summoner-status view:checkpoint 提供逐字节原文；可在块前写解释，尾行 ╚ 长短不限）", cp.ID, cp.Nonce)
 	if n := unresolvedOutcomes(run); n > 0 {
 		reason += fmt.Sprintf("；另有 %d 项 OUTCOME_UNKNOWN 待对账", n)
 	}
-	emitBlock(outW, reason)
+	return reason
 }
 
-// emitAskBlock hands back the exact decision question of a BOUND checkpoint:
-// the nonce for the question text and page 1's labels verbatim — the gate
-// admits nothing else — plus the one ride the answer may carry. The labels
-// come from the persisted page, never from memory: a hand-paraphrased label
-// is the most common rejected ask.
-func emitAskBlock(outW io.Writer, cp *shared.CheckpointState, run *shared.RunState) {
+// askReason is the exact decision question of a BOUND checkpoint: the nonce
+// for the question text and page 1's labels verbatim — the gate admits
+// nothing else — plus the one ride the answer may carry. The labels come
+// from the persisted page, never from memory: a hand-paraphrased label is
+// the most common rejected ask. The paging cue appears only when a second
+// page exists.
+func askReason(cp *shared.CheckpointState, run *shared.RunState) string {
 	page := shared.DecisionPage(*cp)
 	var b strings.Builder
 	fmt.Fprintf(&b, "检查点 %s（nonce %s）已展示并绑定。现在用 AskUserQuestion 发起裁决——题干带 nonce %s，选项 = 第 1 页 %d 个标签逐字：\n", cp.ID, cp.Nonce, cp.Nonce, len(page))
 	for _, label := range page {
 		fmt.Fprintf(&b, "  - %s\n", label)
 	}
-	b.WriteString("用户回复 more: 时用下一页标签重问（全部页见 summoner-status）；不必重复粘贴渲染。")
+	if len(cp.MenuPages) > 1 {
+		b.WriteString("用户回复 more: 时用下一页标签重问（全部页见 summoner-status）；不必重复粘贴渲染。")
+	} else {
+		b.WriteString("选项已全部列出；不必重复粘贴渲染。")
+	}
 	if cp.ExtendAsk != nil {
 		fmt.Fprintf(&b, "\n预算已耗尽：同一调用再附带一道不带 nonce 的追加题，选项恰为：%s / %s。", cp.ExtendAsk.ExtendLabel, cp.ExtendAsk.HoldLabel)
 	}
-	emitBlock(outW, b.String())
+	return b.String()
 }
 
 // unresolvedOutcomes counts OUTCOME_UNKNOWN entries still awaiting their
