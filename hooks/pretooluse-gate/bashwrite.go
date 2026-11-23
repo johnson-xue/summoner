@@ -689,8 +689,6 @@ func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) 
 		return inlineCodeRule(verb, args, stdinLive)
 	case verb == "unzip":
 		return unzipRule(args)
-	case verb == "make":
-		return makeRule(args)
 	case shellNames[verb]:
 		if syntaxCheckOnly(args) {
 			return "" // -n parses without running anything
@@ -1506,18 +1504,6 @@ func unzipRule(args []string) string {
 		}
 	}
 	return "write-class verb: unzip"
-}
-
-// makeRule: planning and printing forms run nothing (-n -q -p); every other
-// form builds (the D5.5 ruling: make is a write-class verb).
-func makeRule(args []string) string {
-	for _, a := range args {
-		switch a {
-		case "-n", "--dry-run", "--just-print", "--question", "-q", "-p", "--print-database":
-			return ""
-		}
-	}
-	return "write-class verb: make"
 }
 
 // syntaxCheckOnly: `bash -n file` parses the file without running anything.

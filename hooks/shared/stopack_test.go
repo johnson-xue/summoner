@@ -163,6 +163,10 @@ func TestStopAcknowledgmentPhrasings(t *testing.T) {
 		"已按你的要求结束了本次工作。",
 		"已按您的要求停止了本次工作流。",
 		"按要求停止。",
+		"按照你的要求，已停止。",
+		"按照您的要求，已停止本次工作。",
+		"I stopped because you asked me to.",
+		"Stopped upon your request.",
 	}
 	for _, msg := range allowed {
 		if !IsStopAcknowledgment(run, nil, msg, true) {
@@ -183,6 +187,12 @@ func TestStopAcknowledgmentPhrasings(t *testing.T) {
 		"根因找到了：握手超时后服务停止。",
 		"确认根因：SubTask 为空时调用 abort。",
 		"The run is stopped.",
+		// The broad status words never end a turn on their own: these are
+		// sign-offs of finished work, not stops (ship review round 3).
+		"上下文收集结束。",
+		"第一阶段结束。",
+		"第一轮结束，等待你的反馈。",
+		"已中止。",
 	} {
 		if IsStopAcknowledgment(run, nil, msg, false) {
 			t.Errorf("lenient: %q is content, not a stop", msg)

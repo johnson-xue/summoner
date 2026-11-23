@@ -49,21 +49,26 @@ import (
 )
 
 var (
-	// stopWordRe is the stop/halt/abort marker list (English inflections or
-	// Chinese 停止/终止/中止/结束/停下). The Chinese verbs beyond 停止/终止
-	// are what natural acknowledgments use ("已按你的要求结束了本次工作") —
-	// their breadth is bounded by the request tie (strict) and the
-	// edge-and-brevity rule (lenient).
+	// stopWordRe is the broad marker list (English inflections or Chinese
+	// 停止/终止/中止/结束/停下). It only gates the REQUEST-TIED form: 结束 /
+	// 中止 / 停下 are what natural acknowledgments use ("已按你的要求结束了
+	// 本次工作"), and they are also ordinary status words ("上下文收集结束。").
+	// The broad set must never end a turn on its own (ship review round 3:
+	// it did, and the checkpoint was never shown).
 	stopWordRe = regexp.MustCompile(`(?i)\b(?:stop(?:ped|ping)?|halt(?:ed|ing)?|abort(?:ed|ing)?)\b|停止|终止|中止|结束|停下`)
+
+	// bareStopWordRe is the narrow list a BARE stop may use: 停止 / 终止 and
+	// stop / halt / abort, bounded by the edge-and-brevity rule.
+	bareStopWordRe = regexp.MustCompile(`(?i)\b(?:stop(?:ped|ping)?|halt(?:ed|ing)?|abort(?:ed|ing)?)\b|停止|终止`)
 
 	// stopRequestRe ties a stop word to the USER'S request in the same
 	// clause, in either order, in Chinese or English. The request marker
 	// must sit right next to the stop word ("按要求排查…服务停止" is
 	// content: too many words in between).
-	stopRequestRe = regexp.MustCompile(`(?i)(?:按要求|按你的要求|按您的要求|按你要求|按您要求|按你的指示|按您的指示|按你指示|按您指示|遵照你(?:的)?(?:要求|指示)|遵照您(?:的)?(?:要求|指示)|依照你(?:的)?(?:要求|指示)|依照您(?:的)?(?:要求|指示)|遵从你(?:的)?(?:要求|指示)|根据你的(?:要求|指示)|根据您的(?:要求|指示)|应你要求|应您要求|(?:你|您|用户)(?:要求|让|叫|希望|要)(?:我|我们)?)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,6}(?:停止|终止|中止|结束|停下)` +
-		`|(?:停止|终止|中止|结束|停下)了?[^。\n]{0,8}(?:按|遵照|依照|遵从|根据)(?:你|您|用户)的?(?:要求|指示)` +
+	stopRequestRe = regexp.MustCompile(`(?i)(?:按要求|按照要求|按你的要求|按您的要求|按你要求|按您要求|按你的指示|按您的指示|按你指示|按您指示|按照你(?:的)?(?:要求|指示)|按照您(?:的)?(?:要求|指示)|遵照你(?:的)?(?:要求|指示)|遵照您(?:的)?(?:要求|指示)|依照你(?:的)?(?:要求|指示)|依照您(?:的)?(?:要求|指示)|遵从你(?:的)?(?:要求|指示)|根据你的(?:要求|指示)|根据您的(?:要求|指示)|(?:应|依)(?:照)?(?:你|您)(?:的)?(?:要求|指示)|应你要求|应您要求|(?:你|您|用户)(?:要求|让|叫|希望|要)(?:我|我们)?)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,6}(?:停止|终止|中止|结束|停下)` +
+		`|(?:停止|终止|中止|结束|停下)了?[^。\n]{0,8}(?:按照|按|遵照|依照|遵从|根据|应|依)(?:照)?(?:你|您|用户)(?:的)?(?:要求|指示)` +
 		`|\b(?:as|per|at|on|upon|since)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction|direction)[^.!?\n]{0,30}\b(?:stop|halt|abort)` +
-		`|\b(?:stop|halt|abort)(?:ped|ping|ed|ing)?\b[^.!?\n]{0,24}?\b(?:as|per|at|since)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction)` +
+		`|\b(?:stop|halt|abort)(?:ped|ping|ed|ing)?\b[^.!?\n]{0,24}?\b(?:as|per|at|on|upon|since|because)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction)` +
 		`|\b(?:you|the\s+user)\s+(?:asked|requested|told|instructed|wanted)\s+me\s+to\s+(?:stop|halt|abort)`)
 
 	// optionTalkRe names the other decisions: a message that lists options
@@ -150,9 +155,10 @@ func IsStopAcknowledgment(run *RunState, cp *CheckpointState, message string, st
 		// content, not to the model's intent.
 		return false
 	}
-	// A bare stop is a short statement that BEGINS or ENDS with the stop
-	// word ("已停止。", "Halting now."): a stop word buried mid-sentence
-	// ("…服务在升级时停止响应的原因是…") is something being described.
+	// A bare stop is a short statement that BEGINS or ENDS with a NARROW
+	// stop word ("已停止。", "Halting now."): a stop word buried mid-sentence
+	// ("…服务在升级时停止响应的原因是…") is something being described, and
+	// the broad status words never qualify on their own.
 	authored = strings.TrimSpace(authored)
 	if utf8.RuneCountInString(authored) > stopAckBrevity {
 		return false
@@ -160,13 +166,13 @@ func IsStopAcknowledgment(run *RunState, cp *CheckpointState, message string, st
 	return stopWordAtEdge(authored)
 }
 
-// stopWordAtEdge reports a bare stop: the stop word opens the statement (a
-// short lead-in like "好的，" or "I will" may precede it) or closes it (a
-// short English tail like "here." may follow). A stop word with an object
-// after it ("…停止响应。") or buried mid-sentence is something being
-// described, not a stop.
+// stopWordAtEdge reports a bare stop: the narrow stop word opens the
+// statement (a short lead-in like "好的，" or "I will" may precede it) or
+// closes it (a short English tail like "here." may follow). A stop word with
+// an object after it ("…停止响应。") or buried mid-sentence is something
+// being described, not a stop.
 func stopWordAtEdge(s string) bool {
-	for _, loc := range stopWordRe.FindAllStringIndex(s, -1) {
+	for _, loc := range bareStopWordRe.FindAllStringIndex(s, -1) {
 		if leadIn(s[:loc[0]]) {
 			return true
 		}

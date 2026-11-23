@@ -69,7 +69,10 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"read", "python3 -m pip list"},
 		{"read", "unzip -l x.zip"},
 		{"read", "unzip -p x.zip path"},
-		{"read", "make -n test"},
+		// make stays write-class in every form: GNU make runs $(shell …)
+		// while PARSING, so even -n can execute a command (ship review r3).
+		{"write", "make -n test"},
+		{"write", "make --dry-run test"},
 		{"read", "bash -n script.sh"},
 		{"read", "go tool nm ./bin/x"},
 		{"read", "git --git-dir=\"$(pwd)/.git\" status"},
