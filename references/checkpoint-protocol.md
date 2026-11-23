@@ -263,12 +263,31 @@ After the display is bound, ask ONE question:
 | RECOVERY | continue, recall, stop |
 | REVIEW_RESULT | the full PHASE set — the note text (verdict) guides which options make sense |
 
-### Content feedback (do NOT misread as advancement)
+### Rejected answers are visible (0.7.0) and content feedback
 
-Any reply that is not an option choice is content feedback: handle it in the
-current phase (revise the work or the submission), then re-render the
-checkpoint and re-ask. Keyword cues: 方案/方向/漏了/不对/应该/边界/错了 (CN),
-wrong/misses/should/redo (EN). When in doubt, re-ask — never advance.
+A decision attempt that fails validation is `checkpoint.decision_rejected`
+(nothing recorded) — and PostToolUse answers it with a **block** the model
+reads: the reason, what the same callback already changed (a recorded drop,
+an applied extension — those are not rolled back; never re-ask a settled
+extend, it would extend twice), and the legal next step at the checkpoint.
+The whole stdout is that one JSON object; a recorded decision writes
+nothing.
+
+Any reply that is not an option choice is content feedback — the user typed
+words. Text never advances the run. While the run waits, the phase is closed
+and writes are denied, so only these moves exist, and the block names them:
+
+1. **It is a request** — do the read-only investigation it asks for (Read /
+   Grep / LSP / read-only Bash), report the conclusion, then re-ask the
+   decision question exactly (nonce + page 1's labels).
+2. **The direction is wrong** — the user chooses `recall:` to reopen the
+   phase (offered at phase / review-result / recovery checkpoints).
+3. **The requirement itself moved** — `Skill(summoner:change)` (open →
+   apply → accept).
+4. **None of these** — only the user's `stop:` ends it (state kept).
+
+Keyword cues: 方案/方向/漏了/不对/应该/边界/错了 (CN), wrong/misses/should/redo
+(EN). When in doubt, re-ask — never advance.
 
 ### Drop ride-along questions (per-id criteria drops)
 

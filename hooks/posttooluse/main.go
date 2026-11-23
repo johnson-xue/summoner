@@ -14,7 +14,10 @@
 // a denial but a surfaced error, used ONLY for fail-closed conditions —
 // unparseable input, ambiguous run state and trace-write failures. A decision
 // attempt that fails validation is NOT a hook error: it is a
-// checkpoint.decision_rejected trace event and exit 0 (no decision written).
+// checkpoint.decision_rejected trace event, exit 0, no decision written —
+// and since 0.7.0 a stdout block decision that makes the rejection VISIBLE
+// to the model (rejection.go: reason, what the callback already changed,
+// and the legal next step).
 //
 // Non-Summoner sessions stay untouched: with zero non-CLOSED runs the hook is
 // a pure pass-through (exit 0, no state change, no trace). The un-brick path
@@ -65,7 +68,7 @@ const (
 )
 
 func main() {
-	os.Exit(runHook(os.Stdin, os.Stderr))
+	os.Exit(runHook(os.Stdin, os.Stdout, os.Stderr))
 }
 
 // hookInput is the parsed payload of either event: generic decoding with
@@ -118,7 +121,7 @@ func parseInput(r io.Reader) (*hookInput, error) {
 
 // runHook is the whole hook. Returns the process exit code: 0 recorded (or
 // pass-through), 2 fail-closed error surfaced to the platform.
-func runHook(stdin io.Reader, errW io.Writer) int {
+func runHook(stdin io.Reader, outW, errW io.Writer) int {
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner posttooluse: unreadable hook input — fail-closed: %v\n", err)
@@ -190,7 +193,7 @@ func runHook(stdin io.Reader, errW io.Writer) int {
 	if in.EventName == eventPostToolUseFailure {
 		return recordFailure(run, in, errW)
 	}
-	return recordResult(run, in, errW)
+	return recordResult(run, in, outW, errW)
 }
 
 // liveRuns filters out CLOSED runs — a closed run is not enforced or recorded.
@@ -234,7 +237,7 @@ func appendTrace(run *shared.RunState, in *hookInput, ev shared.TraceEvent, errW
 // forged wrapper line in an ordinary command's output is never observed) and
 // the L2 check execution's outcome (pairing re-verified, exit observed, honest
 // BLOCKED when either cannot be established).
-func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
+func recordResult(run *shared.RunState, in *hookInput, outW, errW io.Writer) int {
 	if run.Status == shared.StatusPostGamePending {
 		if code := observePostGame(run, in, errW); code != 0 {
 			return code
@@ -242,7 +245,7 @@ func recordResult(run *shared.RunState, in *hookInput, errW io.Writer) int {
 	}
 	if in.ToolName == toolAskUserQuestion && run.Status == shared.StatusWaitUser {
 		if cp := run.CurrentCheckpoint(); cp != nil {
-			return recordDecisionAttempt(run, cp, in, errW)
+			return recordDecisionAttempt(run, cp, in, outW, errW)
 		}
 	}
 	resultPayload := map[string]interface{}{

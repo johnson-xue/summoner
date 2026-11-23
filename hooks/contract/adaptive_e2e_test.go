@@ -291,3 +291,74 @@ func TestAdaptiveAutoPassOverBinaries(t *testing.T) {
 		t.Fatalf("the gate scorer must report the auto-pass:\n%s", scored)
 	}
 }
+
+// TestAdaptiveRejectionIsVisibleOverBinaries — acceptance criterion 7 over
+// the real binary, in the incident's shape: the user types words into the
+// decision dialog instead of clicking an option. PostToolUse answers with a
+// block whose WHOLE stdout is one JSON object carrying the decision, the
+// user's words, the fact that nothing was recorded, the legal next step at
+// this checkpoint and the exact question to re-ask. A valid answer right
+// after is recorded and writes nothing to stdout.
+func TestAdaptiveRejectionIsVisibleOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-reject", "fix")
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun("run-reject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := *run.CurrentCheckpoint()
+	page := shared.DecisionPage(cp)
+	block := statusView(t, `{"session_id":"`+contractSession+`","view":"checkpoint"}`)
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, block), nil); code != 0 {
+		t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+
+	ask := func(id, answer string) (int, string, string) {
+		return runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
+			"hook_event_name": "PostToolUse",
+			"session_id":      contractSession,
+			"tool_name":       "AskUserQuestion",
+			"tool_use_id":     id,
+			"tool_input":      askQuestionInput(page, cp.Nonce),
+			"tool_response":   map[string]interface{}{"answers": map[string]interface{}{askQuestionText(cp.Nonce): answer}},
+		}), nil)
+	}
+
+	const typed = "为什么会禁用英雄，先解释"
+	code, stdout, stderr := ask("tu-ask-1", typed)
+	if code != 0 {
+		t.Fatalf("rejected decision: exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	var out struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil || out.Decision != "block" {
+		t.Fatalf("the rejection must be ONE JSON block object on stdout, got (err %v) %q", err, stdout)
+	}
+	for _, want := range append([]string{cp.Nonce, typed, "未记录", "未追加预算", "只读调查", "recall:", "summoner:change"}, page...) {
+		if !strings.Contains(out.Reason, want) {
+			t.Errorf("the block reason lost %q:\n%s", want, out.Reason)
+		}
+	}
+	run, err = shared.LoadRun("run-reject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != shared.StatusWaitUser || run.CurrentCheckpoint() == nil || run.CurrentCheckpoint().Decided {
+		t.Fatalf("a rejected decision must decide nothing: status %s", run.Status)
+	}
+
+	// The model follows the recipe: a valid answer lands, silently.
+	code, stdout, stderr = ask("tu-ask-2", page[0])
+	if code != 0 {
+		t.Fatalf("valid decision: exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("a recorded decision must write nothing to stdout, got %q", stdout)
+	}
+	if run, _ = shared.LoadRun("run-reject"); run.Status != shared.StatusActive {
+		t.Fatalf("status after a valid CONTINUE = %s, want ACTIVE", run.Status)
+	}
+}

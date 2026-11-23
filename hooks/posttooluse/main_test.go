@@ -64,9 +64,17 @@ func useHookEnv(t *testing.T) {
 // callHook runs the whole hook on a payload; returns (exit code, stderr).
 func callHook(t *testing.T, payload string) (int, string) {
 	t.Helper()
-	var stderr bytes.Buffer
-	code := runHook(strings.NewReader(payload), &stderr)
-	return code, stderr.String()
+	code, _, stderr := callHookOut(t, payload)
+	return code, stderr
+}
+
+// callHookOut also returns the hook's STDOUT — the channel a PostToolUse
+// block decision reaches the model on (0.7.0 D4).
+func callHookOut(t *testing.T, payload string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runHook(strings.NewReader(payload), &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
 }
 
 // --- fixtures -------------------------------------------------------------------
