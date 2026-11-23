@@ -42,9 +42,11 @@ package main
 //
 // Unbalanced input never fails: an unterminated quote, substitution or
 // heredoc simply runs to the end of the text — the conservative reading for
-// a classifier whose false negatives cost the iron law. The lexer is
-// linear in the length of the text: the gate runs it on every Bash call
-// with a ten-second budget.
+// a classifier whose false negatives cost the iron law. Flat text is linear
+// in its length (300 KB lexed in about 30 ms); nesting is bounded by
+// maxLexDepth — past it the lexer stops and the classifier answers write,
+// because recursion cost seconds and the gate runs on every Bash call with a
+// ten-second budget.
 
 import (
 	"strings"
@@ -121,13 +123,35 @@ type lexer struct {
 	pendingClose   int             // token index of the current word's last "$)" marker, -1 if none
 	awaitDelim     *pendingHeredoc // the next word is this heredoc's delimiter
 	pending        []pendingHeredoc
+	depth          int  // nesting level of this text (see maxLexDepth)
+	arithContext   bool // arithmetic text: its words are numbers, not commands
 }
 
+// maxLexDepth bounds substitution / arithmetic / conditional nesting. Text
+// nested deeper is answered by the lex-stop marker (write): 8k-deep nesting
+// took 2.6 s before the cap, and a hook that hangs is worse than one that
+// over-blocks.
+const maxLexDepth = 64
+
 // lexShell tokenizes one shell command text.
-func lexShell(src string) []shTok {
-	l := &lexer{r: []rune(src), pendingClose: -1}
+func lexShell(src string) []shTok { return lexShellAt(src, 0) }
+
+// lexShellAt tokenizes nested text, carrying the nesting depth.
+func lexShellAt(src string, depth int) []shTok { return lexShellCtx(src, depth, false) }
+
+// lexShellCtx tokenizes nested text with the arithmetic-context flag: inside
+// $(( … )) a substitution's output is a number, not a command word.
+func lexShellCtx(src string, depth int, arith bool) []shTok {
+	l := &lexer{r: []rune(src), pendingClose: -1, depth: depth, arithContext: arith}
 	l.run()
 	return l.toks
+}
+
+// lexStop flushes and ends the text with the fail-closed marker.
+func (l *lexer) lexStop() {
+	l.flush()
+	l.toks = append(l.toks, shTok{kind: shOp, text: opLexStop})
+	l.i = len(l.r)
 }
 
 func (l *lexer) op(text string) { l.toks = append(l.toks, shTok{kind: shOp, text: text}) }
@@ -269,7 +293,7 @@ func (l *lexer) run() {
 				// only the command substitutions within it are live.
 				end := braceEnd(l.r, l.i+2)
 				l.put("${" + string(l.r[l.i+2:end]))
-				l.spliceLine(l.r[l.i+2 : end])
+				l.spliceLine(l.r[l.i+2:end], true)
 				if end < len(l.r) {
 					l.put("}")
 				}
@@ -459,19 +483,27 @@ func (l *lexer) run() {
 }
 
 // attachedAfter reports whether literal characters of the same word follow
-// the character at end (a quote closing the span is not one).
+// the substitution whose closing character is at end (a quote closing the
+// span is not one). It looks at end+1: inspecting the closing character
+// itself (always a boundary) split `$(pwd)/x` into a substitution word plus
+// a stray word (ship review round 2).
 func (l *lexer) attachedAfter(end int, dquote bool) bool {
-	if end >= len(l.r) {
+	next := end + 1
+	if next >= len(l.r) {
 		return false
 	}
-	if dquote && l.r[end] == '"' {
+	if dquote && l.r[next] == '"' {
 		return false
 	}
-	return !strings.ContainsRune(shBoundaries, l.r[end])
+	return !strings.ContainsRune(shBoundaries, l.r[next])
 }
 
 // substitution splices a $( … ) command substitution into the token stream.
 func (l *lexer) substitution(dquote bool) {
+	if l.depth >= maxLexDepth {
+		l.lexStop()
+		return
+	}
 	end := parenEnd(l.r, l.i+2) // index of the matching ')', or len
 	l.splice(string(l.r[l.i+2:end]), l.wordHasLiteral, l.attachedAfter(end, dquote))
 	l.i = end + 1
@@ -489,35 +521,50 @@ func (l *lexer) substitution(dquote bool) {
 // substitution" (ship review round 1).
 func (l *lexer) splice(inner string, attachedBefore, attachedAfter bool) {
 	openedByQuote := l.wordOpen && !l.wordHasLiteral
-	if openedByQuote {
+	bare := !l.wordOpen && !l.wordHasLiteral && !attachedBefore && !l.arithContext
+	switch {
+	case openedByQuote:
 		l.word.Reset()
 		l.wordOpen = false
 		l.wordHasLiteral = false
 		l.wordExpanded = false
-	} else {
+	case bare:
+		// A substitution that is a whole word of its own: bash splices its
+		// OUTPUT in as that word — `git -C $(pwd) push` has four words, not
+		// three. Emitting none made "push" the value of -C and the command
+		// read-only (ship review round 2). The word is expanded: an
+		// argument computed at run time, or, in command position, a
+		// program unknown until it runs.
+		l.flush()
+		l.toks = append(l.toks, shTok{kind: shWord, expanded: true})
+	default:
 		l.wordExpanded = true // the prefix of a word that continues with the substitution
 		l.flush()
 	}
 	l.toks = append(l.toks,
 		shTok{kind: shOp, text: opSubstOpen, attachedBefore: attachedBefore, attachedAfter: attachedAfter},
 		shTok{kind: shOp, text: ";"})
-	l.toks = append(l.toks, lexShell(inner)...)
+	l.toks = append(l.toks, lexShellAt(inner, l.depth+1)...)
 	l.toks = append(l.toks, shTok{kind: shOp, text: ";"},
 		shTok{kind: shOp, text: opSubstClose, attachedBefore: attachedBefore, attachedAfter: attachedAfter})
 	l.pendingClose = len(l.toks) - 1
 	l.wordOpen = attachedAfter || openedByQuote
 	l.wordHasLiteral = false
-	l.wordExpanded = true
+	l.wordExpanded = l.wordOpen // only a word the substitution continues is computed
 }
 
 // arithmetic splices the content of an arithmetic context into the token
 // stream, bracketed by the arithmetic markers. The word it belongs to is
 // computed at run time.
 func (l *lexer) arithmetic(inner string, attachedBefore, attachedAfter bool) {
+	if l.depth >= maxLexDepth {
+		l.lexStop()
+		return
+	}
 	openedByQuote := l.wordOpen && !l.wordHasLiteral
 	l.flush()
 	l.toks = append(l.toks, shTok{kind: shOp, text: opArithOpen}, shTok{kind: shOp, text: ";"})
-	l.toks = append(l.toks, lexShell(inner)...)
+	l.toks = append(l.toks, lexShellCtx(inner, l.depth+1, true)...)
 	l.toks = append(l.toks, shTok{kind: shOp, text: ";"}, shTok{kind: shOp, text: opArithClose})
 	l.wordOpen = attachedAfter || openedByQuote
 	l.wordHasLiteral = false
@@ -532,6 +579,10 @@ func (l *lexer) arithmetic(inner string, attachedBefore, attachedAfter bool) {
 // live. An unterminated conditional swallows the rest of the text, as a
 // syntax error would run nothing. Reports whether it consumed anything.
 func (l *lexer) conditional() bool {
+	if l.depth >= maxLexDepth {
+		l.lexStop()
+		return true
+	}
 	n := len(l.toks)
 	if n == 0 || l.toks[n-1].kind != shWord || l.toks[n-1].text != "[[" {
 		return false
@@ -548,7 +599,7 @@ func (l *lexer) conditional() bool {
 	}
 	end := condEnd(l.r, l.i)
 	l.op(";")
-	l.spliceLine(l.r[l.i:end])
+	l.spliceLine(l.r[l.i:end], true)
 	l.op(";")
 	if end < len(l.r) {
 		l.i = end + 2
@@ -628,7 +679,7 @@ func (l *lexer) heredocBody(h pendingHeredoc) {
 			l.i = end + 1 // past the delimiter's newline
 			return
 		}
-		l.spliceLine(line)
+		l.spliceLine(line, false)
 		if end >= len(l.r) {
 			l.i = end // unterminated body: it runs to the end of the text
 			return
@@ -637,10 +688,16 @@ func (l *lexer) heredocBody(h pendingHeredoc) {
 	}
 }
 
-// spliceLine lexes the command substitutions of one inert span (a heredoc
-// body, a conditional, a parameter expansion) into the token stream,
-// between break markers.
-func (l *lexer) spliceLine(line []rune) {
+// spliceLine lexes the live parts of one inert span (a heredoc body, a
+// conditional, a parameter expansion) into the token stream. Its
+// substitutions are marked attachedBefore: the span surrounds them, so they
+// are never a command word of their own (a heredoc line `Today is $(date)`
+// is an argument, not a command — before this marker the following command
+// read as "the substitution supplies it"). Arithmetic descendants are lexed
+// for their own substitutions (`$(( $(rm x) ))` is live), and in a
+// word-expansion span (procSub; not a heredoc body) process substitutions
+// run too: `[[ -e <(rm x) ]]`, `${x:-<(rm y)}`.
+func (l *lexer) spliceLine(line []rune, procSub bool) {
 	for k := 0; k < len(line); {
 		switch line[k] {
 		case '\\':
@@ -649,17 +706,55 @@ func (l *lexer) spliceLine(line []rune) {
 			if k+1 < len(line) && line[k+1] == '(' {
 				end := parenEnd(line, k+2)
 				if k+2 < len(line) && line[k+2] == '(' {
-					k = end + 1 // arithmetic expansion: inert
+					inner := line[k+3 : end]
+					if len(inner) > 0 && inner[len(inner)-1] == ')' {
+						inner = inner[:len(inner)-1]
+					}
+					l.spliceArith(inner)
+					k = end + 1
 					continue
 				}
-				l.splice(string(line[k+2:end]), false, false)
+				l.splice(string(line[k+2:end]), true, false)
 				k = end + 1
 			} else {
 				k++
 			}
 		case '`':
 			end := backtickEnd(line, k+1)
-			l.splice(string(line[k+1:end]), false, false)
+			l.splice(string(line[k+1:end]), true, false)
+			k = end + 1
+		case '<', '>':
+			if procSub && k+1 < len(line) && line[k+1] == '(' {
+				end := parenEnd(line, k+1)
+				l.splice(string(line[k+2:end]), true, false)
+				k = end + 1
+				continue
+			}
+			k++
+		default:
+			k++
+		}
+	}
+}
+
+// spliceArith lexes the command substitutions inside an arithmetic span:
+// its text is arithmetic, but $( … ) and `…` in it run as commands.
+func (l *lexer) spliceArith(inner []rune) {
+	for k := 0; k < len(inner); {
+		switch inner[k] {
+		case '\\':
+			k += 2
+		case '$':
+			if k+1 < len(inner) && inner[k+1] == '(' {
+				end := parenEnd(inner, k+2)
+				l.splice(string(inner[k+2:end]), true, false)
+				k = end + 1
+			} else {
+				k++
+			}
+		case '`':
+			end := backtickEnd(inner, k+1)
+			l.splice(string(inner[k+1:end]), true, false)
 			k = end + 1
 		default:
 			k++
