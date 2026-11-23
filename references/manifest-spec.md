@@ -25,7 +25,7 @@ selection, registry references and recomputed check-definition digests.
 | `project.name` | yes | Portable memory namespace: starts with a letter/digit, then letters/digits/dot/underscore/hyphen; no `..`. |
 | `phases` | yes | Non-empty map of phase id to capability. |
 | `check_registry` | no | Array of registered mechanical check definitions. |
-| `tool_scope` | no | Declared read-only tool bounds; `allowed_tools` names tools the gate admits as reads (below). |
+| `tool_scope` | no | Declared read-only tool bounds; `allowed_tools` names MCP tools the gate admits as reads during a live run (below). |
 | `suggested_budgets` | no | Positive-integer run limits, applied at run start without a confirmation question (0.6.1); omitted → unlimited. |
 
 Unknown fields are errors at every level. YAML must be one JSON-compatible
@@ -312,9 +312,21 @@ responsibility for their read-only behavior. Declarations are PER TOOL, never
 per server: a sibling tool on an allowed server stays denied until named
 itself. A tool that only rebuilds an external index (an MCP server's own
 `index_repository`, say) may be declared too — the declaration's only promise
-is that it does not write project files. LSP navigation and the harness's own
-read-only tools (WebFetch, WebSearch, the task list, monitors, …) are
-admitted without a declaration. Since 0.6.1 the hook input carries no tool
+is that it does not write project files. **The list admits MCP tools only**:
+an entry for a harness tool (`SendMessage`, `Monitor`, …) is ignored, so the
+list can never launder a denial past the gate.
+
+LSP navigation and a small set of harness tools are admitted without a
+declaration — WebFetch, WebSearch, TaskGet, TaskList, TodoWrite,
+ScheduleWakeup, ListAgents — each with a schema verified to carry no write,
+delegation, or process-control semantics. Every other harness tool stays
+denied during a live run, by name: `Monitor` (its `command` runs a shell —
+a bypass of the Bash ladder), `TaskStop` (kills background tasks, including
+write-class commands, with no OUTCOME_UNKNOWN record), `TaskCreate` /
+`TaskUpdate` (assignee semantics unverified — may address another agent),
+`SendMessage` (a cross-session channel), and the worktree/plan session
+switches. Admission to that set requires a schema review, not a
+harmless-sounding name. Since 0.6.1 the hook input carries no tool
 annotations, so a host-side `readOnlyHint` cannot substitute for the
 declaration. The declaration never widens anything else: modeled tools (Bash,
 Edit/Write, Agent, AskUserQuestion, …) route through their own admission

@@ -264,51 +264,69 @@ func decide(in *gateInput, run *shared.RunState) decision {
 		// denied the harness's own read-only tools and every undeclared MCP
 		// tool, forcing the model onto read-only Bash).
 		//
-		// A live run gates MUTATION. A tool that cannot touch project state is
-		// admitted with no declaration (harnessReadOnlyTools, plus LSP —
-		// first-party navigation). An MCP tool is NOT presumed read-only: the
-		// hook input carries only tool_name and tool_input, with no annotation
-		// channel, so the project's manifest tool_scope.allowed_tools is the
-		// only trusted declaration (user ruling 2026-11-23: 按清单声明). The
-		// gate still fails closed when the manifest cannot load.
+		// A live run gates MUTATION. A tool whose SCHEMA has no write,
+		// delegation, or process-control semantics is admitted with no
+		// declaration (harnessReadOnlyTools, plus LSP — first-party
+		// navigation). An MCP tool is NOT presumed read-only: the hook input
+		// carries only tool_name and tool_input, with no annotation channel, so
+		// the project's manifest tool_scope.allowed_tools is the only trusted
+		// declaration (user ruling 2026-11-23: 按清单声明). The gate still
+		// fails closed when the manifest cannot load.
 		// Modeled mutation tools never reach this path: their admission
 		// branches above run first, so neither the set nor a manifest entry can
 		// smuggle write access past Bash/Edit/Write/Agent/AskUserQuestion.
-		if in.ToolName == "LSP" || harnessReadOnlyTools[in.ToolName] || manifestDeclaresReadOnlyTool(in.ToolName) {
+		if in.ToolName == "LSP" || harnessReadOnlyTools[in.ToolName] || manifestDeclaresMCPTool(in.ToolName) {
 			return allow(nil)
 		}
+		if strings.HasPrefix(in.ToolName, "mcp__") {
+			return deny(fmt.Sprintf(
+				"Summoner gate: tool %q is not declared usable in this run — denied before any effect. It is not listed in this project's summoner.yaml. If it only reads (a code-search or memory server, say), declare it in summoner.yaml and reload:\n  tool_scope:\n    allowed_tools: [\"%s\"]\nAn undeclared tool may mutate, so it stays closed until the project declares it (the Phase 1 diagnosis freeze holds for MCP writes too).",
+				in.ToolName, in.ToolName))
+		}
 		return deny(fmt.Sprintf(
-			"Summoner gate: tool %q is not declared usable in this run — denied before any effect. It is neither a harness read-only tool nor listed in this project's summoner.yaml. If it only reads (an MCP code-search or memory server, say), add it to summoner.yaml and reload:\n  tool_scope:\n    allowed_tools: [\"%s\"]\nAn undeclared tool may mutate, so it stays closed until the project declares it (the Phase 1 diagnosis freeze holds for MCP writes too).",
-			in.ToolName, in.ToolName))
+			"Summoner gate: tool %q is denied during a live run — it is not on the harness's read-only set (membership requires a verified schema with no write, delegation, or process-control semantics; this tool's has not been verified, or has one). Do not declare it in summoner.yaml to get past this: finish or checkpoint the run first, or use the modeled channel for the same effect (a file change goes through Edit/Write; a command through Bash).",
+			in.ToolName))
 	}
 }
 
-// harnessReadOnlyTools are the harness's own tools that cannot mutate project
-// state: web reading, and bookkeeping that lives in the harness (the task
-// list, wakeups, monitors, agent listing). Admitted during a live run exactly
-// like Read/Grep. Deliberately NOT here: anything with write or delegation
-// semantics (Edit, Write, NotebookEdit, Agent, AskUserQuestion, Bash) — those
-// keep their modeled admission branches above. EnterWorktree/ExitPlanMode
-// and friends stay out until their effect on a live checkpoint is
-// characterized.
+// harnessReadOnlyTools are the harness's own tools admitted during a live run
+// without a declaration. Membership requires a VERIFIED schema: no field that
+// writes project state, addresses another agent, or starts/stops a process.
+// A harmless-sounding name is not evidence — Monitor ("watch") runs a shell
+// command, which made it a full Bash bypass (0.6.1 ship review, Critical).
+//
+// Admitted: WebFetch/WebSearch (GET-only reads), TaskGet/TaskList (task-list
+// reads), TodoWrite (the harness todo list), ScheduleWakeup (a timer — every
+// call it wakes still passes this gate), ListAgents (a listing).
+//
+// Deliberately DENIED here, pending a schema review: Monitor (runs a shell),
+// TaskStop (kills background tasks, including write-class commands, with no
+// OUTCOME_UNKNOWN record), TaskCreate/TaskUpdate (assignee semantics
+// unverified — may address an agent), SendMessage and the worktree/plan
+// session switches.
 var harnessReadOnlyTools = map[string]bool{
 	"WebFetch":       true,
 	"WebSearch":      true,
-	"TaskCreate":     true,
-	"TaskUpdate":     true,
 	"TaskGet":        true,
 	"TaskList":       true,
-	"TaskStop":       true,
 	"TodoWrite":      true,
-	"Monitor":        true,
 	"ScheduleWakeup": true,
 	"ListAgents":     true,
 }
 
-// manifestDeclaresReadOnlyTool reports whether the project's summoner.yaml
-// names the tool in tool_scope.allowed_tools. Fail-closed: an unloadable
-// manifest declares nothing.
-func manifestDeclaresReadOnlyTool(name string) bool {
+// mcpToolPrefix is the Claude Code MCP tool naming pattern, mcp__<server>__<tool>.
+const mcpToolPrefix = "mcp__"
+
+// manifestDeclaresMCPTool reports whether the project's summoner.yaml names
+// the tool in tool_scope.allowed_tools — and the tool is an MCP tool. The
+// declaration channel is closed to every other name: a manifest entry for a
+// harness tool (SendMessage, Monitor, …) would otherwise launder any denial
+// past the gate, since the denial recipe is exactly "declare it". Fail-closed:
+// an unloadable manifest declares nothing.
+func manifestDeclaresMCPTool(name string) bool {
+	if !strings.HasPrefix(name, mcpToolPrefix) {
+		return false
+	}
 	m, err := shared.LoadRuntimeManifest()
 	if err != nil || m == nil {
 		return false
