@@ -795,6 +795,8 @@ func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) 
 		return perlRule(args, stdinLive)
 	case verb == "sed":
 		return sedRule(args)
+	case formatterWriters[verb]:
+		return formatterRule(verb, args)
 	case verb == "ruby" || verb == "php" || verb == "lua":
 		return inlineCodeRule(verb, args, stdinLive)
 	case verb == "unzip":
@@ -813,6 +815,61 @@ func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) 
 	return ""
 }
 
+// formatterWriters are the code formatters and fixers a model runs by
+// reflex: with their write flag they rewrite the tree, and before the
+// posture panel every one of them read as an unknown verb (an UNMOTIVATED
+// edit — "just format it" — not a bypass).
+var formatterWriters = map[string]bool{
+	"prettier": true, "eslint": true, "ruff": true, "black": true, "golangci-lint": true, "isort": true, "tsc": true,
+}
+
+func formatterRule(verb string, args []string) string {
+	has := func(flags ...string) bool {
+		for _, a := range args {
+			for _, f := range flags {
+				if a == f || strings.HasPrefix(a, f+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch verb {
+	case "prettier":
+		if has("-w", "--write") {
+			return "prettier --write (rewrites files)"
+		}
+	case "eslint":
+		if has("--fix", "--fix-to-stdin") && !has("--fix-dry-run") {
+			return "eslint --fix (rewrites files)"
+		}
+	case "ruff":
+		if len(args) > 0 && args[0] == "format" && !has("--check", "--diff") {
+			return "ruff format (rewrites files)"
+		}
+		if len(args) > 0 && args[0] == "check" && has("--fix", "--unsafe-fixes", "--add-noqa") {
+			return "ruff check --fix (rewrites files)"
+		}
+	case "black":
+		if !has("--check", "--diff", "--version", "--help") {
+			return "black (rewrites files unless --check / --diff)"
+		}
+	case "golangci-lint":
+		if has("--fix") {
+			return "golangci-lint --fix (rewrites files)"
+		}
+	case "isort":
+		if !has("--check", "--diff", "--version", "--help") {
+			return "isort (rewrites imports unless --check / --diff)"
+		}
+	case "tsc":
+		if !has("--noEmit", "--version", "--help", "--showConfig", "--listFilesOnly", "--clean") {
+			return "tsc (emits files beside the sources unless --noEmit)"
+		}
+	}
+	return ""
+}
+
 // scanningWrapperRule judges the wrappers whose own options hide the real
 // command from a keyword-level reading — `timeout 5 make test`,
 // `nice -n 10 go run x`, `caffeinate -i make`: the command starts after an
@@ -823,7 +880,7 @@ func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) 
 func scanningWrapper(verb string) bool {
 	switch verb {
 	case "timeout", "nice", "watch", "time", "doas", "strace", "ltrace", "setsid", "arch", "caffeinate",
-		"parallel", "stdbuf", "script", "xcrun", "flock", "taskset", "ionice", "chrt", "prlimit", "trap":
+		"parallel", "stdbuf", "script", "xcrun", "flock", "taskset", "ionice", "chrt", "prlimit", "trap", "rtk":
 		return true
 	}
 	return false
@@ -836,6 +893,38 @@ var commandStringWrappers = map[string]bool{"watch": true, "script": true, "floc
 
 func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 	if !scanningWrapper(verb) {
+		return ""
+	}
+	if verb == "rtk" {
+		// rtk is a transparent output-condensing wrapper: `rtk <command…>`
+		// runs the command unchanged (on this user's machine every command
+		// may arrive here already rewritten to `rtk …`). Its own front words:
+		// global options, `bypass` (run without condensing), and
+		// `hook check '<command>'` (a command STRING). Unmodelled, the whole
+		// freeze was void behind it: `rtk rm -rf x` read as an unknown verb
+		// (posture panel, diagnosis-flow lens).
+		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || args[0] == "bypass") {
+			args = args[1:]
+		}
+		if len(args) >= 2 && args[0] == "hook" && args[1] == "check" {
+			args = args[2:]
+		}
+		if len(args) == 0 {
+			return ""
+		}
+		if len(args) == 1 && strings.ContainsAny(args[0], " \t") {
+			// What follows is ONE word: a command string.
+			if rule := ruleFor(lexShell(args[0])); rule != "" {
+				return "rtk … " + rule
+			}
+		}
+		name := strings.ToLower(args[0])
+		if scanningWrapper(name) {
+			return scanningWrapperRule(name, args[1:], stdinLive)
+		}
+		if rule := verbTableRule(name, args[1:], stdinLive, nil); rule != "" {
+			return "rtk … " + rule
+		}
 		return ""
 	}
 	valueOpts, before := wrapperValueOptions[verb], wrapperOperandsBeforeCommand[verb]
