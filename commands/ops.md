@@ -30,9 +30,9 @@ post-game run through the same single-loop reducer as every workflow
 ## Rules
 
 1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
-   (the only submission channel) → paste the summoner-status render verbatim
-   and end the turn → next turn AskUserQuestion (nonce in the question,
-   keyword-led labels from the persisted menu page).
+   with a conclusion (the only submission channel) → paste the checkpoint and end
+   the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
+   phase shows no checkpoint: go straight on.
 2. The ops skill's internal staging (e.g. its own 5-step run) is the skill's
    business — Summoner does not re-orchestrate it. The framework loop wraps
    it: the operate phase closes ONCE at its checkpoint (single acceptance

@@ -29,9 +29,9 @@ options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
 ## Rules
 
 1. Loop per `${CLAUDE_PLUGIN_ROOT}/references/single-loop.md`: work → `summoner:phase-submit`
-   (the only submission channel) → paste the summoner-status render verbatim
-   and end the turn → next turn AskUserQuestion (nonce in the question,
-   keyword-led labels from the persisted menu page).
+   with a conclusion (the only submission channel) → paste the checkpoint and end
+   the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
+   phase shows no checkpoint: go straight on.
 2. **对账探针是 publish 的准入条件** — publish mutates (version writes,
    commit, tag, push), so the capability list must declare the read-only
    reconciliation probe set (tag-已存在 / 版本-已一致) BEFORE the release
