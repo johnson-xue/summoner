@@ -53,7 +53,7 @@ func TestRenderContextInitialized(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "demo-project", 3)
 	got := renderContext(marketplaceRoot, dir)
-	for _, want := range []string{"Summoner project: demo-project", "3 phases", "skills/summoner/SKILL.md"} {
+	for _, want := range []string{"Summoner project: demo-project", "3 phases", "references/single-loop.md"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("initialized branch missing %q in: %q", want, got)
 		}

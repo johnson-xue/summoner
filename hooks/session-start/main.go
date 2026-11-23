@@ -182,7 +182,7 @@ func scanDanglingIntents(sessionID string) {
 // renderContext builds the SessionStart injection: project status + one
 // pointer. (M-C1) The old block carried a hand-maintained command catalog —
 // which went stale once: it said "Six" while seven commands existed — plus a
-// Rules section duplicating skills/summoner/SKILL.md: ~30 lines injected into
+// Rules section duplicating the router skill: ~30 lines injected into
 // EVERY session, Summoner used or not. The host UI already lists plugin
 // commands; the hook's legitimate job is status + pointer. Budget: the whole
 // block stays ≤300 bytes even with marketplace-length plugin roots
@@ -216,7 +216,7 @@ func renderContext(pluginRoot, projectDir string) string {
 			status += "DB not initialized — scripts/init-memory-db.sh)"
 		}
 		return fmt.Sprintf(`<SUMMONER-HOOK>
-Summoner %s. Workflows: read %s/skills/summoner/SKILL.md
+Summoner %s. Workflows: read %s/references/single-loop.md
 </SUMMONER-HOOK>`, status, pluginRoot)
 	}
 
