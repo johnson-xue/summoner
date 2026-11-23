@@ -339,6 +339,14 @@ After the display is bound, ask ONE question:
 | CHANGE_CONFIRM | accept, stop |
 | RECOVERY | continue, recall, stop |
 | REVIEW_RESULT | the full PHASE set — the note text (verdict) guides which options make sense |
+| REVIEW_DEBT | review ([v]), skip (finish UNREVIEWED), continue, stop — and, with accepted history, the recall-target page |
+
+`continue:` at a REVIEW_DEBT checkpoint means back to work. While earlier
+route phases remain unsettled the run resumes there. When every route phase
+is already settled there is nothing to resume into, and the run used to sit
+ACTIVE with nothing to open and no checkpoint to close from; `continue:`
+then re-enters the latest accepted phase — the default recall, recorded and
+traced as one. `skip:` there is the explicit UNREVIEWED finish (post-game).
 
 ### Rejected answers are visible (0.7.0) and content feedback
 
@@ -485,8 +493,9 @@ A passed phase renders no checkpoint, so the run keeps moving two ways:
 - If the turn ends right after the pass, the Stop hook blocks once with the
   phase to enter — at most once per pass. The same one-shot nudge covers
   every decision that returns the run to ACTIVE with nothing rendered: the
-  user's own `continue:` / `skip:`, a requirement change's `accept:`, a
-  `recall:`, and a recovery `continue:`. A sign-off right after one of them
+  user's own `continue:` / `skip:`, a requirement change's `accept:`, and a
+  recovery `continue:` (a `recall:` opens the phase it returns to, so it
+  needs no nudge). A sign-off right after one of them
   is answered once with the next step — the user never types "continue" to
   keep the run alive; when the route is complete the nudge says so and the
   run needs closing (post-game or stop).
