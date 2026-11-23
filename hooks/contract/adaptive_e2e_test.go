@@ -364,6 +364,48 @@ func TestAdaptiveRejectionIsVisibleOverBinaries(t *testing.T) {
 	}
 }
 
+// TestAdaptiveStopAckStrippingOverBinaries — the fix round's stop guard at
+// the seam (ship review round 2, compat F2: no test pinned the framework-text
+// stripping, so reverting it left the suite green). A checkpoint's own
+// conclusion line, pasted alone, is framework text and never ends the turn —
+// before the display (the render is demanded) and after it (the question is
+// handed back). A request-tied acknowledgment ends the turn in both states:
+// stopping must stay possible.
+func TestAdaptiveStopAckStrippingOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-ack", "fix")
+	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-ps-1", map[string]interface{}{
+		"skill": "summoner:phase-submit",
+		"args": mustJSON(t, shared.PhaseSubmission{
+			PhaseID: "context", Summary: "握手超时后服务停止",
+			Conclusion: &shared.Conclusion{Summary: "握手超时后服务停止"},
+		}),
+	}), nil); code != 0 {
+		t.Fatalf("phase-submit(context) exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	conclusionLine := "║   握手超时后服务停止" // the rendered conclusion, byte for byte
+
+	code, out, _ := runBinary(t, "stop", stopRenderPayload(t, conclusionLine), nil)
+	if code != 0 || !strings.Contains(out, `"decision":"block"`) {
+		t.Fatalf("undisplayed: the conclusion line pasted alone must not end the turn: %q", out)
+	}
+	if code, out, _ = runBinary(t, "stop", stopRenderPayload(t, "已按你的要求停止了本次工作流。"), nil); code != 0 || strings.TrimSpace(out) != "" {
+		t.Fatalf("undisplayed: a request-tied stop must end the turn, got %q", out)
+	}
+
+	render := statusView(t, `{"session_id":"`+contractSession+`","view":"checkpoint"}`)
+	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, render), nil); code != 0 {
+		t.Fatalf("bind exit = %d (stderr: %q)", code, stderr)
+	}
+	code, out, _ = runBinary(t, "stop", stopRenderPayload(t, conclusionLine), nil)
+	if code != 0 || !strings.Contains(out, `"decision":"block"`) {
+		t.Fatalf("displayed: the conclusion line pasted alone must hand the question back, got %q", out)
+	}
+	if code, out, _ = runBinary(t, "stop", stopRenderPayload(t, "I've stopped the run as you asked."), nil); code != 0 || strings.TrimSpace(out) != "" {
+		t.Fatalf("displayed: a request-tied stop must end the turn, got %q", out)
+	}
+}
+
 // TestAdaptiveStopIgnoresFrameworkTextOverBinaries — ship review round 1:
 // the framework's own words must never read as a stop acknowledgment. A
 // checkpoint whose CONCLUSION says 停止/abort/终止 (ordinary diagnosis

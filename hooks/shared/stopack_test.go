@@ -137,3 +137,58 @@ func TestStopAcknowledgmentWithoutACheckpoint(t *testing.T) {
 		t.Fatal("an explicit acknowledgment is honored in both strengths")
 	}
 }
+
+// TestStopAcknowledgmentPhrasings — ship review round 2 (interaction F1):
+// natural acknowledgments blocked at a displayed checkpoint, and describing
+// prose that must NOT end the turn. Everything runs at strict strength
+// unless marked lenient.
+func TestStopAcknowledgmentPhrasings(t *testing.T) {
+	run := &RunState{RunID: "run-1", Workflow: "fix"}
+	allowed := []string{
+		"I've stopped the run as you asked.",
+		"Stopping the run as you requested.",
+		"Okay, I've halted the run per your instructions.",
+		"I'll stop here since you asked me to.",
+		"Understood, halting the workflow as you requested.",
+		"Stopped per the user's request.",
+		"Stopped at the user's request.",
+		"The user asked me to stop, so I've stopped here.",
+		"Stopping here per your instructions.",
+		"Stopping the workflow per your instructions.",
+		"Stopped as you asked.",
+		"已停止，按你的要求。",
+		"遵照你的要求，已停止。",
+		"依照你的指示停止了。",
+		"已按你的要求中止。",
+		"已按你的要求结束了本次工作。",
+		"已按您的要求停止了本次工作流。",
+		"按要求停止。",
+	}
+	for _, msg := range allowed {
+		if !IsStopAcknowledgment(run, nil, msg, true) {
+			t.Errorf("strict: %q must end the turn (the user asked to stop)", msg)
+		}
+	}
+	if !IsStopAcknowledgment(run, nil, "好的，已停止。", false) {
+		t.Error("lenient: a bare stop is honored before the display")
+	}
+	if IsStopAcknowledgment(run, nil, "好的，已停止。", true) {
+		t.Error("strict: a bare stop without the user's request is not honored once displayed")
+	}
+	// Describing prose that ties a stop word to the user's request stays the
+	// documented residual (the file header): the strict strength accepts it.
+	// What must NOT end the turn even leniently is content whose sentence
+	// happens to end in a stop word.
+	for _, msg := range []string{
+		"根因找到了：握手超时后服务停止。",
+		"确认根因：SubTask 为空时调用 abort。",
+		"The run is stopped.",
+	} {
+		if IsStopAcknowledgment(run, nil, msg, false) {
+			t.Errorf("lenient: %q is content, not a stop", msg)
+		}
+	}
+	if IsStopAcknowledgment(run, nil, "Stopped? No — the options are continue, skip or stop.", true) {
+		t.Error("strict: listing the options is not a stop")
+	}
+}

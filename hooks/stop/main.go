@@ -306,28 +306,48 @@ func nudgeContinuation(run *shared.RunState, in *stopInput, outW, errW io.Writer
 	}
 	passed, settled, cue := "", "", run.ContinueNudgeFor
 	for i := range run.Checkpoints {
-		if run.Checkpoints[i].ID == cue {
-			passed = run.Checkpoints[i].PhaseID
-			switch run.Checkpoints[i].Decision {
-			case shared.DecisionAutoPass:
-				settled = "已自动通过（提交已确认且有证据，无需用户裁决）"
-			case shared.DecisionSkip:
-				settled = "已由用户选择 skip"
-			default:
-				settled = "已由用户选择 continue"
-			}
+		if run.Checkpoints[i].ID != cue {
+			continue
 		}
+		settled = nudgeSettledText(run, &run.Checkpoints[i])
+		passed = run.Checkpoints[i].PhaseID
 	}
 	if err := run.ClearContinueNudge(); err != nil {
 		fmt.Fprintf(errW, "summoner stop: continuation nudge skipped — the cue could not be consumed (state unchanged): %v\n", err)
 		return false
 	}
-	target := "路线已走完 — 运行 summoner-status 查看收尾步骤"
+	target := "路线已走完 — run 需要收尾：按 post-game 流程进入收尾，或停止（summoner-status 给出当前步骤）"
 	if next := shared.NextExpectedPhase(run); next != "" {
-		target = "立即进入 " + next + "：按该阶段的能力开始工作，完成后用 summoner:phase-submit 提交。不要等待用户输入。"
+		target = "立即进入 " + next + "：按该阶段的能力开始工作，完成后用 summoner:phase-submit 提交。不要停下来等用户催“继续”。"
 	}
-	emitBlock(outW, fmt.Sprintf("阶段 %s %s → %s", passed, settled, target))
+	subject := ""
+	if passed != "" {
+		subject = "阶段 " + passed + " "
+	}
+	emitBlock(outW, fmt.Sprintf("%s%s → %s", subject, settled, target))
 	return true
+}
+
+// nudgeSettledText names how the cueing decision settled: the decision's own
+// wording for a phase checkpoint, the act's meaning for the non-phase kinds
+// (their checkpoints carry no phase id, so "阶段  …" read as a blank).
+func nudgeSettledText(run *shared.RunState, cp *shared.CheckpointState) string {
+	switch cp.Kind {
+	case shared.CheckpointChangeConfirm:
+		return "已由用户接受需求变更（已恢复到变更前的开发位置）"
+	case shared.CheckpointRecovery:
+		return "已由用户选择继续（恢复被中断的工作位置）"
+	}
+	switch cp.Decision {
+	case shared.DecisionAutoPass:
+		return "已自动通过（提交已确认且有证据，无需用户裁决）"
+	case shared.DecisionSkip:
+		return "已由用户选择 skip"
+	case shared.DecisionRecall:
+		return "已由用户选择回城"
+	default:
+		return "已由用户选择 continue"
+	}
 }
 
 // bindDisplay binds the contained render (verified by

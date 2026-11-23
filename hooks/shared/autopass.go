@@ -92,7 +92,7 @@ func AutoPassBlocker(run *RunState, cp CheckpointState, checkFailed bool) string
 // nothing behind it (ship review round 1).
 func hasRealEvidence(items []string) bool {
 	for _, it := range items {
-		if strings.TrimSpace(it) != "" {
+		if !isBlankText(it) {
 			return true
 		}
 	}
