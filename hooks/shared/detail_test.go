@@ -60,12 +60,19 @@ func TestCheckpointDetailCarriesWhatTheMessageLeavesOut(t *testing.T) {
 		MenuNavNext, MenuNavPrev,
 		"recall targets:",
 		"- latest (phase fix, visit fix@v1)",
-		"model: ",
 		"nonce 1a2b3c4d",
 	} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("detail lost %q\n--- detail ---\n%s", want, detail)
 		}
+	}
+	// The ask recipe is model-facing: the viewer writes it to stderr, never
+	// into the user-facing view (ship review round 2, interaction F9).
+	if strings.Contains(detail, "model: ") {
+		t.Error("the detail carries the model-facing ask recipe")
+	}
+	if DecisionAskInstruction(cp) == "" {
+		t.Error("the ask recipe is empty")
 	}
 
 	// The pair is disjoint where it must be: the message carries none of this.
@@ -100,10 +107,16 @@ func TestCheckpointDetailRidesAndEmptyParts(t *testing.T) {
 	for _, want := range []string{
 		"summary (phase summary; no structured conclusion was submitted): root cause located",
 		"evidence: 未提供", "approach: 未提供", "open questions: 未提供", "impact: 未提供",
-		"criteria (0):", "artifacts (frozen versions, 0):",
 	} {
 		if !strings.Contains(legacyDetail, want) {
 			t.Errorf("legacy detail lost %q:\n%s", want, legacyDetail)
+		}
+	}
+	// A section with nothing in it is omitted, not printed as an empty table
+	// (ship review round 2, interaction F8).
+	for _, absent := range []string{"criteria (0):", "artifacts (frozen versions, 0):", "environment:", "recall targets:"} {
+		if strings.Contains(legacyDetail, absent) {
+			t.Errorf("empty section %q printed:\n%s", absent, legacyDetail)
 		}
 	}
 }

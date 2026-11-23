@@ -36,7 +36,9 @@ func CheckpointDetail(run *RunState, cp CheckpointState) string {
 		byID[c.ID] = c
 	}
 	ids := CheckpointCriteriaIDs(cp)
-	fmt.Fprintf(&b, "  criteria (%d):\n", len(ids))
+	if len(ids) > 0 {
+		fmt.Fprintf(&b, "  criteria (%d):\n", len(ids))
+	}
 	for _, id := range ids {
 		c, ok := byID[id]
 		if !ok {
@@ -66,7 +68,9 @@ func CheckpointDetail(run *RunState, cp CheckpointState) string {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
-	fmt.Fprintf(&b, "  artifacts (frozen versions, %d):\n", len(paths))
+	if len(paths) > 0 {
+		fmt.Fprintf(&b, "  artifacts (frozen versions, %d):\n", len(paths))
+	}
 	for _, p := range paths {
 		fmt.Fprintf(&b, "    %s @ %s\n", p, cp.ArtifactVersions[p])
 	}
@@ -99,10 +103,12 @@ func CheckpointDetail(run *RunState, cp CheckpointState) string {
 	}
 
 	env := cp.Snapshot.Environment
-	fmt.Fprintf(&b, "  environment: tier=%s os=%s arch=%s runtime=%s defaults=%s\n",
-		firstNonEmpty(env.Tier, "unobserved"), firstNonEmpty(env.OS, "unobserved"),
-		firstNonEmpty(env.Arch, "unobserved"), firstNonEmpty(env.Runtime, "unobserved"),
-		firstNonEmpty(env.DefaultsDigest, "unobserved"))
+	if env.Tier != "" || env.OS != "" || env.Arch != "" || env.Runtime != "" || env.DefaultsDigest != "" {
+		fmt.Fprintf(&b, "  environment: tier=%s os=%s arch=%s runtime=%s defaults=%s\n",
+			firstNonEmpty(env.Tier, "unobserved"), firstNonEmpty(env.OS, "unobserved"),
+			firstNonEmpty(env.Arch, "unobserved"), firstNonEmpty(env.Runtime, "unobserved"),
+			firstNonEmpty(env.DefaultsDigest, "unobserved"))
+	}
 
 	if pages := len(cp.MenuPages); pages > 0 {
 		fmt.Fprintf(&b, "  menu pages (%d):\n", pages)
@@ -117,7 +123,7 @@ func CheckpointDetail(run *RunState, cp CheckpointState) string {
 			fmt.Fprintf(&b, "    page %d/%d: %s%s\n", i+1, pages, strings.Join(pg.Labels, " · "), nav)
 		}
 	}
-	if len(cp.RecallTargets) > 0 {
+	if len(cp.RecallTargets) > 0 && offersRecallLabel(cp) {
 		b.WriteString("  recall targets:\n")
 		for _, t := range cp.RecallTargets {
 			fmt.Fprintf(&b, "    - %s (phase %s, visit %s)\n", t.Label, t.PhaseID, t.VisitID)
@@ -132,8 +138,102 @@ func CheckpointDetail(run *RunState, cp CheckpointState) string {
 		fmt.Fprintf(&b, "  extend ask (budget exhausted): %s / %s — delta %s\n",
 			cp.ExtendAsk.ExtendLabel, cp.ExtendAsk.HoldLabel, budgetLimitsKey(cp.ExtendAsk.Delta))
 	}
-	b.WriteString("  model: " + DecisionAskInstruction(cp) + "\n")
+	// The accepted phases' conclusions: the render's 经过 line carries each
+	// phase's title, and the full structured text lives here (ship review
+	// round 2 — after acceptance a conclusion used to exist on no surface).
+	if hist := historyConclusions(run, cp); len(hist) > 0 {
+		b.WriteString("  history conclusions (settled phases, oldest first):\n")
+		for _, h := range hist {
+			fmt.Fprintf(&b, "    %s %s: %s\n", h.phase, h.mark, h.summary)
+			if len(h.evidence) > 0 {
+				fmt.Fprintf(&b, "      evidence: %s\n", strings.Join(h.evidence, " · "))
+			}
+			if h.approach != "" {
+				fmt.Fprintf(&b, "      %s: %s\n", h.approachLabel, h.approach)
+			}
+			if h.impact != "" {
+				fmt.Fprintf(&b, "      impact: %s\n", h.impact)
+			}
+		}
+	}
 	return b.String()
+}
+
+// offersRecallLabel reports whether any menu page offers a recall option: the
+// recall target list means nothing when no page can take one.
+func offersRecallLabel(cp CheckpointState) bool {
+	for _, pg := range cp.MenuPages {
+		for _, l := range pg.Labels {
+			if strings.HasPrefix(strings.ToLower(l), "recall") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// historyConclusion is one settled phase's conclusion as the detail view
+// restates it.
+type historyConclusion struct {
+	phase, mark, summary, approachLabel, approach, impact string
+	evidence                                              []string
+}
+
+// historyConclusions walks the run's settled visits and returns the
+// conclusion each one was accepted on, oldest first. The current checkpoint's
+// own conclusion is printed above, not repeated here.
+func historyConclusions(run *RunState, cp CheckpointState) []historyConclusion {
+	if run == nil {
+		return nil
+	}
+	var out []historyConclusion
+	for _, p := range run.Phases {
+		if p.Outcome != "accepted" && p.Outcome != "skipped" && p.Outcome != "recalled" {
+			continue
+		}
+		var src *CheckpointState
+		for i := range run.Checkpoints {
+			if run.Checkpoints[i].ID == p.CheckpointID {
+				src = &run.Checkpoints[i]
+				break
+			}
+		}
+		if src == nil || src.ID == cp.ID {
+			continue
+		}
+		concl := src.Conclusion
+		summary := ""
+		if concl != nil {
+			summary = concl.Summary
+		}
+		if strings.TrimSpace(summary) == "" {
+			summary = src.Note
+		}
+		if strings.TrimSpace(summary) == "" {
+			continue
+		}
+		mark := "✓ 已验收"
+		switch {
+		case p.Outcome == "skipped":
+			mark = "— 已跳过"
+		case p.Outcome == "recalled":
+			mark = "↩ 已回城"
+		case src.Decision == DecisionAutoPass:
+			mark = "✓ 自动通过"
+		}
+		h := historyConclusion{phase: p.ID, mark: mark, summary: summary, approachLabel: approachLabel(p.ID)}
+		if concl != nil {
+			for _, it := range concl.Evidence {
+				if !isBlankText(it) {
+					h.evidence = append(h.evidence, it)
+				}
+			}
+			h.approach = concl.Approach
+			h.impact = concl.Impact
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 // DecisionAskInstruction is the one-line instruction the status view gives

@@ -107,7 +107,11 @@ func questionRecipe(cp CheckpointState) string {
 	for _, label := range page {
 		fmt.Fprintf(&b, "\n       - %s", label)
 	}
-	b.WriteString("\n     （more:/back: 只是翻页反馈：用目标页的标签原样重问，不记录任何东西。）\n")
+	if len(cp.MenuPages) > 1 {
+		b.WriteString("\n     （more:/back: 只是翻页反馈：用目标页的标签原样重问，不记录任何东西。）\n")
+	} else {
+		b.WriteString("\n     （选项已全部列出：本题没有翻页。）\n")
+	}
 	return b.String()
 }
 

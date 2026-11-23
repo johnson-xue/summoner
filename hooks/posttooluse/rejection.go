@@ -118,6 +118,11 @@ func emitNavigation(outW io.Writer, cp *shared.CheckpointState, q *decisionQuest
 		fmt.Fprintf(&b, "  - %s\n", label)
 	}
 	b.WriteString("（翻页反馈不是裁决：裁决只能是对某一页标签的选择。）\n")
+	if cp.ExtendAsk != nil {
+		// The extend ride must be re-attached on the page the answer rides
+		// (ship review round 2, interaction F14).
+		fmt.Fprintf(&b, "预算已耗尽：裁决时同一调用须附带追加题，选项恰为：%s / %s。\n", cp.ExtendAsk.ExtendLabel, cp.ExtendAsk.HoldLabel)
+	}
 	if err := json.NewEncoder(outW).Encode(map[string]string{"decision": "block", "reason": b.String()}); err != nil {
 		fmt.Fprintf(os.Stderr, "summoner posttooluse: writing the navigation block failed: %v\n", err)
 	}
