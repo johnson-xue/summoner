@@ -308,14 +308,20 @@ unique non-empty strings. `allowed_tools` names the project's read-only
 workflow tools (e.g. an MCP code-search server, `mcp__server__tool` by exact
 name): during an active run the pretooluse gate admits exactly those tools as
 observed reads, before any effect — the project's declaration is it taking
-responsibility for their read-only behavior. LSP navigation is admitted as
-first-party read-only without a declaration. The declaration never widens
-anything else: modeled tools (Bash, Edit/Write, Agent, AskUserQuestion, …)
-route through their own admission branches and never consult the list, phase
-gates and the write matrix are untouched, and a manifest that fails to load
-narrows admission back to deny (fail-closed). `readable`/`writable` remain
-declarations the runtime does not act on; native permissions and sandbox
-restrictions are never bypassed.
+responsibility for their read-only behavior. Declarations are PER TOOL, never
+per server: a sibling tool on an allowed server stays denied until named
+itself. A tool that only rebuilds an external index (an MCP server's own
+`index_repository`, say) may be declared too — the declaration's only promise
+is that it does not write project files. LSP navigation and the harness's own
+read-only tools (WebFetch, WebSearch, the task list, monitors, …) are
+admitted without a declaration. Since 0.6.1 the hook input carries no tool
+annotations, so a host-side `readOnlyHint` cannot substitute for the
+declaration. The declaration never widens anything else: modeled tools (Bash,
+Edit/Write, Agent, AskUserQuestion, …) route through their own admission
+branches and never consult the list, phase gates and the write matrix are
+untouched, and a manifest that fails to load narrows admission back to deny
+(fail-closed). `readable`/`writable` remain declarations the runtime does not
+act on; native permissions and sandbox restrictions are never bypassed.
 
 `suggested_budgets` accepts optional positive integers for `phase_tool_calls`,
 `failed_checks`, `run_rework`, `delegations`, `check_timeout_seconds`. Since
