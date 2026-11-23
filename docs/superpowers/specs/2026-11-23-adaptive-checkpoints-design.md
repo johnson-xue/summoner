@@ -1,8 +1,8 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev8（S0–S6 已实现；ship 审查第 1 轮四路 NEEDS-FIX、第 2 轮
-  协议 GO + 三路 NEEDS-FIX，均已逐项修复并补测试，见 §9、§10；等第 3 轮
-  收口审查。rev5 = 评审闭合 + D5.5 已裁决）
+- 状态: rev9（S0–S6 已实现；ship 审查第 1、2 轮的发现均已修复，第 3 轮
+  （闭合核验 + 分类器对抗）的发现已修复，见 §9–§11；等第 4 轮终审。
+  rev5 = 评审闭合 + D5.5 已裁决）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -456,7 +456,7 @@ id、不做过期回退、不校验结论、评分器放行 diagnosis、Go 策�
 
 | 视角 | 结论 | 已处理 |
 |---|---|---|
-| 协议 | GO + F1（既有） | F1：`RecordReviewResult` 从不写 `rv.Result` → PASS 后 DONE 仍落在假的「审查未结算」检查点；已写入并以 `TestDoneAfterAPassReviewReachesPostGame` 钉住。F2：评分器补「opened 与 auto 之间的 FAIL check.result」审计 + 4 个新 fixture（52 fixture / 309 断言）；`trace-protocol.md` 的自动通过形状改为 `opened → (check.result …) → auto`。F3：空白内容（含零宽/组合符）不算证据也不再折叠进摘要。F4：accept / recall / recovery-continue 都补续跑提示。F5：三类防御性守卫补单元测试。F6：协议文档列表格式修正。 |
+| 协议 | GO + F1（既有） | F1：`RecordReviewResult` 从不写 `rv.Result` → PASS 后 DONE 仍落在假的「审查未结算」检查点；已写入并以 `TestDoneAfterAPassReviewReachesPostGame` 钉住。F2：评分器补「opened 与 auto 之间的 FAIL check.result」审计 + 4 个新 fixture（52 fixture / 309 断言）；`trace-protocol.md` 的自动通过形状改为 `opened → (check.result …) → auto`。F3：空白内容（含零宽/组合符）不算证据也不再折叠进摘要。F4：accept / recovery-continue 补续跑提示（recall 会直接开启目标阶段，本就不需要提示——round 3 核实后删除了那条不可达代码并改正文档）。F5：三类防御性守卫补单元测试。F6：协议文档列表格式修正。 |
 | 分类器 | NEEDS-FIX | 8 类「写判读」绕过与 9 类误拒全修：解释器的 stdin 程序、`[[ ]]`/`${…}` 内的进程替换、算术内的替换与重定向、裸替换词、`git branch -t`、`go test -o/-profile`、`perl -E`、`time` 包装器、大小写变形词；git config 作用域、npm audit、pip show、unzip -l、make -n、bash -n、tar -xO、/dev/std* 等误拒；`attachedAfter` 看闭合字符而非其后字符；嵌套深度上限 `maxLexDepth`（8k 深曾 2.6 s）。 |
 | 交互 | NEEDS-FIX | F1：请求关联式的自然措辞（带宾语、since you asked me to、at the user's request、遵照/依照、停止后置标记）放行，且 中止/结束/停下 入词表。F2：协议把 `经过` 定义为标题，详情视图新增 `history conclusions` 承载各已验收阶段的结构化结论全文。F3：最后阶段 skip / REVIEW_DEBT continue 的续跑提示与状态 awaiting 行不再指向不存在的下一步，也不再插值空阶段名。F4：同协议 F4。F5/F6：描述性散文维持已记录的残余；宽松档收尾停止词要求前文也短。F7：渲染配方改指 `view:checkpoint`。F8：详情视图省略空小节与无 recall 页时的目标列表。F9：`model:` 行走 stderr。F10：单页发问不带 `more:` 的测试。F11/F12：门禁与续跑文案更新。F13：渲染要求点明常见原因（缩进/引用/围栏/改写）。F14：翻页回答补追加题提示，单页不再提翻页。 |
 | 兼容 | NEEDS-FIX | F1：回滚段重写——0.6.1 的任何一次状态保存会丢弃 outcome/conclusion 且摘要不再匹配，答复被静默拒绝，装回 0.7.x 需重贴渲染，结论正文不可恢复；不再声称「绑定仍然一致」。F2：框架文案剥离补二进制级测试。F3：seam 清单（session-start 边缘、auto-pass 各守卫、宽松档选项否决）记为残余覆盖缺口。F4：空白结论项不再折叠（同协议 F3）。F5：邻接损坏状态文件可击穿项目级视图——既有缺陷，记录。 |
@@ -471,3 +471,28 @@ id、不做过期回退、不校验结论、评分器放行 diagnosis、Go 策�
 - 回滚的「无损摘要」方案（把 0.6.1 可算的摘要留在 `display_digest`、另存
   0.7.0 摘要）会改状态格式，未采纳；文档按有损回滚写实。
 - `git --git-dir="$(pwd)/.git"` 之外的同类「替换值拆词」形状未逐一穷举。
+
+## 11. Ship 审查第 3 轮（rev9）
+
+两路（冻结 `6d66e84`，各一份隔离副本）：**闭合核验**判 NEEDS-FIX（第 2 轮
+27 条中 24 条闭合），**分类器对抗复审**判 NEEDS-FIX（第 2 轮 46 行全部闭合，
+但 round 2 的修复又带出新洞）。每条先复现（全部复现）再修。
+
+| 来源 | 发现 | 处理 |
+|---|---|---|
+| 分类器 | round-2 修复的直接回归：`bash -c '…' -n` / `bash s.sh -n`（选项在代码之后就执行）、`npm audit fix`、`go tool cover -o`、`git --namespace= push`（拆值规则吃掉子命令）、`git branch --contains HEAD` 被拒 | 全修。`-n` 只在首位才算语法检查；`audit fix` 判写；拆值规则只吃词法器拆出来的「展开词」 |
+| 分类器 | 新机制带出的洞：解释器选项的值被当成脚本（`python3 -W ignore` + stdin）；进程替换喂 stdin 或充当操作数（`python3 <(echo code)`）；带展开的选项词吞掉后面的命令词（`env -u$(echo FOO) rm x`、`git --git-dir=$(echo .git) push`）；包装器里的运行时命令词与「命令字符串」（`watch -n 2 'rm -rf x'`）；表外 shell（dash/ksh/fish）；`ENV`/`NOHUP` 大小写；`/dev/fd/../..`；GNU sed 的 `e` | 全修，并按「类别而非样例」补齐文件写入动词（rmdir chgrp unlink mkfifo shred mktemp split patch）。自查又补：`python3 0<<EOF` 的 fd 数字、包装器不传递 stdin 状态、`ruby -`、`php -f`、`python3 -mjson.tool`、`perl -M`、git 只读子命令的 `--output=`。回归矩阵 150 行 |
+| 分类器 | 引号分隔符的 heredoc 正文被当作会展开 | 正文是纯文本，不再词法分析其中的替换 |
+| 分类器 | `make -n` 被当成读：GNU make 解析期就会执行 `$(shell …)` | 撤回该豁免：make 一律判写（回到裁决原文） |
+| 分类器 | `attachedAfter` 的修复没有测试钉住 | 加了拆值后缀词的行 |
+| 闭合核验 | 第 2 轮给「框架文案剥离」补的二进制测试钉不住：夹具行不带停止词，剥不剥离都一样 | 换成以停止词开头的结论行；变异检查确认：关掉剥离（两种变异）该测试变红 |
+| 闭合核验 | round 2 把 结束/中止 放进裸停止词表，新增停摆：「上下文收集结束。」「第一阶段结束。」在未展示时直接结束回合 | 裸停止只认 停止/终止/stop/halt/abort；宽词表只用于「请求关联式」。另补 按照/应…的/因为/because/upon 等漏判 |
+| 闭合核验 | REVIEW_DEBT 的 `continue:` 在路线走完时仍是死路（skip 一半已在 `80f7afa` 修） | 路线走完时 `continue:` = 默认 recall（回到最近已验收阶段），走既有 recall 路径并有 trace；REVIEW_DEBT 检查点带 recall 页 |
+| 闭合核验 | 文档说 recall 也有续跑提示，代码不可达 | 删除不可达代码，改正文档 |
+| 闭合核验 | 一个损坏的邻接状态文件击穿项目级状态视图 | 扫描跳过并在 stderr 具名（新 fallback 依赖这条路径） |
+
+**残余（已记录）**：请求关联式对第三人称描述性散文仍会误判（「服务已停止，
+按你的要求重启。」）——round 1 起即记录的残余；脚本作为参数运行
+（`python3 x.py`）与表外工具（docker/kubectl/sqlite3/cargo/brew/zip/gzip）
+仍是「未知动词缺省判读」，等用户对白名单缺省的裁决；GNU tar
+`--checkpoint-action=exec`、`sort -o` 等未建模。

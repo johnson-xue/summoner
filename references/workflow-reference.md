@@ -33,10 +33,22 @@ covered by its tools' spellings:
   `rev-parse`, `ls-files`, …).
 
 Three rules cut across them. A redirection is judged on its own: to a file
-it is a write, to `/dev/null` it is not, and `2>&1` is a descriptor copy.
-A command NAME bash computes when it runs (`"$(echo rm)"`, `$X`, `$'…'`)
-writes — nothing is known about that program. `go test` and `go vet` stay
-read-only: reproducing a failure is diagnosis work.
+it is a write; to `/dev/null`, `/dev/stdout`, `/dev/stderr`, `/dev/tty` or
+`/dev/fd/N` it is not; `2>&1` is a descriptor copy. A command NAME bash
+computes when it runs (`"$(echo rm)"`, `$X`, `$'…'`, a substitution behind
+a wrapper such as `timeout 5 $(…)`) writes — nothing is known about that
+program. An interpreter whose program arrives on stdin or in a process
+substitution (`python3 <<'EOF'`, `echo code | node`, `python3 <(echo code)`)
+writes, and so does one that loads a module (`python3 -m x`, `perl -Mx`,
+`ruby -rx`). A heredoc with a QUOTED delimiter is literal text (nothing in
+it runs); an unquoted one's substitutions are live and judged.
+
+Reads that look like writes: `go test` and `go vet` (reproducing a failure
+is diagnosis work — their output flags `-o` / `-coverprofile` write), `tar
+-O` / `--to-stdout`, a LEADING `bash -n`, `unzip -l` / `-p` / `-t` / `-c`,
+`npm audit` (`audit fix` writes), `go tool nm` / `objdump`, `python3 -m pip
+list` / `show`, `git config --global --list`. `make` is write-class in
+every form, `-n` included: GNU make runs `$(shell …)` while parsing.
 
 Until diagnosis is accepted the executable surface is read-only commands,
 LSP and the tools the manifest declares read-only; a Bash denial names the
