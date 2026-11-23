@@ -4,7 +4,7 @@
 # Every check here maps to a defect that actually shipped:
 #   - version drift        (root plugin.json was once stuck at 0.1.5 while the
 #                           other two manifests moved on)
-#   - manifest omissions   (auto-setup-summoner + review-agent missing from
+#   - manifest omissions   (a setup skill + review-agent missing from
 #                           manifests; name≠dirname for skills/release)
 #   - dead references      (scripts/cleanup-traces.sh was documented but never existed)
 #   - hardcoded names      (antia-* routing bindings in commands/debug.md)

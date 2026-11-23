@@ -22,7 +22,6 @@
     "./skills/summoner",
     "./skills/summoner-setup",
     "./skills/summoner-release",
-    "./skills/auto-setup-summoner",
     "./skills/phase-submit",
     "./skills/change",
     "./skills/review-submit",

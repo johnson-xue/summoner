@@ -29,7 +29,7 @@ Setup consent is not workflow advancement. If a run is already waiting, its
 checkpoint decision still comes from the normal bound AskUserQuestion channel.
 Creating or reloading a manifest neither clears the wait nor starts a new run.
 SessionStart reports readiness and a setup pointer; it never initializes files
-without consent. `skills/auto-setup-summoner/SKILL.md` handles requested setup.
+without consent. `skills/summoner-setup/SKILL.md` handles requested setup.
 
 ## Same reducer, same obligations
 

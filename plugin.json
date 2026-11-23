@@ -14,17 +14,12 @@
     {
       "name": "summoner-setup",
       "path": "skills/summoner-setup/SKILL.md",
-      "description": "Initialize Summoner for this project (one-command setup). Use when user says 'setup summoner', 'initialize summoner', or asks how to use Summoner in this project."
+      "description": "Initialize or repair a project's Summoner configuration when the user explicitly requests it, or guide them when they ask about the missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration."
     },
     {
       "name": "summoner-release",
       "path": "skills/summoner-release/SKILL.md",
       "description": "Version release automation — version planning, changelog generation, release execution. Keeps ALL THREE version manifests synchronized (root plugin.json, .claude-plugin/plugin.json, .claude-plugin/marketplace.json). Use when user invokes /summoner:release."
-    },
-    {
-      "name": "auto-setup-summoner",
-      "path": "skills/auto-setup-summoner/SKILL.md",
-      "description": "Configure a v2 Summoner capability map when the user explicitly requests setup or asks how to resolve a missing-manifest warning; never auto-initialize solely because SessionStart reports missing configuration."
     },
     {
       "name": "phase-submit",
