@@ -61,7 +61,71 @@ func runSessionStart(in io.Reader, outW, errW io.Writer) int {
 	if sessionID != "" {
 		scanDanglingIntents(sessionID)
 	}
+	// 0.7.0 D5.2: hand the session id to the session's own shell, so a
+	// Bash-invoked `summoner-status <<< '{}'` can scope to THIS session.
+	exportSessionID(sessionID, errW)
 	return 0
+}
+
+// sessionIDEnvVar is the environment variable SessionStart exports for the
+// status viewer (hooks/summoner-status reads it when its payload names no
+// session).
+const sessionIDEnvVar = "SUMMONER_SESSION_ID"
+
+// exportSessionID appends `export SUMMONER_SESSION_ID='<id>'` to the file
+// the platform sources for this session (CLAUDE_ENV_FILE). The status
+// viewer is invoked over Bash and does not know its own session id; with
+// several live runs in one project its `{}` payload could only answer
+// "ambiguous" (incident 2026-11-23: three runs, no renderable checkpoint).
+//
+// The line is SHELL INPUT: a session id outside [A-Za-z0-9._-] is skipped,
+// never escaped into something that could run. Without an environment file
+// (env capture off) nothing is written — the viewer keeps its project-wide
+// fallback. A re-fire for the same session (resume, compact) appends
+// nothing when the line is already the file's last. Known residual (design
+// B5): the platform clears the file's variables on a CwdChanged event, so
+// after a `cd` the viewer may be back on the fallback.
+func exportSessionID(sessionID string, errW io.Writer) {
+	if sessionID == "" || !safeEnvValue(sessionID) {
+		return
+	}
+	path := os.Getenv("CLAUDE_ENV_FILE")
+	if path == "" {
+		return
+	}
+	line := "export " + sessionIDEnvVar + "='" + sessionID + "'\n"
+	lead := ""
+	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
+		if strings.HasSuffix(string(existing), line) {
+			return // already exported by an earlier SessionStart of this session
+		}
+		if !strings.HasSuffix(string(existing), "\n") {
+			lead = "\n"
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		fmt.Fprintf(errW, "summoner session-start: cannot open the session environment file — summoner-status will fall back to a project-wide scan: %v\n", err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.WriteString(lead + line); err != nil {
+		fmt.Fprintf(errW, "summoner session-start: cannot write the session environment file — summoner-status will fall back to a project-wide scan: %v\n", err)
+	}
+}
+
+// safeEnvValue reports whether s is a plain shell word — letters, digits,
+// dot, underscore and hyphen only — safe inside single quotes with nothing
+// to escape.
+func safeEnvValue(s string) bool {
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.' || c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // emitCompatView is retired into runSessionStart's single-payload assembly

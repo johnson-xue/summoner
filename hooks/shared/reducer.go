@@ -2246,6 +2246,16 @@ func (rv *ReviewRecord) ActiveAttempt(attemptID string) *ReviewAttempt {
 // must not carry a reason code. NEEDS-FIX consumes run rework budget; BLOCKED
 // does not.
 func (r *RunState) RecordReviewResult(res ReviewResult) error {
+	// 0.7.0 D5.1: the reviewer's enums are matched by MEANING. A spelling
+	// that differs only in case or surrounding whitespace is normalized
+	// before any validation — the incident run lost its whole review to a
+	// criterion status written "BLOCKED" (per-criterion statuses are
+	// lowercase by contract, the aggregate enums uppercase).
+	res.RunStatus = strings.ToUpper(strings.TrimSpace(res.RunStatus))
+	res.Verdict = strings.ToUpper(strings.TrimSpace(res.Verdict))
+	for i := range res.CriterionVerdicts {
+		res.CriterionVerdicts[i].Status = strings.ToLower(strings.TrimSpace(res.CriterionVerdicts[i].Status))
+	}
 	// protocolErr carries the problem out AFTER the routing persisted —
 	// returning it from the closure would roll the routing back.
 	var protocolErr error
@@ -2440,7 +2450,11 @@ func ValidateCriterionVerdicts(env SemanticEnvelope, res ReviewResult) string {
 		active[c.ID] = c
 	}
 	seen := make(map[string]bool, len(res.CriterionVerdicts))
-	for _, v := range res.CriterionVerdicts {
+	for i := range res.CriterionVerdicts {
+		// D5.1: compare the canonical lowercase — and store it, so a
+		// normalized verdict never echoes a foreign spelling.
+		res.CriterionVerdicts[i].Status = strings.ToLower(strings.TrimSpace(res.CriterionVerdicts[i].Status))
+		v := res.CriterionVerdicts[i]
 		c, known := active[v.CriterionID]
 		if !known {
 			return fmt.Sprintf("criterion_verdicts names %q which is not an active criterion of this envelope (active: the minted exit criteria)", v.CriterionID)

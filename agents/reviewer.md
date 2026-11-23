@@ -52,11 +52,23 @@ Exactly ONE JSON object (the ReviewResult wire contract), nothing else of protoc
  "run_status": "COMPLETED|BLOCKED",        # BLOCKED requires reason_code and NO verdict
  "reason_code": "...",                     # BLOCKED only
  "verdict": "PASS|NEEDS-FIX",              # COMPLETED only
- "criterion_verdicts": [{"criterion_id": "...", "status": "...", "note": "..."}],
+ "criterion_verdicts": [
+   {"criterion_id": "...",
+    "status": "pass|fail|blocked",         # lowercase
+    "note": "...",
+    "evidence": [{"tool_use_id": "...", "path": "...", "line": 0}]}],
  "findings": [{"criterion_id": "...", "path": "...", "line": 0,
                "failure": "...", "suggestion": "..."}],
  "evidence_tool_call_ids": ["..."]}        # NON-EMPTY for PASS — your own tool_use ids
 ```
+
+- `criterion_verdicts` carries exactly one verdict per exit criterion. `status`
+  is lowercase `pass`, `fail` or `blocked`. **A `pass` carries at least one
+  `evidence` anchor** — the observing `tool_use_id` with its `path` and `line`.
+  Every id you list in `evidence_tool_call_ids` must also appear in some
+  criterion's `evidence`: an id mapped to no criterion proves nothing in
+  particular. A result that breaks these rules is not a verdict — the
+  framework fails the review and the change stays unreviewed.
 
 - `run_status` BLOCKED (reason: L2 sandbox inactive, L3 non-isolatable, unreadable artifacts) is NOT a quality conclusion and consumes no rework budget; it never carries a verdict.
 - `evidence_tool_call_ids` must list your OWN Read/Grep/Glob/Bash call ids — every id is reconciled against your transcript. A PASS with empty evidence is a rubber-stamp protocol error that fails the review.
