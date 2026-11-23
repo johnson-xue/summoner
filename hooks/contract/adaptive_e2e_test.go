@@ -362,3 +362,77 @@ func TestAdaptiveRejectionIsVisibleOverBinaries(t *testing.T) {
 		t.Fatalf("status after a valid CONTINUE = %s, want ACTIVE", run.Status)
 	}
 }
+
+// TestAdaptiveStopIgnoresFrameworkTextOverBinaries — ship review round 1:
+// the framework's own words must never read as a stop acknowledgment. A
+// checkpoint whose CONCLUSION says 停止/abort/终止 (ordinary diagnosis
+// vocabulary), re-pasted by the model, or the whole status view, or a
+// sentence listing the options — each must hand back the question. Only an
+// explicit acknowledgment of the user's stop request ends the turn.
+func TestAdaptiveStopIgnoresFrameworkTextOverBinaries(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-ack", "fix")
+	code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-ps-1", map[string]interface{}{
+		"skill": "summoner:phase-submit",
+		"args": mustJSON(t, shared.PhaseSubmission{
+			PhaseID: "context", Summary: "服务停止响应",
+			Conclusion: &shared.Conclusion{
+				Summary:  "服务在收到 SIGTERM 后停止响应，握手被 abort，进程终止",
+				Evidence: []string{"svc/handler.go:88 — 收到 SIGTERM 即停止监听"},
+				Approach: "先停止服务再复现",
+			},
+		}),
+	}), nil)
+	if code != 0 {
+		t.Fatalf("phase-submit(context): exit %d, want 0 (stderr: %q)", code, stderr)
+	}
+	run, err := shared.LoadRun("run-ack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := *run.CurrentCheckpoint()
+	block := statusView(t, `{"session_id":"`+contractSession+`","view":"checkpoint"}`)
+	fullView := statusView(t, `{"session_id":"`+contractSession+`"}`)
+
+	ask := func(id, msg string) string {
+		t.Helper()
+		code, out, stderr := runBinary(t, "stop", mustJSON(t, map[string]interface{}{
+			"hook_event_name": "Stop", "session_id": contractSession, "stop_hook_active": id == "re-fire",
+			"last_assistant_message": msg,
+		}), nil)
+		if code != 0 {
+			t.Fatalf("stop exit = %d, want 0 (stderr: %q)", code, stderr)
+		}
+		return out
+	}
+	// The pasted checkpoint IS the display act: it binds and asks whatever
+	// its conclusion says.
+	if out := ask("first", block); !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, "已展示并绑定") {
+		t.Fatalf("the pasted checkpoint must bind and hand back the question, got %q", out)
+	}
+	if run, _ = shared.LoadRun("run-ack"); run.CurrentCheckpoint() == nil || !run.CurrentCheckpoint().Displayed {
+		t.Fatal("the pasted checkpoint must bind the display")
+	}
+	// …and nothing the framework rendered is a stop: re-paste, whole status
+	// view, option list, an explanation — all get the question again.
+	for name, msg := range map[string]string{
+		"checkpoint re-pasted": block,
+		"whole status view":    fullView,
+		"option list":          "请选择 continue、skip、done 或 stop。",
+		"explanation with 停止":  "排查结论：网关在升级窗口内停止转发，进程终止后没有自动重启，所以等到窗口结束后才恢复。请决定下一步。",
+	} {
+		if out := ask("re-fire", msg); !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, cp.Nonce) {
+			t.Errorf("%s: must hand back the question, got %q", name, out)
+		}
+	}
+	if run, _ = shared.LoadRun("run-ack"); run.Status != shared.StatusWaitUser || run.CurrentCheckpoint().Decided {
+		t.Fatal("nothing may be decided by a sign-off")
+	}
+	// The user asked to stop and the model says so: the turn ends, state kept.
+	if out := ask("stop", "Stopped as you asked. The run state was kept."); strings.Contains(out, "block") {
+		t.Fatalf("an explicit stop acknowledgment must end the turn, got %q", out)
+	}
+	if run, _ = shared.LoadRun("run-ack"); run.Status != shared.StatusWaitUser {
+		t.Fatalf("status = %s, want WAIT_USER kept", run.Status)
+	}
+}

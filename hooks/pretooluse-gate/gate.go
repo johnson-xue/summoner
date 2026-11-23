@@ -1574,7 +1574,7 @@ func decideAskUser(in *gateInput, run *shared.RunState) decision {
 	// question to ask.
 	if !cp.Displayed {
 		return deny(fmt.Sprintf(
-			"Summoner gate: the decision question cannot bind yet — checkpoint %s (nonce %s) has not been displayed. The protocol is two-turn: paste the checkpoint message (summoner-status view:checkpoint; an explanation may precede it) and END the turn — the Stop hook binds the display and immediately hands back the exact question to ask.",
+			"Summoner gate: the decision question cannot bind yet — checkpoint %s (nonce %s) has not been displayed. The protocol is two-turn: paste the checkpoint message (summoner-status view:checkpoint; an explanation may precede it) and END the turn — the end-of-turn hook binds the display and immediately hands back the exact question to ask.",
 			cp.ID, cp.Nonce))
 	}
 	// S2 offered-set pinning: every nonce-carrying question's options must

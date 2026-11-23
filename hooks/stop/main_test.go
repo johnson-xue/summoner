@@ -817,3 +817,220 @@ func TestEscapeHatchBothBinaries(t *testing.T) {
 		}
 	})
 }
+
+// --- ship review round 1: the stop acknowledgment ----------------------------------
+
+// stopWordCheckpoint parks a fix run at a diagnosis checkpoint whose
+// CONCLUSION is full of stop words — ordinary diagnosis vocabulary.
+func stopWordCheckpoint(t *testing.T) (*shared.RunState, shared.CheckpointState) {
+	t.Helper()
+	r := startRun(t)
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{
+		PhaseID: "diagnosis", Summary: "服务停止响应",
+		Outcome: shared.ConclusionUnclear,
+		Conclusion: &shared.Conclusion{
+			Summary:  "服务在收到 SIGTERM 后停止响应，握手被 abort，进程终止",
+			Evidence: []string{"svc/handler.go:88 — 收到 SIGTERM 即停止监听"},
+			Approach: "先停止服务再复现",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SubmitPhase: %v", err)
+	}
+	return r, cp
+}
+
+// statusLikeView stands in for the default summoner-status view: its header
+// lines, the detail block, then the canonical message.
+func statusLikeView(run *shared.RunState, cp shared.CheckpointState) string {
+	return "⚡ SUMMONER STATUS — run run-1 · workflow fix · WAIT_USER\n" +
+		"route: context → diagnosis → reproduce → fix → regression → review\n" +
+		"awaiting: user decision at checkpoint " + cp.ID + " (nonce " + cp.Nonce + ")\n" +
+		shared.CheckpointDetail(run, cp) + "\n" + shared.RenderCheckpointMessage(run, cp)
+}
+
+func blockquote(s string) string {
+	return "> " + strings.ReplaceAll(strings.TrimSuffix(s, "\n"), "\n", "\n> ") + "\n"
+}
+
+// TestStopFrameworkTextIsNeverAStopAcknowledgment (ship review round 1,
+// two lenses): the framework's own words — the checkpoint the model pastes,
+// the status view it re-pastes to navigate, the hook's own ask block — must
+// never read as the model acknowledging a stop. Before the fix a checkpoint
+// whose conclusion said 停止 let the turn end with no dialog: the stall this
+// release exists to remove.
+func TestStopFrameworkTextIsNeverAStopAcknowledgment(t *testing.T) {
+	for name, msg := range map[string]func(*shared.RunState, shared.CheckpointState) string{
+		"the checkpoint re-pasted":        func(r *shared.RunState, cp shared.CheckpointState) string { return renderBlock(r, cp) },
+		"the checkpoint in a blockquote":  func(r *shared.RunState, cp shared.CheckpointState) string { return blockquote(renderBlock(r, cp)) },
+		"the status view":                 statusLikeView,
+		"the status view in a blockquote": func(r *shared.RunState, cp shared.CheckpointState) string { return blockquote(statusLikeView(r, cp)) },
+		"the detail block alone":          func(r *shared.RunState, cp shared.CheckpointState) string { return shared.CheckpointDetail(r, cp) },
+		"the model instruction line": func(_ *shared.RunState, cp shared.CheckpointState) string {
+			return "等你决定。\n" + shared.DecisionAskInstruction(cp)
+		},
+		"the rejection block": func(r *shared.RunState, cp shared.CheckpointState) string {
+			return "说明一下现在的选择。\n" + shared.RejectionReason(cp, `answer "请停止" is not an offered option label of the decision question`, nil, nil)
+		},
+	} {
+		useStopEnv(t)
+		r, cp := stopWordCheckpoint(t)
+		displayCheckpoint(t, r, cp)
+
+		code, stdout, stderr := callStop(t, stopPayload(t, msg(r, cp)))
+		if code != 0 {
+			t.Fatalf("%s: exit = %d, want 0 (stderr: %q)", name, code, stderr)
+		}
+		wantAskBlock(t, stdout, cp)
+		if got := currentCheckpoint(t, reloadRun(t, "run-1")); got.Decided {
+			t.Fatalf("%s: nothing may be decided", name)
+		}
+	}
+
+	// Undisplayed: a sign-off plus the instruction line only is no display
+	// act and no stop — the render is demanded.
+	for name, msg := range map[string]func(*shared.RunState, shared.CheckpointState) string{
+		"sign-off + instruction line": func(_ *shared.RunState, cp shared.CheckpointState) string {
+			return "先到这里。\n" + shared.DecisionAskInstruction(cp)
+		},
+		"sign-off + detail block": func(r *shared.RunState, cp shared.CheckpointState) string {
+			return "先到这里。\n" + shared.CheckpointDetail(r, cp)
+		},
+	} {
+		useStopEnv(t)
+		r, cp := stopWordCheckpoint(t)
+		code, stdout, stderr := callStop(t, stopPayload(t, msg(r, cp)))
+		if code != 0 {
+			t.Fatalf("%s: exit = %d, want 0 (stderr: %q)", name, code, stderr)
+		}
+		blocked, _ := decodeBlock(t, stdout)
+		if !blocked {
+			t.Fatalf("%s: framework text is not a stop — the render must be demanded, got stdout %q", name, stdout)
+		}
+		if got := currentCheckpoint(t, reloadRun(t, "run-1")); got.Displayed {
+			t.Fatalf("%s: nothing may bind", name)
+		}
+	}
+}
+
+// TestStopDisplayedStopMustTieTheStopToTheUsersRequest: at a displayed
+// checkpoint whose question is owed, listing the options or explaining a
+// failure is not a stop. Only words that tie the stop to the user's request
+// end the turn; everything else gets the question (whose `stop:` label is
+// the recorded way to stop).
+func TestStopDisplayedStopMustTieTheStopToTheUsersRequest(t *testing.T) {
+	notAStop := []string{
+		"请选择 continue、skip、done 或 stop。",
+		"排查结论：网关在升级窗口内停止转发，进程终止后没有自动重启；细节见上面的检查点。",
+		"按你的要求排查后确认：服务在升级时停止响应的原因是配置缺失。请决定下一步。",
+		"已停止。",
+	}
+	for _, msg := range notAStop {
+		useStopEnv(t)
+		r, cp := stopWordCheckpoint(t)
+		displayCheckpoint(t, r, cp)
+		code, stdout, stderr := callStop(t, stopPayload(t, msg))
+		if code != 0 {
+			t.Fatalf("%q: exit = %d, want 0 (stderr: %q)", msg, code, stderr)
+		}
+		wantAskBlock(t, stdout, cp)
+	}
+
+	aStop := []string{
+		"Stopped as you asked.",
+		"Stopped. The run is aborted per your request.",
+		"好的，已按要求停止运行。状态已保留，之后可以用 /summoner:status 恢复。",
+		"用户要求终止，已停止。",
+		"已按您的要求停止了本次工作流。运行状态已保留，之后可以用 /summoner:status 恢复，所以不需要额外操作。",
+	}
+	for _, msg := range aStop {
+		useStopEnv(t)
+		r, cp := stopWordCheckpoint(t)
+		displayCheckpoint(t, r, cp)
+		code, stdout, stderr := callStop(t, stopPayload(t, msg))
+		if code != 0 {
+			t.Fatalf("%q: exit = %d, want 0 (stderr: %q)", msg, code, stderr)
+		}
+		if blocked, reason := decodeBlock(t, stdout); blocked {
+			t.Fatalf("%q: an explicit stop acknowledgment must end the turn, got block %q", msg, reason)
+		}
+		if disk := reloadRun(t, "run-1"); disk.Status != shared.StatusWaitUser {
+			t.Fatalf("%q: status = %s, want WAIT_USER kept", msg, disk.Status)
+		}
+	}
+}
+
+// TestStopUndisplayedBareStopStaysPossible: before anything is displayed a
+// short bare stop still ends the turn (nothing is owed yet); a long
+// explanation with an incidental stop word is content — the render is
+// demanded.
+func TestStopUndisplayedBareStopStaysPossible(t *testing.T) {
+	useStopEnv(t)
+	r, cp := stopWordCheckpoint(t)
+	code, stdout, stderr := callStop(t, stopPayload(t, "好的，已停止。"))
+	if code != 0 || stdout != "" {
+		t.Fatalf("a short bare stop must end the turn: (code, stdout, stderr) = (%d, %q, %q)", code, stdout, stderr)
+	}
+	_ = r
+	_ = cp
+
+	useStopEnv(t)
+	r, cp = stopWordCheckpoint(t)
+	long := "排查结论：网关在升级窗口内停止转发，进程终止后没有自动重启；上游因此超时，表现为整场战斗卡在结算，等到升级窗口结束后才自行恢复。" +
+		"建议先看网关的升级日志，再核对服务停止时的最后几行输出，最后对照同一时间段的会话心跳记录，确认是网关单方面断开还是会话服务自己退出。"
+	code, stdout, _ = callStop(t, stopPayload(t, long))
+	_ = r
+	_ = cp
+	if blocked, _ := decodeBlock(t, stdout); !blocked {
+		t.Fatalf("an explanation with an incidental stop word is content — the render must be demanded, got stdout %q", stdout)
+	}
+}
+
+// TestStopStaleBindingIsRebound: a displayed checkpoint whose content no
+// longer matches its binding would reject every answer forever (the reducer
+// refuses a drifted binding, and nothing else re-binds). The Stop hook
+// treats it as undisplayed: the CURRENT render binds again; the stale one
+// does not.
+func TestStopStaleBindingIsRebound(t *testing.T) {
+	useStopEnv(t)
+	r, cp := stopWordCheckpoint(t)
+	displayCheckpoint(t, r, cp)
+	stale := renderBlock(r, cp)
+	// Drift the DISPLAYED content behind the binding (the conclusion is
+	// digest-bound and rendered; the phase note is not rendered when a
+	// conclusion exists, so drifting only the note changes nothing shown).
+	disk := reloadRun(t, "run-1")
+	stored := &disk.Checkpoints[len(disk.Checkpoints)-1]
+	stored.Conclusion.Summary += "；补充：进程终止后没有自动重启"
+	if err := disk.Save(); err != nil {
+		t.Fatal(err)
+	}
+	current := reloadRun(t, "run-1")
+	fresh := renderBlock(current, *current.CurrentCheckpoint())
+
+	// The stale render binds nothing.
+	code, stdout, stderr := callStop(t, stopPayload(t, "说明。\n\n"+stale))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if blocked, reason := decodeBlock(t, stdout); !blocked || strings.Contains(reason, "已展示并绑定") {
+		t.Fatalf("a stale render must be refused with the render demand, got %q", stdout)
+	}
+	if got := currentCheckpoint(t, reloadRun(t, "run-1")).DisplayDigest; got != shared.CheckpointContentDigest(cp, 1) {
+		t.Fatalf("the stale render must not move the binding, digest = %s", got)
+	}
+
+	// The current render re-binds and the question follows.
+	code, stdout, stderr = callStop(t, stopPayload(t, "说明。\n\n"+fresh))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	wantAskBlock(t, stdout, *current.CurrentCheckpoint())
+	bound := currentCheckpoint(t, reloadRun(t, "run-1"))
+	if want := shared.CheckpointContentDigest(*bound, 1); bound.DisplayDigest != want {
+		t.Fatalf("display digest = %s, want the CURRENT content digest %s", bound.DisplayDigest, want)
+	}
+}
