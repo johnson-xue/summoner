@@ -49,6 +49,11 @@ import (
 // renderFrameTail closes the frame; fixed width, never content-dependent.
 const renderFrameTail = "╚════════════════════════════════════\n"
 
+// reviewFailedPrefix is the note prefix of a review-result checkpoint that
+// routes a FRAMEWORK-side failure (a result the protocol could not accept) —
+// never a verdict about the change under review.
+const reviewFailedPrefix = "FAILED "
+
 // Display caps (0.7.0 D1). The checkpoint render stays under renderLineCap
 // lines on the largest legal submission (pinned by
 // TestRenderMaxLegalSubmissionStaysUnderLineCap); what a cap rolls off is
@@ -104,6 +109,13 @@ func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 	if cp.Kind == CheckpointPhase {
 		railSection(&b, "结论 — "+conclusionLabel(cp.Outcome))
 		writeConclusion(&b, cp)
+	} else if strings.HasPrefix(cp.Note, reviewFailedPrefix) {
+		// A framework-side validation failure is not a verdict about the
+		// change: say what went wrong, and what it means for the user —
+		// never let a protocol error read like a quality conclusion.
+		railSection(&b, "结论 — 框架未能完成审查")
+		railf(&b, "  原因：%s\n", conclusionText(strings.TrimPrefix(cp.Note, reviewFailedPrefix), capConclusionText))
+		railf(&b, "  对你的影响：改动尚未被审查\n")
 	} else {
 		// Change-confirm, recovery, review-result and review-debt carry
 		// their meaning in the note (the delta, the probe outcomes, the

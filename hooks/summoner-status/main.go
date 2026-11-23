@@ -100,7 +100,11 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 		fmt.Fprintf(errW, "summoner-status: unreadable input — %v\n", err)
 		return 2
 	}
-	runs, err := liveRunsFor(in.SessionID)
+	// 0.7.0 D5.2: a payload without a session id scopes to the session
+	// SessionStart exported into this session's shell environment; without
+	// it the project-wide fallback stands (and names its own ambiguity).
+	sessionID, fromEnv := resolveSession(in.SessionID)
+	runs, err := liveRunsFor(sessionID)
 	if err != nil {
 		// Unreadable state is not an input error: surface it, stay exit 0.
 		fmt.Fprintf(errW, "summoner-status: run state unreadable — %v\n", err)
@@ -145,8 +149,69 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 		fmt.Fprintf(errW, "summoner-status: unknown view %q (supported: checkpoint, review) — refusing to guess.\n", in.View)
 		return 2
 	}
-	fmt.Fprint(outW, renderStatus(run, sandboxTier()))
+	fmt.Fprint(outW, renderStatusWith(run, sandboxTier(), otherLiveRunsLine(sessionID, fromEnv)))
 	return 0
+}
+
+// sessionIDEnvVar is exported by hooks/session-start (CLAUDE_ENV_FILE) — the
+// one place a Bash-invoked viewer can learn its own session.
+const sessionIDEnvVar = "SUMMONER_SESSION_ID"
+
+// resolveSession names the session a payload scopes to: the payload's own
+// id when present, else the exported variable when it is a safe id, else
+// "" (the project-wide fallback). The bool reports whether the environment
+// supplied it.
+func resolveSession(payloadID string) (string, bool) {
+	if payloadID != "" {
+		return payloadID, false
+	}
+	exported := strings.TrimSpace(os.Getenv(sessionIDEnvVar))
+	if exported == "" {
+		return "", false
+	}
+	for _, c := range exported {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-' || c == '_' || c == '.':
+		default:
+			return "", false // not an id: no session to scope to
+		}
+	}
+	return exported, true
+}
+
+// otherLiveRunsLine names the project's live runs that belong to OTHER
+// sessions — the runs a project-wide scan would have mixed with this one.
+// "" when the view is not environment-scoped or nothing else is live.
+func otherLiveRunsLine(sessionID string, fromEnv bool) string {
+	if !fromEnv {
+		return ""
+	}
+	root, err := statusStateRoot()
+	if err != nil {
+		return ""
+	}
+	sessions, err := os.ReadDir(filepath.Join(root, shared.ProjectKey()))
+	if err != nil {
+		return ""
+	}
+	var others []string
+	for _, s := range sessions {
+		if !s.IsDir() || s.Name() == sessionID {
+			continue
+		}
+		runs, err := shared.SessionRuns(s.Name())
+		if err != nil {
+			continue // a viewer must not fail over a neighbour's state
+		}
+		for _, r := range liveRuns(runs) {
+			others = append(others, r.RunID+" ("+string(r.Status)+")")
+		}
+	}
+	if len(others) == 0 {
+		return ""
+	}
+	sort.Strings(others)
+	return "other live runs in this project (other sessions): " + strings.Join(others, ", ") + " — this view is scoped to this session's run\n"
 }
 
 // reviewView serves the read-only review surface: for each review record its
@@ -293,6 +358,13 @@ func sandboxTier() string {
 // then the checkpoint message itself, so the view ends with the block the
 // model pastes. Pure: it reads only the given state.
 func renderStatus(run *shared.RunState, sandbox string) string {
+	return renderStatusWith(run, sandbox, "")
+}
+
+// renderStatusWith is renderStatus plus one line inserted before the
+// checkpoint (the other-sessions note), so the checkpoint message stays the
+// last thing the view prints.
+func renderStatusWith(run *shared.RunState, sandbox, note string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚡ SUMMONER STATUS — run %s · workflow %s · %s\n", run.RunID, run.Workflow, run.Status)
 	b.WriteString(routeLine(run))
@@ -307,6 +379,7 @@ func renderStatus(run *shared.RunState, sandbox string) string {
 	fmt.Fprintf(&b, "budget: %s\n", budgetLine(run))
 	b.WriteString(postGameLines(run))
 	fmt.Fprintf(&b, "sandbox: %s\n", sandbox)
+	b.WriteString(note)
 	if cp := run.CurrentCheckpoint(); cp != nil {
 		// 0.7.0 D1: the message is the decision surface (conclusion first);
 		// the detail right before it is the reference view — the ONE shared

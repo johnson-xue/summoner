@@ -45,6 +45,20 @@ func useStatusEnv(t *testing.T) {
 	setenv16(t, "SUMMONER_STATE_DIR", t.TempDir())
 	setenv16(t, "SUMMONER_TRACE_DIR", t.TempDir())
 	setenv16(t, "CLAUDE_PROJECT_DIR", t.TempDir())
+	// 0.7.0 D5.2: a session id inherited from the test process's own
+	// environment would scope every `{}` payload — keep the suite hermetic.
+	unsetenvStatus(t, "SUMMONER_SESSION_ID")
+}
+
+func unsetenvStatus(t *testing.T, key string) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	os.Unsetenv(key)
+	t.Cleanup(func() {
+		if had {
+			os.Setenv(key, old)
+		}
+	})
 }
 
 // stubProbe pins the injectable sandbox probe (contract.SandboxProbe is the
@@ -948,5 +962,94 @@ func TestRenderAutoPassLine(t *testing.T) {
 	}
 	if !strings.Contains(out, "║   context ✓ 自动通过: context established") {
 		t.Errorf("the history block must still show the framework's acceptance:\n%s", out)
+	}
+}
+
+// --- 0.7.0 D5.2: session resolution ---------------------------------------------
+
+// twoSessions leaves two live runs in two sessions of the test project:
+// run-a in sess-a, run-b in sess-b.
+func twoSessions(t *testing.T) {
+	t.Helper()
+	for _, s := range []struct{ run, session string }{{"run-a", "sess-a"}, {"run-b", "sess-b"}} {
+		if _, err := shared.StartRun(s.run, s.session, "fix", limits()); err != nil {
+			t.Fatalf("StartRun(%s): %v", s.run, err)
+		}
+	}
+}
+
+// TestStatusResolvesTheSessionFromTheEnvironment — acceptance criterion 10:
+// with no session_id in the payload the viewer scopes to the session
+// SessionStart exported, and names the project's other live runs so a
+// cross-session run is never mistaken for this one's.
+func TestStatusResolvesTheSessionFromTheEnvironment(t *testing.T) {
+	useStatusEnv(t)
+	twoSessions(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-a")
+
+	code, out, stderr := callStatus(t, `{}`)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if !strings.Contains(out, "⚡ SUMMONER STATUS — run run-a · workflow fix · ACTIVE") {
+		t.Fatalf("the viewer must scope to the exported session's run:\n%s", out)
+	}
+	if strings.Contains(out, "ambiguous") || strings.Contains(out, "naming them, rendering none") {
+		t.Fatalf("with the exported session id there is nothing ambiguous:\n%s", out)
+	}
+	if !strings.Contains(out, "other live runs in this project (other sessions): run-b (ACTIVE)") {
+		t.Fatalf("the other session's live run must be named:\n%s", out)
+	}
+}
+
+// TestStatusFallsBackWhenTheEnvironmentIsSilent: without the exported
+// variable the `{}` payload keeps its project-wide scan and its honest
+// ambiguity listing.
+func TestStatusFallsBackWhenTheEnvironmentIsSilent(t *testing.T) {
+	useStatusEnv(t)
+	twoSessions(t)
+
+	code, out, stderr := callStatus(t, `{}`)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if !strings.Contains(out, "2 live Summoner runs — ambiguous") {
+		t.Fatalf("without the exported session id the fallback must name the ambiguity:\n%s", out)
+	}
+
+	// A foreign value is no session id at all — same fallback.
+	setenv16(t, "SUMMONER_SESSION_ID", "../sess-a")
+	code, out, _ = callStatus(t, `{}`)
+	if code != 0 || !strings.Contains(out, "2 live Summoner runs — ambiguous") {
+		t.Fatalf("an unsafe exported value must be ignored:\n%s", out)
+	}
+}
+
+// TestCheckpointViewIgnoresTheEnvironment: view:checkpoint is the canonical
+// message and nothing else — the other-runs note and every status line stay
+// out of it, whatever the environment says.
+func TestCheckpointViewIgnoresTheEnvironment(t *testing.T) {
+	useStatusEnv(t)
+	twoSessions(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-a")
+	run, err := shared.LoadRun("run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.OpenPhase("context"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := run.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "context", Summary: "context done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ = shared.LoadRun("run-a")
+
+	code, out, stderr := callStatus(t, `{"view":"checkpoint"}`)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
+	}
+	if out != shared.RenderCheckpointMessage(run, cp) {
+		t.Fatalf("view:checkpoint must be exactly the canonical message, got:\n%s", out)
 	}
 }
