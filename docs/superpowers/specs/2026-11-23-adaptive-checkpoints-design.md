@@ -1,6 +1,6 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev5（评审闭合 + D5.5 已裁决；用户已批准开工）
+- 状态: rev6（S0–S6 已实现，等 ship 审查；rev5 = 评审闭合 + D5.5 已裁决）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -312,3 +312,65 @@ past a checkpoint without a recorded AskUserQuestion decision"）、
   （B2）、下一步指令按检查点是否有 recall 分情况（B3）；D5.2 记 cd 残余
   并删去对应验收断言（B5）；D6 更正行号（B6）；D2 记 stop-ack 误报代价
   （B7）；D5.5 事实更正为"只认短动词表 + `>`"。
+
+## 8. 实现记录（rev6）
+
+S0–S6 已按 §7 落地于分支 `adaptive-checkpoints`（基线 `dfa4075`）。验收标准
+与测试锚点（全部在 `-count=1` 全电池下运行）：
+
+| 验收 | 锚点 |
+|---|---|
+| 1 | `hooks/pretooluse-gate/autopass_test.go:TestConfirmedContextSubmissionAutoPasses`；`hooks/contract/adaptive_e2e_test.go:TestAdaptiveAutoPassOverBinaries` |
+| 2 | `autopass_test.go:TestReproduceAutoPassesOnlyWhenConfirmedWithEvidence`；`shared/autopass_test.go`（reducer 层） |
+| 3 | `TestExhaustionCheckpointNeverAutoPasses`、`TestFailedCheckStopsTheAutoPass` |
+| 4 | `hooks/stop/main_test.go`（绑定即发问、尾行任意、解释在前、旧 nonce 并存、停止豁免）；`TestAdaptiveExplainThenAskOverBinaries` |
+| 5 | `hooks/pretooluse-gate/menu_test.go:TestAskSameTurnDeniedBeforeDisplay`（display 后放行） |
+| 6 | `shared/render_layout_test.go`（≤42 行、移出机制内容）；`TestAdaptiveRenderLeadsWithConclusionOverBinaries` |
+| 7 | `hooks/posttooluse/rejection_visibility_test.go`（整段 stdout 单 JSON、披露、路径）；`TestAdaptiveRejectionIsVisibleOverBinaries` |
+| 8 | `shared/review_enum_test.go` |
+| 9 | `hooks/pretooluse-gate/writeclass_test.go`（边界表）、`writeclass_probe_test.go`（看门狗 + 6000 输入 fuzz）、`contract/finalwave_e2e_test.go:TestFinalWaveWriteBarrier`（二进制级） |
+| 10 | `hooks/session-start/env_export_test.go`；`summoner-status` 的 env/回退/other-runs 测试 |
+| 11 | `shared/trace_test.go`（39 型）、`schema-check.sh`、`trace-protocol.md`；`valid-auto-pass.jsonl` 等 4 个真实链 fixture |
+| 12 | `hooks/stop/autopass_test.go`（一次、已开下一阶段则不再、停止豁免）；`TestAdaptiveAutoPassOverBinaries` |
+| 13 | 本地全电池（hooks 10 包、root、42 fixture 矩阵、validate-repo）绿；lane CI 见发布记录 |
+| 14 | 每片的 ship 审查对代码核实（见 §修订记录与审查报告） |
+
+### 设计之外的改动（实现中发现，含理由）
+1. **S0**：`user-gate-check.sh` 一并认识 `checkpoint.auto`。设计只列三份白名单，
+   但自动通过的检查点是 `opened` 后无 `displayed`——评分器会判 MISSING，真实
+   0.7.0 trace 一评分就红。策略镜像与 reducer 一致：仅四阶段、仅 confirmed、
+   一次、不得与 displayed/decided 并存。
+2. **S3**：自动通过时重读预算。`ExtendAsk` 在检查点打开时定格；一次 FAIL 会在
+   其后再把 failed-check 预算打满，只看 `ExtendAsk` 会把 run 放进“耗尽、无法
+   工作”——正是评审 B1 要防的状态。条件取并集。
+3. **S3b 放弃**（设计的放弃条款）：自动 done 会让模型在 reviewer 返回时面对
+   POST_GAME_PENDING 而非检查点，需要新增 post-game 问卷续跑提示；且
+   `checkpoint.auto` 需为非阶段检查点扩展 trace/scorer。记为 0.7.x 候选。
+4. **S4**：所有拒绝共用一份“下一步”文案。真实对话框把用户打的字作为该题的
+   答案值送达（与“打错的标签”同一条代码路径），只给 `response` 字段配指引会
+   漏掉事故形态；文案用条件句分清“选项写错→原样重问”与“是文字→合法路径”，
+   且只列该检查点确实有的路径（无 recall 的 kind 不提 recall）。
+5. **D5.1**：`agents/reviewer.md` 的线格式模板缺 per-criterion `evidence`——照
+   模板写的 PASS 必被判“claims pass with no evidence anchor”。模板已对齐强制
+   契约；聚合枚举 `run_status`/`verdict` 一并按大小写/空白归一化。
+6. **D5.3 实现口径**：
+   - “heredoc 正文保守判写”实现为：正文是数据（其中的 `>` 不是重定向），但
+     正文里的 `$(…)`/反引号是活的、照常判——验收标准 9 明确把正文里的 `>`
+     列为只读。
+   - `[[ … ]]`（命令位置）内部 `<`/`>` 是比较；但 `(( … ))` 的**词**照判
+     （既有写屏障契约要求拒 `((rm scratch))`；只在算术内忽略重定向）。
+   - 保留字（then/do/time/!…）、替换充当命令名（`"$(echo rm)" -rf x`）、
+     读 stdin 的脚本（`python3 -`）、perl/ruby/php 内联代码、包装器扫描
+     （timeout/nice/watch/doas/strace）一并覆盖。
+7. **自身缺陷（探查抓到，非设计）**：`clipRunes` 把字节偏移当 rune 序号；词法
+   器换行分支不前进（任何多行命令死循环 → gate 10s 超时）；反斜杠续行隐藏
+   动词。已修；新增看门狗 + 6000 输入 fuzz + 词法器前进守卫
+   （`!lex-stop` → 判写，绝不静默截断）。
+8. **后果（已接受并记录）**：写类的项目检查（如 `make test`）不再能作为 L2
+   被计账；`xargs` 历来判写，管线式查找在冻结期被拒——均属裁决 (a) 的代价。
+
+### 遗留（不在本版范围）
+- 既有缺陷：WAIT_USER 入口需求变更关闭后，`rerenderCheckpoint` 新建的后继
+  检查点丢 `Snapshot`（实测 criteria 1→0）。建议携带 `src.Snapshot`，待用户
+  裁决是否并入本版（task #44）。
+- `install-smoke-test.sh` 的注册表污染（task #42）：修好前禁跑。
