@@ -1,5 +1,26 @@
 # Summoner Changelog
 
+## [0.6.0] - 2026-11-23
+
+### 🐛 Bug Fixes
+- fix(ship): close round-1 findings (3 Important + 6 Suggestion) (4a4ca94)
+- fix(release): close shellcheck findings SC2004/SC2209/SC2034 (lane CI) (99902b0)
+
+### ♻️ Refactoring
+- refactor(surface): delete the god-skill, sync arrays and docs (T8+T9) (db377f2)
+- refactor(roster): ship no methodology defaults (T7) (6e1f6a7)
+- refactor(release): extract 3 scripts, calling-contract skill (T6) (d01efa3)
+- refactor(setup): merge auto-setup into summoner-setup (T5) (baf9f0c)
+- refactor(adapters): migrate gemini/opencode/codex/eval surfaces to single-loop.md (T4) (196d9f8)
+- refactor(session-start): point workflow injection at single-loop.md (T3) (b321406)
+- refactor(commands): self-sufficient suite orchestrators + single-loop authority (T1+T2) (f1ac787)
+
+### 📝 Documentation
+- docs(release): tighten skill to 90-line ceiling (2c029d7)
+- docs(plan): command/skill SRP implementation plan (0.6.0) (a37717a)
+- docs(design): fold independent review findings into SRP design rev2 (7c0a005)
+- docs(design): command/skill SRP restructure draft rev1 (0.6.0) (274fe3a)
+
 ## [0.5.3] - 2026-11-20
 
 Session-start hotfix. **SessionStart stdout is now ONE JSON object** — the 0.5.2 hook emitted up to three concatenated objects (project block + v1 compat view + pending post-game) and every session in a project with a v1 summoner.yaml failed to start with `Hook output looks like a JSON object but is not valid JSON` (stable repro). All context blocks are joined into a single `additionalContext` payload; the whole-stdout contract is pinned by the new `TestSingleJSONObjectOnStdout` (the old suite only tested the render functions, which is why concatenated objects slipped through).
