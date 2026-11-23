@@ -694,6 +694,12 @@ func awaitingLine(run *shared.RunState) string {
 				return fmt.Sprintf("phase work in %q (the model executes; submit via summoner:phase-submit)", p.ID)
 			}
 		}
+		if shared.NextExpectedPhase(run) == "" {
+			// Every route phase is settled and none is open: the run needs
+			// closing. "Next phase to open" promised a step that is not
+			// there (ship review round 2).
+			return "路线已走完 — 进入收尾（post-game）或停止"
+		}
 		return "next phase to open per the manifest mapping"
 	}
 }

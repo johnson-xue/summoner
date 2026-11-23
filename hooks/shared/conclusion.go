@@ -19,6 +19,7 @@ package shared
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // ValidateSubmissionConclusion returns the reason a phase submission's
@@ -89,7 +90,30 @@ func cloneConclusion(c *Conclusion) *Conclusion {
 }
 
 func isEmptyConclusion(c *Conclusion) bool {
-	return strings.TrimSpace(c.Summary) == "" && len(c.Evidence) == 0 &&
-		strings.TrimSpace(c.Approach) == "" && len(c.OpenQuestions) == 0 &&
-		strings.TrimSpace(c.Impact) == ""
+	any := func(items []string) bool {
+		for _, it := range items {
+			if !isBlankText(it) {
+				return true
+			}
+		}
+		return false
+	}
+	return isBlankText(c.Summary) && !any(c.Evidence) &&
+		isBlankText(c.Approach) && !any(c.OpenQuestions) &&
+		isBlankText(c.Impact)
+}
+
+// isBlankText reports whether s has no visible content: whitespace and
+// invisible format / combining characters only. A zero-width space is not
+// evidence and a blank item is not content — folding either into the digest
+// would make the checkpoint undecidable after a rollback for no visible
+// reason (ship review round 2).
+func isBlankText(s string) bool {
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		return false
+	}
+	return true
 }

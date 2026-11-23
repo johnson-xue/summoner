@@ -23,7 +23,9 @@ package shared
 //
 //   - An explicit acknowledgment of the USER'S REQUEST — a stop word tied to
 //     that request in the same clause ("已按要求停止", "Stopped as you
-//     asked") — is honored everywhere.
+//     asked", "Stopped the run per your instructions", "遵照你的要求，已
+//     停止") — is honored everywhere. Request-tied forms allow an object
+//     between the stop word and the request clause (the run, 旧服务).
 //   - A bare stop is honored only in the lenient strength (a checkpoint not
 //     yet displayed: nothing is owed to the user yet, and stopping must
 //     stay possible), and only as a short statement that opens or closes
@@ -47,18 +49,22 @@ import (
 )
 
 var (
-	// stopWordRe is the documented stop/halt/abort marker list (English
-	// inflections or Chinese 停止/终止).
-	stopWordRe = regexp.MustCompile(`(?i)\b(?:stop(?:ped|ping)?|halt(?:ed|ing)?|abort(?:ed|ing)?)\b|停止|终止`)
+	// stopWordRe is the stop/halt/abort marker list (English inflections or
+	// Chinese 停止/终止/中止/结束/停下). The Chinese verbs beyond 停止/终止
+	// are what natural acknowledgments use ("已按你的要求结束了本次工作") —
+	// their breadth is bounded by the request tie (strict) and the
+	// edge-and-brevity rule (lenient).
+	stopWordRe = regexp.MustCompile(`(?i)\b(?:stop(?:ped|ping)?|halt(?:ed|ing)?|abort(?:ed|ing)?)\b|停止|终止|中止|结束|停下`)
 
 	// stopRequestRe ties a stop word to the USER'S request in the same
 	// clause, in either order, in Chinese or English. The request marker
 	// must sit right next to the stop word ("按要求排查…服务停止" is
 	// content: too many words in between).
-	stopRequestRe = regexp.MustCompile(`(?i)(?:按要求|按你的要求|按您的要求|按你要求|按您要求|按你的指示|按您的指示|按你指示|按您指示|根据你的(?:要求|指示)|根据您的(?:要求|指示)|应你要求|应您要求|(?:你|您|用户)(?:要求|让|叫|希望|要)(?:我|我们)?)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,4}(?:停止|终止|中止|结束|停下)` +
-		`|\b(?:as|per|at)\s+(?:you\s+)?(?:asked|requested|instructed|your\s+(?:request|instruction|direction))\b[^.!?\n]{0,30}\b(?:stop|halt|abort)` +
-		`|\b(?:stop|halt|abort)(?:ped|ping|ed|ing)?\s+(?:now\s+)?(?:as|per)\s+(?:you\s+)?(?:asked|requested|instructed|wanted|your\s+(?:request|instruction))` +
-		`|\byou\s+(?:asked|requested|told|instructed|wanted)\s+me\s+to\s+(?:stop|halt|abort)`)
+	stopRequestRe = regexp.MustCompile(`(?i)(?:按要求|按你的要求|按您的要求|按你要求|按您要求|按你的指示|按您的指示|按你指示|按您指示|遵照你(?:的)?(?:要求|指示)|遵照您(?:的)?(?:要求|指示)|依照你(?:的)?(?:要求|指示)|依照您(?:的)?(?:要求|指示)|遵从你(?:的)?(?:要求|指示)|根据你的(?:要求|指示)|根据您的(?:要求|指示)|应你要求|应您要求|(?:你|您|用户)(?:要求|让|叫|希望|要)(?:我|我们)?)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,6}(?:停止|终止|中止|结束|停下)` +
+		`|(?:停止|终止|中止|结束|停下)了?[^。\n]{0,8}(?:按|遵照|依照|遵从|根据)(?:你|您|用户)的?(?:要求|指示)` +
+		`|\b(?:as|per|at|on|upon|since)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction|direction)[^.!?\n]{0,30}\b(?:stop|halt|abort)` +
+		`|\b(?:stop|halt|abort)(?:ped|ping|ed|ing)?\b[^.!?\n]{0,24}?\b(?:as|per|at|since)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction)` +
+		`|\b(?:you|the\s+user)\s+(?:asked|requested|told|instructed|wanted)\s+me\s+to\s+(?:stop|halt|abort)`)
 
 	// optionTalkRe names the other decisions: a message that lists options
 	// is describing the menu, not stopping.
@@ -161,7 +167,13 @@ func IsStopAcknowledgment(run *RunState, cp *CheckpointState, message string, st
 // described, not a stop.
 func stopWordAtEdge(s string) bool {
 	for _, loc := range stopWordRe.FindAllStringIndex(s, -1) {
-		if leadIn(s[:loc[0]]) || tail(s[loc[1]:]) {
+		if leadIn(s[:loc[0]]) {
+			return true
+		}
+		// A CLOSING stop word needs a short lead-in too: "好的，已停止。" is
+		// a stop statement; "根因找到了：握手超时后服务停止。" is a
+		// conclusion that happens to end in a stop word (ship review r2).
+		if tail(s[loc[1]:]) && utf8.RuneCountInString(s[:loc[0]]) <= 10 {
 			return true
 		}
 	}

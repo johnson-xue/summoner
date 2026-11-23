@@ -1361,6 +1361,17 @@ func legalDecisionForKind(kind CheckpointKind, d Decision) error {
 // restoreRecoveryPrior ends an OUTCOME_UNKNOWN episode: the run returns to
 // the status frozen when the episode started (RecoveryPrior, B4) and the
 // prior is cleared. Empty/invalid priors fall back to ACTIVE.
+// hasOpenPhase reports whether any visit is still open (the model is working
+// in it; nothing needs nudging).
+func (r *RunState) hasOpenPhase() bool {
+	for _, p := range r.Phases {
+		if p.Open {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *RunState) restoreRecoveryPrior() {
 	switch r.RecoveryPrior {
 	case StatusActive, StatusWaitUser, StatusReviewPending:
@@ -1506,6 +1517,12 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 		if cp.Kind == CheckpointRecovery {
 			// Accept the status quo; restore the episode prior (B3).
 			s.restoreRecoveryPrior()
+			// 0.7.0 (ship review round 2): the run resumes ACTIVE with
+			// nothing rendered — the same one-shot nudge applies (a phase
+			// still open means the model is already working).
+			if s.Status == StatusActive && !s.hasOpenPhase() {
+				s.ContinueNudgeFor = cp.ID
+			}
 		} else {
 			s.decidePhase(cp, true)
 			// I1 (adjudication §5): the decision authorizes the next visit —
@@ -1579,6 +1596,9 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 		}
 		s.applyRecallAt(cp, recallIdx, target, "", toolUseID)
 		s.RecoveryPrior = "" // a recall supersedes the episode's restore
+		if s.Status == StatusActive && !s.hasOpenPhase() {
+			s.ContinueNudgeFor = cp.ID // ACTIVE, nothing rendered: nudge once
+		}
 	case DecisionReviewOnDemand:
 		// B2: park the run under a persisted obligation — no work may
 		// open until the matching review is requested and concluded.
@@ -1607,6 +1627,9 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 	case DecisionAcceptRequirementChange:
 		if err := s.resumeAfterChange(); err != nil { // validated above
 			return err
+		}
+		if s.Status == StatusActive && !s.hasOpenPhase() {
+			s.ContinueNudgeFor = cp.ID // resumed in place: nudge to keep working
 		}
 	}
 	return nil
@@ -2403,6 +2426,7 @@ func (r *RunState) RecordReviewResult(res ReviewResult) error {
 				s.Counters.RunRework++
 			}
 		}
+		rv.Result = &res // the terminal-review predicate reads the verdict (ship review round 2)
 		rv.ConcludedAt = now
 		if att := rv.ActiveAttempt(rv.ActiveAttemptID); att != nil {
 			att.State = "RETIRED"
