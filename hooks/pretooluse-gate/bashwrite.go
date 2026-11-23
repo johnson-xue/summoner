@@ -1136,10 +1136,26 @@ func tarRule(args []string) string {
 			return "tar --to-command (pipes the archive into a command)"
 		}
 	}
+	// -O in ANY position sends everything to stdout (`tar -O -xf x.tar`,
+	// `tar -xf x.tar -O`, `tar -x --to-stdout -f x.tar`): nothing is written
+	// to disk — unless an archive is being modified (-r -u -A --delete).
+	toStdout, modifies, letters := false, false, ""
 	for _, a := range args {
-		if a == "--to-stdout" {
-			return "" // everything goes to stdout: nothing is unpacked to disk
+		if a == "--to-stdout" || a == "-O" {
+			toStdout = true
 		}
+		if tarLongWrites[a] && a != "--extract" && a != "--get" && a != "--create" {
+			modifies = true // append / update / catenate / delete an archive
+		}
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' {
+			letters += a[1:]
+		}
+	}
+	if strings.ContainsAny(letters, "ruAd") {
+		modifies = true
+	}
+	if toStdout && !modifies {
+		return ""
 	}
 	for k, a := range args {
 		if tarLongWrites[a] {
