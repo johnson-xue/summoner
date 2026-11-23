@@ -1551,6 +1551,15 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 			return nil
 		}
 		s.decidePhase(cp, false)
+		// A skip that settles the LAST unsettled route phase IS the explicit
+		// UNREVIEWED finish (spec §0 item 2) — the run closes through the
+		// normal post-game path. Leaving it ACTIVE stranded it: nothing may
+		// open, and no checkpoint offered done or stop (ship review round 2,
+		// interaction F3).
+		if !s.hasOpenPhase() && NextExpectedPhase(s) == "" {
+			s.Status = StatusPostGamePending
+			return nil
+		}
 		// I1: like continue, a skip that returns the run to ACTIVE authorizes
 		// the next visit's bucket (post-game skips never reach here).
 		s.newVisitBucket()

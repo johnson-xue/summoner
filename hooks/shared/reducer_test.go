@@ -2242,8 +2242,17 @@ func dropLedgerIDs(r *RunState) []string {
 // criteria ∪ frozen view are rejected; per id per checkpoint the record is
 // idempotent (a replayed callback re-records nothing).
 func TestRecordCriteriaDrop(t *testing.T) {
-	r := startTestRun(t, BudgetLimits{})
-	cp := openDecidableCheckpoint(t, r, []string{"crit-a", "crit-b"}, []string{"crit-b"})
+	// The fix route: skipping the diagnosis checkpoint must resume the run
+	// (a skip of the LAST unsettled phase now closes through post-game, ship
+	// review round 2), and the route's default review axes join the view.
+	r := isolatedRun(t, "fix")
+	// An ACCEPTED context whose view holds the ids the drops will trim.
+	openAndSubmit(t, r, "context", "crit-a", "crit-b", "crit-d")
+	displayCurrent(t, r)
+	decideCurrent(t, r, DecisionContinue)
+	openAndSubmit(t, r, "diagnosis", "crit-b")
+	displayCurrent(t, r)
+	cp := r.CurrentCheckpoint()
 
 	// Unknown id: neither a pending criterion of this checkpoint nor in the
 	// frozen acceptance view.
@@ -2286,37 +2295,52 @@ func TestRecordCriteriaDrop(t *testing.T) {
 	}
 
 	// A later checkpoint may drop the same id again (a fresh decision). SKIP
-	// decides cp without accepting anything (no clearing), then a fresh
-	// context/diagnosis cycle opens the next decidable checkpoint. The round-2
-	// context re-freeze REPLACES the context entry (last-entry-wins per phase
-	// id), so crit-a must ride the round-2 criteria to stay droppable.
+	// decides cp without accepting anything (no clearing); the run resumes
+	// (a mid-route skip is not the finish), and the next phase's checkpoint
+	// carries crit-a again — the re-acceptance that makes the re-drop legal.
 	if err := r.RecordDecision(cp.ID, DecisionSkip, "tu-dec-1"); err != nil {
 		t.Fatalf("RecordDecision(SKIP): %v", err)
 	}
-	cp2 := openDecidableCheckpoint(t, r, []string{"crit-a", "crit-d"}, []string{"crit-c"})
+	if r.Status != StatusActive {
+		t.Fatalf("a mid-route skip must resume the run, got %s", r.Status)
+	}
+	openAndSubmit(t, r, "reproduce", "crit-a", "crit-d")
+	displayCurrent(t, r)
+	cp2 := r.CurrentCheckpoint()
 	recorded, err = r.RecordCriteriaDrop(cp2.ID, "crit-a", "tu-drop-3")
 	if err != nil || !recorded {
 		t.Fatalf("RecordCriteriaDrop(crit-a) at the later checkpoint = (%v, %v), want (true, nil)", recorded, err)
 	}
 
 	// The envelope arithmetic follows: expected = frozen − drops. The frozen
-	// view is the LAST freeze per phase id — context→[crit-a, crit-d] (the
-	// round-2 re-acceptance replaced round-1's entry); the skipped diagnosis
-	// visits froze nothing. Drops: crit-b@cp1, crit-a@cp2 → survivors {crit-d}.
+	// view holds the ACCEPTED context's [crit-a, crit-b, crit-d] (+ the fix
+	// route's default review axes). Drops: crit-b@cp1, crit-a@cp2 →
+	// survivors {crit-d} plus the axes.
 	dropped := map[string]bool{}
 	for _, d := range r.CriteriaDrops {
 		dropped[d.ID] = true
 	}
 	var survivors []Criterion
-	for _, fr := range r.AcceptanceView().Requirements {
-		for _, id := range fr.CriteriaIDs {
-			if !dropped[id] {
-				survivors = append(survivors, Criterion{ID: id, Method: MethodJudgment, Goal: "goal " + id})
-			}
+	for _, c := range r.AcceptanceView().Criteria {
+		if !dropped[c.ID] {
+			survivors = append(survivors, c)
 		}
 	}
-	if len(survivors) != 1 || survivors[0].ID != "crit-d" {
-		t.Fatalf("survivors = %v, want exactly [crit-d] (frozen − drops)", survivors)
+	var ids []string
+	for _, c := range survivors {
+		ids = append(ids, c.ID)
+	}
+	if !containsString(ids, "crit-d") || containsString(ids, "crit-a") || containsString(ids, "crit-b") {
+		t.Fatalf("survivors = %v, want crit-d kept and the dropped ids gone (frozen − drops)", ids)
+	}
+	for _, id := range ids {
+		if id == "crit-d" {
+			continue
+		}
+		if !map[string]bool{"crit-architecture": true, "crit-correctness": true, "crit-idiom": true,
+			"crit-impact": true, "crit-prove-it": true, "crit-security": true}[id] {
+			t.Fatalf("survivors = %v: %q is neither crit-d nor a default review axis", ids, id)
+		}
 	}
 	env := SemanticEnvelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-drop", ArtifactSet: []ArtifactRef{{Path: "x.md", Digest: "d"}}, ExitCriteria: survivors}
 	if err := ValidateEnvelope(env, r.AcceptanceView(), r.CriteriaDrops, nil); err != nil {

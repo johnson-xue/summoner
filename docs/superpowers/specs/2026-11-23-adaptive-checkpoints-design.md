@@ -464,6 +464,10 @@ id、不做过期回退、不校验结论、评分器放行 diagnosis、Go 策�
 **未在 round 2 关闭（记录在案）**：
 - 评分器无路由表，「路线已走完」一行无法被审计——由 Go 守卫与单元测试
   覆盖，评分器侧记为缺口。
+- 第 3 轮开工前补：最后未结算阶段的 `skip:` 直接进入 POST_GAME_PENDING
+  （显式 UNREVIEWED 收尾，不再是 ACTIVE 死路；交互 F3 的 A 类真正闭合，
+  `TestSkipOfTheLastPhaseClosesThroughPostGame` 钉住；REVIEW_DEBT 的
+  `continue:` 仍只能靠 stop 收尾，记为残余）。
 - 回滚的「无损摘要」方案（把 0.6.1 可算的摘要留在 `display_digest`、另存
   0.7.0 摘要）会改状态格式，未采纳；文档按有损回滚写实。
 - `git --git-dir="$(pwd)/.git"` 之外的同类「替换值拆词」形状未逐一穷举。

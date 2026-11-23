@@ -490,6 +490,10 @@ A passed phase renders no checkpoint, so the run keeps moving two ways:
   is answered once with the next step — the user never types "continue" to
   keep the run alive; when the route is complete the nudge says so and the
   run needs closing (post-game or stop).
+- A `skip:` that settles the route's LAST unsettled phase IS the explicit
+  UNREVIEWED finish: the run enters post-game (it does not stay ACTIVE with
+  nothing to open and no checkpoint to close from). A mid-route skip resumes
+  the run ACTIVE with the continuation cue.
 - The pass stays visible afterwards: the visit reads `accepted (自动通过)`
   and every later checkpoint's `经过` block shows `✓ 自动通过`.
 
