@@ -394,7 +394,7 @@ func emitBlock(outW io.Writer, reason string) {
 // to CONTAIN the block: an explanation may precede it and the tail line may
 // differ.
 func renderReason(cp *shared.CheckpointState, run *shared.RunState) string {
-	reason := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的规范消息后再结束：消息中须完整包含该规范块（summoner-status view:checkpoint 提供逐字节原文；可在块前写解释，尾行 ╚ 长短不限）", cp.ID, cp.Nonce)
+	reason := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的规范消息后再结束：消息中须完整包含该规范块（summoner-status view:checkpoint 提供逐字节原文；可在块前写解释，尾行 ╚ 长短不限）。刚粘贴过却仍被要求渲染时，常见原因是整块没有逐字包含——行首缩进、> 引用、``` 代码围栏、任何一行被改写都会让绑定失败；用该命令的输出原样重贴。", cp.ID, cp.Nonce)
 	if n := unresolvedOutcomes(run); n > 0 {
 		reason += fmt.Sprintf("；另有 %d 项 OUTCOME_UNKNOWN 待对账", n)
 	}

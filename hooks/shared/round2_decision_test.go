@@ -155,3 +155,48 @@ func TestBlankConclusionItemsAreNotContent(t *testing.T) {
 		t.Fatal("a real item is content")
 	}
 }
+
+// TestAutoPassAndNudgeDefenseInDepth — guards only a direct reducer caller
+// can reach today, each unpinned without this test (ship review round 2,
+// protocol F5): the kind guard, the open-questions guard, and the nudge
+// tail's event-TYPE test.
+func TestAutoPassAndNudgeDefenseInDepth(t *testing.T) {
+	useTraceDir(t)
+	r := startTestRun(t, BudgetLimits{})
+	r.MarkOutcomeUnknown("tu-crash")
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ResolveOutcome("tu-crash", OutcomeFailed); err != nil {
+		t.Fatal(err)
+	}
+	cp := r.CurrentCheckpoint()
+	if cp == nil || cp.Kind != CheckpointRecovery {
+		t.Fatalf("fixture: recovery checkpoint = %+v", cp)
+	}
+	if err := r.AutoPassCheckpoint(cp.ID, false); err == nil {
+		t.Fatal("a non-PHASE checkpoint must never auto-pass")
+	}
+
+	cfg := &RunState{Workflow: "fix"}
+	withQuestions := CheckpointState{ID: "cp-x", Kind: CheckpointPhase, PhaseID: "context",
+		Outcome: ConclusionConfirmed, Note: "s",
+		Conclusion: &Conclusion{Summary: "s", Evidence: []string{"e"}, OpenQuestions: []string{"q"}}}
+	if AutoPassBlocker(cfg, withQuestions, false) == "" {
+		t.Fatal("a conclusion with open questions owes the human gate")
+	}
+
+	r2 := startTestRun(t, BudgetLimits{})
+	cp2 := openAndSubmit(t, r2, "context")
+	displayCurrent(t, r2)
+	decideCurrent(t, r2, DecisionContinue)
+	// The reducer does not trace; the hook would have appended the decided
+	// event. A DIFFERENT lifecycle event naming the cue must not arm the
+	// nudge (the tail's type test).
+	if err := AppendEvent(r2.RunID, "sess-1", TraceEvent{Type: EventCheckpointOpened, Payload: map[string]interface{}{"checkpoint_id": cp2.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := ContinueNudgePending(r2); err != nil || pending {
+		t.Fatalf("a non-decision lifecycle event armed the nudge (pending %v, err %v)", pending, err)
+	}
+}

@@ -258,7 +258,7 @@ func TestStopBlocksUndisplayedCheckpoint(t *testing.T) {
 	if !blocked {
 		t.Fatalf("stdout %q must be a block decision", stdout)
 	}
-	want := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的规范消息后再结束：消息中须完整包含该规范块（summoner-status view:checkpoint 提供逐字节原文；可在块前写解释，尾行 ╚ 长短不限）", cp.ID, cp.Nonce)
+	want := fmt.Sprintf("渲染 checkpoint %s (nonce %s) 的规范消息后再结束：消息中须完整包含该规范块（summoner-status view:checkpoint 提供逐字节原文；可在块前写解释，尾行 ╚ 长短不限）。刚粘贴过却仍被要求渲染时，常见原因是整块没有逐字包含——行首缩进、> 引用、``` 代码围栏、任何一行被改写都会让绑定失败；用该命令的输出原样重贴。", cp.ID, cp.Nonce)
 	if reason != want {
 		t.Fatalf("block reason = %q, want exactly %q", reason, want)
 	}
@@ -1032,5 +1032,40 @@ func TestStopStaleBindingIsRebound(t *testing.T) {
 	bound := currentCheckpoint(t, reloadRun(t, "run-1"))
 	if want := shared.CheckpointContentDigest(*bound, 1); bound.DisplayDigest != want {
 		t.Fatalf("display digest = %s, want the CURRENT content digest %s", bound.DisplayDigest, want)
+	}
+}
+
+// TestStopSinglePageAskOmitsThePagingCue — a single-page menu has no `more:`
+// (ship review round 2, interaction F4/F10: the guard existed but no test
+// pinned it, so always printing the paging line stayed green).
+func TestStopSinglePageAskOmitsThePagingCue(t *testing.T) {
+	useStopEnv(t)
+	r, err := shared.StartRun("run-1", hookSession, "fix", shared.BudgetLimits{})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if err := r.OpenPhase("context"); err != nil {
+		t.Fatalf("OpenPhase: %v", err)
+	}
+	if err := r.OpenRequirementChange("scope change"); err != nil {
+		t.Fatalf("OpenRequirementChange: %v", err)
+	}
+	if _, err := r.ApplyRequirementDelta(shared.RequirementDelta{Note: "delta"}); err != nil {
+		t.Fatalf("ApplyRequirementDelta: %v", err)
+	}
+	cp := r.CurrentCheckpoint()
+	if cp == nil || len(cp.MenuPages) != 1 {
+		t.Fatalf("fixture: the change-confirm checkpoint must fit one page, got %+v", cp)
+	}
+	_, stdout, stderr := callStop(t, stopPayload(t, renderBlock(r, *cp)))
+	if stderr != "" {
+		t.Fatalf("stderr: %q", stderr)
+	}
+	reason := wantAskBlock(t, stdout, *cp)
+	if strings.Contains(reason, "more:") {
+		t.Fatalf("a single-page ask must not offer paging, got %q", reason)
+	}
+	if !strings.Contains(reason, "选项已全部列出") {
+		t.Fatalf("the single-page ask must say every option is listed, got %q", reason)
 	}
 }

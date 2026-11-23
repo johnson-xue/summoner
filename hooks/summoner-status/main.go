@@ -158,6 +158,11 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 		return 2
 	}
 	fmt.Fprint(outW, renderStatusWith(run, sandboxTier(), otherLiveRunsLine(sessionID, fromEnv)))
+	if cp := run.CurrentCheckpoint(); cp != nil {
+		// Model-facing, not user-facing: keep it out of the pasted view but
+		// in the tool result the model reads (ship review round 2, F9).
+		fmt.Fprintf(errW, "model: %s\n", shared.DecisionAskInstruction(*cp))
+	}
 	return 0
 }
 

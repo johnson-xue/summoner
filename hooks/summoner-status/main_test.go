@@ -185,6 +185,10 @@ func TestRenderWaitUser(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
+	// The ask recipe is model-facing: stderr, not the pasted view (round 2).
+	if !strings.Contains(stderr, "model: ") || strings.Contains(out, "model: ") {
+		t.Errorf("the model line must be on stderr only (stderr %q)", stderr)
+	}
 	for _, want := range []string{
 		"⚡ SUMMONER STATUS — run run-1 · workflow fix · WAIT_USER",
 		"route: context → diagnosis → reproduce → fix → regression → review",
@@ -215,7 +219,6 @@ func TestRenderWaitUser(t *testing.T) {
 		"page 2/3:",
 		"recall targets:",
 		"- latest (phase context, visit context@v1)",
-		"model: ",
 		// …and the checkpoint message still ends the default view.
 		"⚡ SUMMONER CHECKPOINT cp-2 — nonce " + cp.Nonce + " — PHASE",
 		"phase: diagnosis",

@@ -108,7 +108,7 @@ func FrameworkDecisionLines(run *RunState, cp *CheckpointState, extra ...string)
 			texts = append(texts, RenderCheckpointMessage(run, run.Checkpoints[i]), DisplayBlock(run, run.Checkpoints[i]))
 		}
 	}
-	texts = append(texts, CheckpointDetail(run, *cp))
+	texts = append(texts, CheckpointDetail(run, *cp), "model: "+DecisionAskInstruction(*cp))
 	texts = append(texts, extra...)
 	for _, drops := range [][]string{nil, {"x"}} {
 		texts = append(texts, RejectionDisclosure(drops, &BudgetLimits{RunRework: 1}))

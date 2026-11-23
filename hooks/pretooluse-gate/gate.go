@@ -616,7 +616,7 @@ func decideSkill(in *gateInput, run *shared.RunState, skill string) decision {
 	// Every other skill waits for the decision.
 	if run.Status == shared.StatusWaitUser && skill != skillChange && skill != skillPhaseSubmit && skill != skillStatus {
 		return deny(fmt.Sprintf(
-			"Summoner gate: Skill(%s) is blocked while the run waits for a user decision (WAIT_USER) — only summoner:change (the change-loop entry) and the read-only summoner:status may run there; present the checkpoint and wait for the decision.",
+			"Summoner gate: Skill(%s) is blocked while the run waits for a user decision (WAIT_USER) — only summoner:change (the change-loop entry) and the read-only summoner:status may run there; paste the checkpoint message and end the turn so the Stop hook can hand back the question.",
 			skill))
 	}
 
@@ -1449,7 +1449,7 @@ func decideWrite(run *shared.RunState, toolName string) decision {
 			where = "checkpoint " + cp.ID
 		}
 		return deny(fmt.Sprintf(
-			"Summoner gate: %s is blocked — the run waits for a user decision at %s (WAIT_USER). Present the checkpoint and wait for the user.", toolName, where))
+			"Summoner gate: %s is blocked — the run waits for a user decision at %s (WAIT_USER). Paste the checkpoint message and end the turn: the Stop hook binds it and hands back the exact question.", toolName, where))
 	case shared.StatusReviewPending:
 		return deny(fmt.Sprintf(
 			"Summoner gate: %s is blocked while a review is in flight (REVIEW_PENDING) — artifacts must not change mid-review.", toolName))
