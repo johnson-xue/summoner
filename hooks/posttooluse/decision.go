@@ -281,6 +281,15 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	// label) means the DEFAULT recall; a label on NO persisted page is a
 	// gate-bypass artifact — rejected, never guessed.
 	_, target := splitLabelKeyword(label)
+	// Ship review round 3: at the review-debt checkpoint "continue" means
+	// back to work — but when every route phase is settled there is nothing
+	// to continue INTO, and the run stayed ACTIVE with nothing to open and
+	// no checkpoint to close from. "Continue" then re-enters the latest
+	// accepted phase: the default recall, through the ordinary recall path.
+	if d == shared.DecisionContinue && cp.Kind == shared.CheckpointReviewDebt && len(cp.RecallTargets) > 0 &&
+		!run.HasOpenPhase() && shared.NextExpectedPhase(run) == "" {
+		d, target = shared.DecisionRecall, "latest"
+	}
 	if d == shared.DecisionRecall && !cp.IsOfferedRecallTarget(target) {
 		if !cp.OnMenuPage(label) {
 			return settleAndReject(fmt.Sprintf(

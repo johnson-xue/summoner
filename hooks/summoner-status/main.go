@@ -104,13 +104,13 @@ func runStatus(stdin io.Reader, outW, errW io.Writer) int {
 	// SessionStart exported into this session's shell environment; without
 	// it the project-wide fallback stands (and names its own ambiguity).
 	sessionID, fromEnv := resolveSession(in.SessionID)
-	runs, err := liveRunsFor(sessionID)
+	runs, err := liveRunsFor(sessionID, errW)
 	if err == nil && fromEnv && len(runs) == 0 {
 		// The exported id can be stale (an earlier session of this project,
 		// and no SessionStart ran for this one). Nothing live under it must
 		// not read as "no active run": the project-wide fallback stands.
 		fromEnv = false
-		runs, err = liveRunsFor("")
+		runs, err = liveRunsFor("", errW)
 	}
 	if err != nil {
 		// Unreadable state is not an input error: surface it, stay exit 0.
@@ -262,7 +262,7 @@ func reviewView(run *shared.RunState) string {
 // through shared.SessionRuns (the same resolution the hooks use); an empty one
 // falls back to scanning every session under the project key — the model does
 // not know its own session id when invoking the viewer over Bash.
-func liveRunsFor(sessionID string) ([]*shared.RunState, error) {
+func liveRunsFor(sessionID string, errW io.Writer) ([]*shared.RunState, error) {
 	if sessionID != "" {
 		runs, err := shared.SessionRuns(sessionID)
 		if err != nil {
@@ -289,7 +289,10 @@ func liveRunsFor(sessionID string) ([]*shared.RunState, error) {
 		}
 		runs, err := shared.SessionRuns(s.Name())
 		if err != nil {
-			return nil, err
+			// One unreadable session must not hide every other run: the
+			// stale-id fallback rests on this scan (ship review round 3).
+			fmt.Fprintf(errW, "summoner-status: session %s unreadable, skipped — %v\n", s.Name(), err)
+			continue
 		}
 		out = append(out, liveRuns(runs)...)
 	}

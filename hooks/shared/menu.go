@@ -108,6 +108,11 @@ func (cp *CheckpointState) IsOfferedRecallTarget(target string) bool {
 // menuHasRecallAction reports whether a kind's full menu carries a recall
 // action (the kinds where a named-target page is meaningful).
 func menuHasRecallAction(kind CheckpointKind) bool {
+	if kind == CheckpointReviewDebt {
+		// With accepted history the debt checkpoint offers a recall page:
+		// re-entering a phase is how work continues there (ship review r3).
+		return true
+	}
 	for _, l := range DecisionMenuLabels(kind) {
 		if menuKeyword(l) == "recall" {
 			return true

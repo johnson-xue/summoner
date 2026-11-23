@@ -377,13 +377,17 @@ func TestAdaptiveStopAckStrippingOverBinaries(t *testing.T) {
 	if code, _, stderr := runBinary(t, "pretooluse-gate", gatePayload(t, "Skill", "tu-ps-1", map[string]interface{}{
 		"skill": "summoner:phase-submit",
 		"args": mustJSON(t, shared.PhaseSubmission{
-			PhaseID: "context", Summary: "握手超时后服务停止",
-			Conclusion: &shared.Conclusion{Summary: "握手超时后服务停止"},
+			PhaseID: "context", Summary: "停止转发",
+			Conclusion: &shared.Conclusion{Summary: "停止转发"},
 		}),
 	}), nil); code != 0 {
 		t.Fatalf("phase-submit(context) exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
-	conclusionLine := "║   握手超时后服务停止" // the rendered conclusion, byte for byte
+	// The rendered conclusion line, byte for byte. It LEADS with a stop word:
+	// unstripped it reads as a bare stop and ends the turn (the first version
+	// of this test used a line that was no stop even unstripped, so it pinned
+	// nothing — ship review round 3).
+	conclusionLine := "║   停止转发"
 
 	code, out, _ := runBinary(t, "stop", stopRenderPayload(t, conclusionLine), nil)
 	if code != 0 || !strings.Contains(out, `"decision":"block"`) {

@@ -1101,6 +1101,29 @@ func TestRenderAutoPassNotTakenLine(t *testing.T) {
 	}
 }
 
+// TestProjectScanSkipsACorruptNeighbour — one unreadable session state must
+// not hide every other live run: the stale-id fallback rests on this scan
+// (ship review round 3, compat F5).
+func TestProjectScanSkipsACorruptNeighbour(t *testing.T) {
+	useStatusEnv(t)
+	setenv16(t, "SUMMONER_SESSION_ID", "sess-gone")
+	r := newRun(t)
+	bad := filepath.Join(os.Getenv("SUMMONER_STATE_DIR"), shared.ProjectKey(), "sess-bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "run-bad.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := callStatus(t, `{}`)
+	if code != 0 || !strings.Contains(out, "⚡ SUMMONER STATUS — run "+r.RunID) {
+		t.Fatalf("a corrupt neighbour must not defeat the project-wide view: (code %d, stderr %q)\n%s", code, stderr, out)
+	}
+	if !strings.Contains(stderr, "sess-bad unreadable, skipped") {
+		t.Fatalf("the skipped session must be named on stderr, got %q", stderr)
+	}
+}
+
 // TestStatusExportedSessionWithoutLiveRunFallsBack (ship review round 1):
 // an exported session id can be STALE — left by an earlier session of this
 // project. It must not yield a confident "No active run" (or another

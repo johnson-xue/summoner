@@ -1346,7 +1346,7 @@ func legalDecisionForKind(kind CheckpointKind, d Decision) error {
 		}
 	case CheckpointReviewDebt:
 		switch d {
-		case DecisionReviewOnDemand, DecisionSkip, DecisionContinue, DecisionStop:
+		case DecisionReviewOnDemand, DecisionSkip, DecisionContinue, DecisionRecall, DecisionStop:
 		default:
 			return fmt.Errorf("%s illegal at review-debt checkpoint (want REVIEW, SKIP, CONTINUE or STOP — done cannot discharge the mandatory terminal review)", d)
 		}
@@ -1363,7 +1363,11 @@ func legalDecisionForKind(kind CheckpointKind, d Decision) error {
 // prior is cleared. Empty/invalid priors fall back to ACTIVE.
 // hasOpenPhase reports whether any visit is still open (the model is working
 // in it; nothing needs nudging).
-func (r *RunState) hasOpenPhase() bool {
+func (r *RunState) hasOpenPhase() bool { return r.HasOpenPhase() }
+
+// HasOpenPhase reports whether any visit is still open (the model is working
+// in it; nothing needs nudging).
+func (r *RunState) HasOpenPhase() bool {
 	for _, p := range r.Phases {
 		if p.Open {
 			return true
@@ -1605,9 +1609,6 @@ func (s *RunState) applyDecision(checkpointID string, d Decision, toolUseID, tar
 		}
 		s.applyRecallAt(cp, recallIdx, target, "", toolUseID)
 		s.RecoveryPrior = "" // a recall supersedes the episode's restore
-		if s.Status == StatusActive && !s.hasOpenPhase() {
-			s.ContinueNudgeFor = cp.ID // ACTIVE, nothing rendered: nudge once
-		}
 	case DecisionReviewOnDemand:
 		// B2: park the run under a persisted obligation — no work may
 		// open until the matching review is requested and concluded.
