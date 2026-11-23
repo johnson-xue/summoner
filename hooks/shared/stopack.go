@@ -65,8 +65,11 @@ var (
 	// clause, in either order, in Chinese or English. The request marker
 	// must sit right next to the stop word ("按要求排查…服务停止" is
 	// content: too many words in between).
-	stopRequestRe = regexp.MustCompile(`(?i)(?:按要求|按照要求|按你的要求|按您的要求|按你要求|按您要求|按你的指示|按您的指示|按你指示|按您指示|按照你(?:的)?(?:要求|指示)|按照您(?:的)?(?:要求|指示)|遵照你(?:的)?(?:要求|指示)|遵照您(?:的)?(?:要求|指示)|依照你(?:的)?(?:要求|指示)|依照您(?:的)?(?:要求|指示)|遵从你(?:的)?(?:要求|指示)|根据你的(?:要求|指示)|根据您的(?:要求|指示)|(?:应|依)(?:照)?(?:你|您)(?:的)?(?:要求|指示)|应你要求|应您要求|(?:你|您|用户)(?:要求|让|叫|希望|要)(?:我|我们)?)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,6}(?:停止|终止|中止|结束|停下)` +
-		`|(?:停止|终止|中止|结束|停下)了?[^。\n]{0,8}(?:按照|按|遵照|依照|遵从|根据|应|依)(?:照)?(?:你|您|用户)(?:的)?(?:要求|指示)` +
+	stopRequestRe = regexp.MustCompile(`(?i)(?:按要求|按照要求|按你的要求|按您的要求|按你要求|按您要求|按你的指示|按您的指示|按你指示|按您指示|按照你(?:的)?(?:要求|指示)|按照您(?:的)?(?:要求|指示)|遵照你(?:的)?(?:要求|指示)|遵照您(?:的)?(?:要求|指示)|依照你(?:的)?(?:要求|指示)|依照您(?:的)?(?:要求|指示)|遵从你(?:的)?(?:要求|指示)|根据你的(?:要求|指示)|根据您的(?:要求|指示)|(?:你|您|用户)(?:要求|让|叫|希望|要)(?:我|我们)?)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,6}(?:停止|终止|中止|结束|停下)` +
+		`|(?:停止|终止|中止|结束|停下)了?[^。\n]{0,8}(?:按照|按|遵照|依照|遵从|根据)(?:你|您|用户)(?:的)?(?:要求|指示)` +
+		// 应 / 依 only behind a boundary: bare, they matched the 应 of 响应
+		// ("服务停止响应你的要求。" — ship review round 4, closure N1).
+		`|(?:^|[，,、\s：:])(?:应|依)(?:照)?(?:你|您)(?:的)?(?:要求|指示)[，,、\s]*(?:我|我们|已|已经|现|现在|将|把)?[^。，,.！!？?；;：:\n]{0,6}(?:停止|终止|中止|结束|停下)` +
 		`|\b(?:as|per|at|on|upon|since)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction|direction)[^.!?\n]{0,30}\b(?:stop|halt|abort)` +
 		`|\b(?:stop|halt|abort)(?:ped|ping|ed|ing)?\b[^.!?\n]{0,24}?\b(?:as|per|at|on|upon|since|because)\s+(?:you\s+|your\s+|the\s+user(?:'s)?\s+)?(?:asked|requested|instructed|wanted|request|instruction)` +
 		`|\b(?:you|the\s+user)\s+(?:asked|requested|told|instructed|wanted)\s+me\s+to\s+(?:stop|halt|abort)`)
@@ -78,7 +81,7 @@ var (
 	// rejectionLinePrefixes open the lines of the rejection block whose tail
 	// varies (the recorder's reason, the applied effects).
 	rejectionLinePrefixes = []string{
-		"Summoner：本次裁决未记录", RejectionCausePrefix, "本次回调已生效的部分",
+		"Summoner：本次裁决未记录", RejectionCausePrefix, "本次回调已生效的部分", MappedContinueHeader,
 		"- 无：未记录任何 drop", "- 已记录 drop：", "- 已追加预算：", "- 未记录任何 drop。", "- 未追加预算。",
 	}
 
@@ -145,7 +148,7 @@ func IsStopAcknowledgment(run *RunState, cp *CheckpointState, message string, st
 	if optionTalkRe.MatchString(authored) {
 		return false // a message that lists options is describing the menu
 	}
-	if stopRequestRe.MatchString(authored) {
+	if requestTiedStop(authored) {
 		return true // an explicit acknowledgment of the user's request
 	}
 	if strict || pasted >= pasteThreshold {
@@ -166,31 +169,134 @@ func IsStopAcknowledgment(run *RunState, cp *CheckpointState, message string, st
 	return stopWordAtEdge(authored)
 }
 
-// stopWordAtEdge reports a bare stop: the narrow stop word opens the
-// statement (a short lead-in like "好的，" or "I will" may precede it) or
-// closes it (a short English tail like "here." may follow). A stop word with
-// an object after it ("…停止响应。") or buried mid-sentence is something
-// being described, not a stop.
-func stopWordAtEdge(s string) bool {
-	for _, loc := range bareStopWordRe.FindAllStringIndex(s, -1) {
-		if leadIn(s[:loc[0]]) {
-			return true
-		}
-		// A CLOSING stop word needs a short lead-in too: "好的，已停止。" is
-		// a stop statement; "根因找到了：握手超时后服务停止。" is a
-		// conclusion that happens to end in a stop word (ship review r2).
-		if tail(s[loc[1]:]) && utf8.RuneCountInString(s[:loc[0]]) <= 10 {
+// requestTiedStop reports a stop word tied to the user's request in a
+// clause that is not NEGATED. "I did not stop because you asked" and "没有
+// 按要求停止" describe a stop that did not happen; any non-negated match is
+// the acknowledgment.
+func requestTiedStop(authored string) bool {
+	for _, loc := range stopRequestRe.FindAllStringIndex(authored, -1) {
+		if !negatedStop(authored, loc) {
 			return true
 		}
 	}
 	return false
 }
 
-func leadIn(before string) bool {
-	if utf8.RuneCountInString(before) <= 6 {
+var (
+	// stopNegationEnRe: the clause before the match ends in a negation (up
+	// to two short words may follow it: "has not been").
+	stopNegationEnRe = regexp.MustCompile(`(?i)\b(?:not|never|no|cannot|can't|won't|don't|doesn't|didn't|isn't|wasn't|n't)\b[^A-Za-z]{0,3}(?:[A-Za-z]{1,12}\b[^A-Za-z]{0,2}){0,2}$`)
+	// stopNegationZhRe: the last characters before the match are a negation.
+	stopNegationZhRe = regexp.MustCompile(`(?:没有|没|未|不|别|无需|无须|非|尚)$`)
+	// stopNegationInRe: a negation between the request marker and the stop
+	// word ("按要求未停止").
+	stopNegationInRe = regexp.MustCompile(`没有|未|没|不|别`)
+)
+
+func negatedStop(authored string, loc []int) bool {
+	if stopNegationInRe.MatchString(authored[loc[0]:loc[1]]) {
 		return true
 	}
-	return isASCII(before) && len(strings.Fields(before)) <= 2
+	clauseStart := strings.LastIndexAny(authored[:loc[0]], "。！？!?；;\n") + 1
+	before := strings.TrimSpace(authored[clauseStart:loc[0]])
+	if isASCII(before) {
+		return stopNegationEnRe.MatchString(before)
+	}
+	return stopNegationZhRe.MatchString(lastRunes(before, 4))
+}
+
+func lastRunes(s string, n int) string {
+	r := []rune(strings.Trim(s, "，,、：: "))
+	if len(r) > n {
+		r = r[len(r)-n:]
+	}
+	return string(r)
+}
+
+// stopWordAtEdge reports a bare stop. Two shapes count:
+//
+//   - the stop word OPENS the statement, behind nothing or an interjection
+//     ("Halting the workflow now.", "好的，已停止。"), and what follows is
+//     bounded: in Chinese only aspect particles and sentence punctuation
+//     ("已停止了。"), in English at most three short words that are not a
+//     participle — "已停止响应。" and "Stopped responding after the
+//     upgrade." describe something that stopped responding;
+//   - the stop word CLOSES a short statement ("系统已停止。").
+//
+// A subject-led sentence ("The service stopped responding after SIGTERM.",
+// "网关已停止响应。") or a conclusion that happens to end in a stop word is
+// something being described, not a stop (ship review rounds 2–4).
+func stopWordAtEdge(s string) bool {
+	for _, loc := range bareStopWordRe.FindAllStringIndex(s, -1) {
+		before, after := s[:loc[0]], s[loc[1]:]
+		if isInterjectionLeadIn(before) && boundedStopTail(after) {
+			return true
+		}
+		if tail(after) && utf8.RuneCountInString(before) <= 10 {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// zhStopTailRe: what may follow an opening Chinese stop word — the
+	// aspect particle 了 and sentence punctuation, nothing else.
+	zhStopTailRe = regexp.MustCompile(`^了?[。．.!！?？…~～]*$`)
+	// enInterjections / zhInterjections: the only words that may stand
+	// between the start of the statement and an opening stop word.
+	enInterjections = map[string]bool{"i": true, "i'll": true, "i've": true, "i'm": true, "i'd": true, "will": true,
+		"shall": true, "am": true, "we": true, "we'll": true, "we've": true, "okay": true, "ok": true, "yes": true,
+		"sure": true, "understood": true, "alright": true, "right": true, "now": true, "so": true, "then": true,
+		"and": true, "got": true, "it": true}
+	zhInterjections = map[string]bool{"好": true, "好的": true, "明白": true, "收到": true, "已": true, "已经": true,
+		"现": true, "现在": true, "我": true, "我们": true, "那就": true, "那么": true, "遵命": true, "嗯": true,
+		"行": true, "这就": true}
+)
+
+func isInterjectionLeadIn(before string) bool {
+	b := strings.TrimSpace(before)
+	if b == "" {
+		return true
+	}
+	if isASCII(b) {
+		words := strings.Fields(strings.ToLower(strings.Trim(b, ",.!?:;")))
+		if len(words) > 3 {
+			return false
+		}
+		for _, w := range words {
+			if !enInterjections[w] {
+				return false
+			}
+		}
+		return true
+	}
+	for _, seg := range strings.FieldsFunc(b, func(r rune) bool { return strings.ContainsRune("，,、：: \t", r) }) {
+		if !zhInterjections[seg] {
+			return false
+		}
+	}
+	return true
+}
+
+func boundedStopTail(after string) bool {
+	if isASCII(after) {
+		trimmed := strings.TrimSpace(strings.TrimRight(after, " .!"))
+		if trimmed == "" {
+			return true
+		}
+		words := strings.Fields(trimmed)
+		if len(words) > 3 || utf8.RuneCountInString(trimmed) > 20 {
+			return false
+		}
+		for _, w := range words {
+			if strings.HasSuffix(strings.ToLower(w), "ing") {
+				return false // "responding", "forwarding": something described
+			}
+		}
+		return true
+	}
+	return zhStopTailRe.MatchString(after)
 }
 
 func tail(after string) bool {

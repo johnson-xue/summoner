@@ -364,6 +364,28 @@ func TestAdaptiveRejectionIsVisibleOverBinaries(t *testing.T) {
 	}
 }
 
+// TestAdaptiveStopAckWithAPastedBlockBindsFirst — the display act comes
+// BEFORE the stop test (ship review round 4, N8): a request-tied stop typed
+// in front of the pasted block still binds the display and hands back the
+// question — the user sees the checkpoint they are stopping on, and a
+// recorded STOP is a real decision.
+func TestAdaptiveStopAckWithAPastedBlockBindsFirst(t *testing.T) {
+	useContractEnv(t)
+	seedLiveRun(t, "run-ack2", "fix")
+	submitPhaseViaGate(t, "tu-ps-1", "context", nil)
+	run, err := shared.LoadRun("run-ack2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := runBinary(t, "stop", stopRenderPayload(t, "已按要求停止。\n\n"+renderMessageFor(run, run.CurrentCheckpoint())), nil)
+	if code != 0 || !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, "已展示并绑定") {
+		t.Fatalf("a request-tied stop beside the pasted block must BIND the display and hand back the question: (code, out, stderr) = (%d, %q, %q)", code, out, stderr)
+	}
+	if run, _ = shared.LoadRun("run-ack2"); run.CurrentCheckpoint() == nil || !run.CurrentCheckpoint().Displayed {
+		t.Fatal("the display must be bound before the stop test runs")
+	}
+}
+
 // TestAdaptiveStopAckStrippingOverBinaries — the fix round's stop guard at
 // the seam (ship review round 2, compat F2: no test pinned the framework-text
 // stripping, so reverting it left the suite green). A checkpoint's own
