@@ -61,8 +61,10 @@ rollback_release() {
 trap rollback_release ERR
 
 # ALL THREE manifests — staged: every jq runs before any file is swapped, so
-# a malformed manifest leaves all originals intact (no partial bump window),
-# and each run stages under its own mktemp dir (no fixed /tmp clobber).
+# a malformed manifest leaves all originals intact. A mv failing mid-swap can
+# still leave a partial bump (recoverable: the trap preserves files and a
+# rerun heals or you restore from git); each run stages under its own mktemp
+# dir (no fixed /tmp clobber).
 STAGE=$(mktemp -d) || { echo "❌ mktemp failed" >&2; exit 1; }
 jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > "$STAGE/p.json" || { rm -rf "$STAGE"; echo "❌ jq failed on .claude-plugin/plugin.json" >&2; exit 1; }
 jq --arg v "$VERSION" '.plugins[0].version = $v' .claude-plugin/marketplace.json > "$STAGE/m.json" || { rm -rf "$STAGE"; echo "❌ jq failed on .claude-plugin/marketplace.json" >&2; exit 1; }
@@ -71,6 +73,7 @@ mv "$STAGE/p.json" .claude-plugin/plugin.json
 mv "$STAGE/m.json" .claude-plugin/marketplace.json
 mv "$STAGE/r.json" plugin.json
 rm -rf "$STAGE"
+chmod 644 .claude-plugin/plugin.json .claude-plugin/marketplace.json plugin.json
 echo "✅ Updated 3 manifests"
 
 # CHANGELOG.md: insert below header (create if absent)
@@ -122,7 +125,7 @@ if [ "$GH_RELEASE" = "true" ]; then
             echo "⚠️ gh release create failed — create it manually: gh release create v$VERSION --notes-file $CHANGELOG_FILE"
         fi
     else
-        echo "⚠️ gh not installed/authed — GitHub Release NOT created (manual: gh release create v$VERSION)"
+        echo "⚠️ gh not installed/authed — GitHub Release NOT created (manual: gh release create v$VERSION --notes-file $CHANGELOG_FILE)"
     fi
 fi
 

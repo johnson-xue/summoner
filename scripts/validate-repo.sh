@@ -390,7 +390,10 @@ fi
 # references in skills; section 3b — user-reported dead links).
 # 2026-11-23: 3072→3200 (commands) — release.md carries the release options
 # list including --gh-release; binds at 96% rather than 1 byte of headroom.
-CEIL_SKILL=13632
+# 2026-11-23 (0.6.1): skills 13632→7680 — the binding object (the deleted
+# multi-suite router skill) is gone; largest is summoner-setup at 6084B
+# (79%). A ceiling with nothing near it bounds nothing.
+CEIL_SKILL=7680
 CEIL_CMD=3200
 OVER=0
 while IFS= read -r f; do
