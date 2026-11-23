@@ -243,6 +243,15 @@ func decide(in *gateInput, run *shared.RunState) decision {
 			d := decideWrite(run, "Bash")
 			if !d.allow {
 				d.reason += fmt.Sprintf(" [写类规则: %s]", rule)
+				// 0.7.0 widened the write class (D5.5): a registered project
+				// check whose command is now write-class silently lost its
+				// L2 admission. Say so — the registry is the user's.
+				if def, registered := matchProjectCheck(command); registered {
+					d.reason += fmt.Sprintf(" — this line is registered in summoner.yaml as check %s: since 0.7.0 a write-class command cannot be an L2 check (it can change the tree), so this check can no longer earn credit. Re-register a read-class line, or run the command as ordinary work once the phase is open for it.", def.CheckID)
+				}
+				if strings.Contains(rule, "xargs") || strings.Contains(rule, "find -exec") {
+					d.reason += " For a read-only fan-out use grep -r / rg / git grep, or a for loop over the listing."
+				}
 				return d
 			}
 			return d
