@@ -1,6 +1,7 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev6（S0–S6 已实现，等 ship 审查；rev5 = 评审闭合 + D5.5 已裁决）
+- 状态: rev7（S0–S6 已实现；ship 审查第 1 轮四路均 NEEDS-FIX，已逐项
+  修复并补接缝测试，见 §9；等第 2 轮。rev5 = 评审闭合 + D5.5 已裁决）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -327,13 +328,13 @@ S0–S6 已按 §7 落地于分支 `adaptive-checkpoints`（基线 `dfa4075`）�
 | 5 | `hooks/pretooluse-gate/menu_test.go:TestAskSameTurnDeniedBeforeDisplay`（display 后放行） |
 | 6 | `shared/render_layout_test.go`（≤42 行、移出机制内容）；`TestAdaptiveRenderLeadsWithConclusionOverBinaries` |
 | 7 | `hooks/posttooluse/rejection_visibility_test.go`（整段 stdout 单 JSON、披露、路径）；`TestAdaptiveRejectionIsVisibleOverBinaries` |
-| 8 | `shared/review_enum_test.go` |
-| 9 | `hooks/pretooluse-gate/writeclass_test.go`（边界表）、`writeclass_probe_test.go`（看门狗 + 6000 输入 fuzz）、`contract/finalwave_e2e_test.go:TestFinalWaveWriteBarrier`（二进制级） |
-| 10 | `hooks/session-start/env_export_test.go`；`summoner-status` 的 env/回退/other-runs 测试 |
-| 11 | `shared/trace_test.go`（39 型）、`schema-check.sh`、`trace-protocol.md`；`valid-auto-pass.jsonl` 等 4 个真实链 fixture |
+| 8 | `shared/review_enum_test.go`；`contract/adaptive_seams_test.go:TestAdaptiveReviewerEnumCaseOverBinaries`（二进制级：事故里的大写拼法走到 REVIEWED/PASS） |
+| 9 | `hooks/pretooluse-gate/writeclass_test.go`（边界表）、`writeclass_probe_test.go`（看门狗 + 6000 输入 fuzz）、`writeclass_review_test.go`（审查轮补的绕过与误拒）、`contract/finalwave_e2e_test.go:TestFinalWaveWriteBarrier`（二进制级） |
+| 10 | `hooks/session-start/env_export_test.go`；`summoner-status` 的 env/回退/other-runs 测试；`TestAdaptiveSessionExportOverBinaries`（二进制级：环境文件、按会话限定、过期 id 回退） |
+| 11 | `shared/trace_test.go`（39 型）、`schema-check.sh`、`trace-protocol.md`；10 个真实链 fixture；`TestAdaptiveScorerMirrorsTheAutoPassPolicy`（评分器的策略集 = reducer 的策略表） |
 | 12 | `hooks/stop/autopass_test.go`（一次、已开下一阶段则不再、停止豁免）；`TestAdaptiveAutoPassOverBinaries` |
-| 13 | 本地全电池（hooks 10 包、root、42 fixture 矩阵、validate-repo）绿；lane CI 见发布记录 |
-| 14 | 每片的 ship 审查对代码核实（见 §修订记录与审查报告） |
+| 13 | 本地全电池（hooks 10 包、root、48 fixture × 5 评分器 = 285 条断言、validate-repo）绿；lane CI 见发布记录 |
+| 14 | 每片的 ship 审查对代码核实（见 §修订记录、§9 与审查报告） |
 
 ### 设计之外的改动（实现中发现，含理由）
 1. **S0**：`user-gate-check.sh` 一并认识 `checkpoint.auto`。设计只列三份白名单，
@@ -374,3 +375,72 @@ S0–S6 已按 §7 落地于分支 `adaptive-checkpoints`（基线 `dfa4075`）�
   检查点丢 `Snapshot`（实测 criteria 1→0）。建议携带 `src.Snapshot`，待用户
   裁决是否并入本版（task #44）。
 - `install-smoke-test.sh` 的注册表污染（task #42）：修好前禁跑。
+- REVIEW_RESULT 检查点的结论仍是一句状态（审查轮 L3-F6）：独立审查的发现
+  没有进入检查点正文，用户仍要去别处读审查报告。需给审查结果定义结构化
+  结论并与 S3b 一并设计。
+- 写类分类器的残余类（裁决 (a) 的代价，未关）：表外动词缺省判读——
+  `docker`/`kubectl`/`sqlite3`/`cargo`/`brew`/`gzip`/`zip`… 以及作为参数
+  运行的脚本。关掉它要把诊断冻结期改成**白名单缺省判写**（表外即写，
+  git 子命令已是这个口径），代价是未列出的只读工具会被拒。**是否翻转，
+  等用户裁决。**
+- `time -f %e` 一类的格式串取值被当成时间选项的值处理（审查轮 L2-F11，
+  次要）：不影响判类，仅注释与实现对不齐。
+- 回滚限制（已知并已写入 `checkpoint-protocol.md`）：0.7.x 下展示的、
+  outcome 非 `unclear` 或带结论的检查点，回滚到 0.6.1 后裁决不落地；
+  0.6.1 的 Stop 钩子不重新绑定展示。装回 0.7.x 后该检查点仍是「已展示」
+  且绑定一致，直接重问即可。
+
+## 9. Ship 审查第 1 轮（rev7）
+
+冻结基线 `d9978b5`，四个独立视角（协议/评分器、写类分类器、渲染与交互、
+兼容/升级），**四路均判 NEEDS-FIX**。每条发现先对代码复现再修；下表按
+视角列结论与修法。括号里是各路报告的 Finding 编号；分类器一路只对上了
+F7、F11 两个编号，其余行按发现内容列出。
+
+| 视角 | 发现 | 修法 |
+|---|---|---|
+| 协议/评分器 | 空证据、空摘要也能自动通过（L1-F1） | `hasRealEvidence`：至少一条非空证据；摘要非空 |
+| | 已展示给用户的检查点仍可被自动通过（L1-F3） | `cp.Displayed` 即拒：用户看过了，裁决就是用户的 |
+| | 路线末段自动通过后无处可去（L1-F5） | `routeCompleteAfter` 守卫：后面没有阶段就不自动通过 |
+| | 需求变更后仍残留续跑提示（L1-F6） | `OpenPhase`、`openRequirementChange` 清除提示 |
+| | 评分器对自动通过的形状只查一半（L1-F4） | `user-gate-check.sh` 按协议逐项查：先 opened、同阶段、不搭 AskUserQuestion 调用、两次自动通过之间有 `phase.started`、其后不得 drop/extend；fixture 42→48，断言 250→285 |
+| 写类分类器 | 运行时才确定的命令词被判读（L2，Critical） | 替换产生的空词不再当命令名；命令词按嵌套层级归集 |
+| | 分组形式未建模、类别只按样例实现（L2） | `(`/`)` 进界符表；各类别按类别定义而非样例；补 `writeclass_review_test.go` |
+| | 正常的只读命令被误拒：`if [[ … ]]`、git 读子命令（L2） | 条件命令在保留字后接受 `[[`；git 读表补全 |
+| | 词法器二次复杂度：300 KB 命令 3 秒跑不完（L2） | 线性前缀匹配，300 KB 约 33 ms |
+| | `]]` 后一个字符丢失、CRLF heredoc 吞掉后续命令（L2） | 界符消费长度修正；heredoc 正文剥尾部 `\r` |
+| | 被拒的是已登记的项目检查时没有后果说明（L2-F7） | L2 后果披露 + `xargs`/`find -exec` 的展开提示 |
+| 渲染与交互 | 超限结论被截成半句且无指引（L3-F1/F5） | 截在句末并以 `…（全文见 summoner-status）` 收尾；预算按**转义后**的 rune 计；框架字形（`║ ╔ ╠ ╚ ▶`）转义 |
+| | 用户回 `more:`/`back:` 翻页被当成裁决（L3-F2） | 翻页回答返回导航块，不记录任何决策 |
+| | PostToolUse 拒绝文案按字节截断（L3-F3） | 按 rune 截断 |
+| | Stop 发问块在单页菜单上也写 `more:`（L3-F4） | 仅多页时写 |
+| | 展示后内容变更的检查点永远无法再裁决（L3-F8） | 0.7.0 的 Stop 钩子把不匹配的绑定视作未展示并重新绑定 |
+| | 用户点了 continue/skip 后模型收尾即停（L3-F9） | 续跑提示对**任何**回到 ACTIVE 的裁决生效（不只是自动通过） |
+| | 状态视图不说为什么没自动通过（L3-F10） | `auto-pass not taken:` 行给出原因 |
+| | 最大合法结论没有二进制级测试（L3-F11） | 补 e2e + 摘要折叠的钉死字面量 |
+| | 文档漂移（L3-F7） | 见下「文档」 |
+| 兼容/升级 | 框架文案与选项讨论被当成「用户要求停止」（L4-F1、L1-F2） | `stopack.go`：先剥掉每一份框架文案，停止词须与用户请求同句，出现选项讨论即不算；未展示时从宽、已展示时从严 |
+| | `outcome: unclear` 这个缺省值进了摘要（L4-F2） | 仅有内容可保护时才折叠 outcome/结论；无结论检查点的摘要与 0.6.1 逐字节相同 |
+| | 过期的会话 id 让状态视图显示「无活动 run」（L4-F3） | 导出的会话下无活动 run 即回退到项目级扫描；措辞改为陈述范围而非断言归属 |
+| | 多条守卫只在进程内测试里钉了（L4-F4） | `contract/adaptive_seams_test.go`：旧状态走新二进制、枚举大小写、会话导出、诊断缺结论被拒、评分器 = reducer 策略 |
+
+**文档（L3-F7）**：规范模板与真实渲染不一致（分节线前多一条空轨线、导航
+提示文案过期、追加/不追加两个标签多了一对引号）；「导航提示是渲染里唯一
+面向模型的行」（分节线同样是）；`commands/status.md` 把展示绑定说成
+「id + nonce」；`commands/fix.md`、`new.md` 仍写「每阶段由用户裁决」。
+均已改。为防再漂，新增 `shared/render_template_test.go`：模板里的
+`{…}` 当通配符，必须与最大形状的渲染**逐行**一致；文档列出的每种变体行
+必须是真实渲染会输出的行。
+
+**跨版本对账（一次性，用 v0.6.1 标签的真实二进制）**：
+- 升级：0.6.1 把 run 停在「已展示待裁决」→ 0.7.0 的 Stop 钩子发问且**不改写
+  状态文件**（0.6.1 绑定的摘要就是 0.7.0 算出的那个）→ gate 放行 →
+  PostToolUse 记下 CONTINUE → ACTIVE。绿。
+- 回滚：0.7.0 展示一个无结论检查点 → 0.6.1 记下裁决。绿。
+- 回滚限制：带 0.7.0 内容的检查点在 0.6.1 下被拒。成立，已记入文档。
+- 钉死的摘要字面量 `24e10856…` 由 v0.6.1 代码重算，一致。
+
+**变异检查**：接缝测试钉的是已有行为，「通过」本身不证明有效。在临时
+副本里逐个破坏对应实现（摘要折叠所有 outcome、不归一化枚举、不导出会话
+id、不做过期回退、不校验结论、评分器放行 diagnosis、Go 策略放行全部），
+每条测试只在对应破坏下变红。绿。

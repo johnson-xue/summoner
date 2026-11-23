@@ -41,7 +41,11 @@ One lightweight line, no frame:
 <!-- canonical:checkpoint-format — the ONLY in-repo copy of the rendered
      checkpoint template. Commands and skills reference this section; inlining
      a variant anywhere else is a lint error (scripts/validate-repo.sh,
-     exactly-once + signature confinement + nonce-field rule). -->
+     exactly-once + signature confinement + nonce-field rule).
+     hooks/shared/render_template_test.go holds this block to the binary:
+     with its {placeholders} read as wildcards it must match, line for line,
+     the render of the widest shape. A renderer change that is not written
+     here fails that test. -->
 
 Left-rail structured frame (ruling 2026-11-19): the rail is left-only by
 design — no right edge, no CJK width alignment, no width dependency — so
@@ -55,43 +59,33 @@ digests, requirement snapshot, environment, budget keys, the page
 projection, the recall-target list. Those live in the status **detail view**
 (below). The whole message stays ≤ 42 lines on the largest legal submission.
 
+The template is the **widest shape**: every optional section present, one
+line per list. `{…}` names a field or a list. What each line may instead
+say — and when a section is absent — is in the tables after it.
+
 ```
 ╔═ ⚡ SUMMONER CHECKPOINT {id} — nonce {nonce} — {kind} ══════════
 ║ run: {run} · workflow: {workflow} · phase: {phase-id | —} · requirements v{n}
 ║
-║ ▶ 经过                          (only once the run has settled phases; ≤ 6 lines)
-║   {phase[@v{n}]} ✓ 已验收: {title | conclusion}
-║   {phase[@v{n}]} ✓ 自动通过: {…}   (accepted by the framework, no user decision)
-║   {phase[@v{n}]} — 已跳过: {…}
-║   {phase[@v{n}]} ↩ 已回城: {…}
-║   …另 {n} 个阶段，见 summoner-status  (first line when history exceeds the cap)
+║ ▶ 经过
+║   {settled visit}
 ║
 ║ ▶ 结论 — {已确认 | 未达成 | 未查清}
-║   {conclusion.summary | the phase summary | 未提供}
+║   {conclusion.summary}
 ║   证据:
-║     - {evidence item}           (≤ 4; overflow: ║     …另 {n} 条，见 summoner-status)
-║   证据: 未提供                   (when the submission cited none)
-║   {怎么查的 | 怎么做的}: {conclusion.approach | 未提供}
-║   没查清 · 需要你判断:           (only on 未查清)
-║     - {open question}           (≤ 3, overflow counted the same way; ║     未提供 when none)
-║   影响: {conclusion.impact | 未提供}
+║     - {evidence item}
+║   怎么查的: {conclusion.approach}
+║   没查清 · 需要你判断:
+║     - {open question}
+║   影响: {conclusion.impact}
 ║
-║ 预算已耗尽 · 本次裁决可顺带追加: "{extend label}" / "{hold label}"（追加 {axis +delta, …}）
+║ 预算已耗尽 · 本次裁决可顺带追加: {extend label} / {hold label}（追加 {axis +delta, …}）
 ║ review retry: review {id} attempt {id} — resume {target} · retry="{label}" skip="{label}"
-║
 ╠═ 请决定 — AskUserQuestion（选项须与本页完全一致）
 ║   {page 1 of the menu, verbatim, one label per line}
-║ nonce {nonce} · 其余选项（recall / review / 回城目标）回复 more: 翻页 · 验收标准与产物全文见 summoner-status
+║ nonce {nonce} · {navigation hint}
 ╚════════════════════════════════════
 ```
-
-(The 预算已耗尽 line appears only on a checkpoint opened at budget
-exhaustion — budgets otherwise settle at run start from the manifest; see
-"Budget: run-start configuration + exhaustion extend". The `review retry`
-line appears only on a checkpoint that offers a funded same-envelope retry.
-A kind whose menu fits one page prints a hint without the `more:` cue.
-Change-confirm, recovery, review-result and review-debt checkpoints have no
-submission: their 结论 block is `║   {note}` under a plain `║ ▶ 结论`.)
 
 Field rules:
 
@@ -101,17 +95,64 @@ Field rules:
 | `{kind}` | `PHASE` \| `CHANGE_CONFIRM` \| `RECOVERY` \| `REVIEW_RESULT` \| `REVIEW_DEBT`. |
 | `经过` | The run's settled phase visits, oldest first — how each was settled and its conclusion — so a checkpoint can be read without the conversation. Capped at 6 lines; the overflow is counted, never dropped. |
 | `结论` | The phase's structured conclusion (below), in the fixed inner order. An omitted outcome reads 未查清; every missing part reads 未提供 — a hole is never hidden by omission. |
-| `请决定` | Page 1 of the persisted menu, verbatim — exactly the labels the first decision question offers — plus the nonce and ONE navigation hint. |
-| navigation hint | Names the `more:` cue (multi-page kinds only) and points at `summoner-status` for everything the render left out. The only model-facing line the render carries. |
+| `请决定` | Page 1 of the persisted menu, verbatim — exactly the labels the first decision question offers. The divider above it is an instruction to the model: raise the question through AskUserQuestion with options identical to this page. |
+| navigation hint | The last content line: the nonce, how to reach the other option pages, and where everything the render left out lives in full. |
 
-Example (fix, diagnosis submitted with an unclear conclusion):
+What a section or line may instead say:
+
+| Instead of | The render says | When |
+|------------|-----------------|------|
+| the whole `经过` section (the blank rail line, the head and its lines) | nothing | no phase visit is settled yet |
+| one `经过` line | `{phase \| visit} ✓ 已验收: {…}` | the user accepted the phase |
+| | `{phase \| visit} ✓ 自动通过: {…}` | the framework auto-passed it |
+| | `{phase \| visit} — 已跳过: {…}` | the user skipped it |
+| | `{phase \| visit} ↩ 已回城: {…}` | it was recalled and left behind |
+| | `…另 {n} 个阶段，见 summoner-status` (as the first line) | more than 6 visits are settled |
+| `结论 — {已确认 \| 未达成 \| 未查清}` and its lines | `║ ▶ 结论 — 未查清` with the phase summary and 未提供 in every part | nothing was claimed: a conclusion-free submission, or a checkpoint written before 0.7.0 |
+| | `║ ▶ 结论` and `║   {note}` (see the two frames below) | a checkpoint with no submission: change-confirm, recovery, review-result, review-debt — the note carries the delta, the probe outcomes or the verdict |
+| `证据:` and its items | `║   证据: 未提供` | the submission cited no evidence |
+| | `║     …另 {n} 条，见 summoner-status` after the fourth item | more than 4 items |
+| `怎么查的: {conclusion.approach}` | `怎么做的: {…}` | a building phase: requirements, plan, implement, fix, operate, changelog, publish, merge, decide |
+| | `怎么查的: 未提供` (or `怎么做的: 未提供`) | no approach was stated |
+| the `没查清 · 需要你判断:` block | nothing | the outcome is 已确认 or 未达成 |
+| its items | `║     未提供` | the outcome is 未查清 and no open question was listed — an unlisted hole is still a hole |
+| | `║     …另 {n} 条，见 summoner-status` after the third item | more than 3 questions |
+| any conclusion text | the text cut after its last complete sentence, ending `…（全文见 summoner-status）` | past 200 runes (summary, approach) or 120 runes (impact, one evidence item, one open question) |
+| the blank rail line and the two ride lines | nothing | the budget is not exhausted and no review retry is owed |
+| either ride line | only the other | just one is owed |
+| `{navigation hint}` | `其余选项（recall / review / 回城目标）回复 more: 翻页 · 被截断的结论、验收标准与产物全文见 summoner-status` | the menu has more than one page |
+| | `选项已全部列出 · 验收标准与产物全文见 summoner-status` | the menu fits one page |
+
+A checkpoint with no submission draws its 结论 as one of two frames:
+
+```
+║ ▶ 结论
+║   {note}
+```
+
+```
+║ ▶ 结论 — 框架未能完成审查
+║   原因：{…}
+║   对你的影响：改动尚未被审查
+```
+
+The second is a review the framework could not finish (a reviewer child that
+died, a protocol error): a failure of the review machinery never reads as a
+verdict on the change. The 预算已耗尽 ride appears only on a checkpoint
+opened at budget exhaustion — budgets otherwise settle at run start from the
+manifest ("Budget: run-start configuration + exhaustion extend"); the
+`review retry` ride only on a checkpoint that offers a funded same-envelope
+retry.
+
+Example (fix; context was auto-passed, diagnosis submitted with an unclear
+conclusion):
 
 ```
 ╔═ ⚡ SUMMONER CHECKPOINT cp-2 — nonce 1a2b3c4d — PHASE ══════════
-║ run: fix-a1b2 · workflow: fix · phase: diagnosis · requirements v1
+║ run: 6ac52e1da5f28d0f · workflow: fix · phase: diagnosis · requirements v1
 ║
 ║ ▶ 经过
-║   context ✓ 已验收: Go 1.16 monorepo, entry cmd/server
+║   context ✓ 自动通过: Go 1.16 monorepo, entry cmd/server
 ║
 ║ ▶ 结论 — 未查清
 ║   任务列表加载时对已完成的子任务解引用，未判空
@@ -122,13 +163,12 @@ Example (fix, diagnosis submitted with an unclear conclusion):
 ║   没查清 · 需要你判断:
 ║     - team 模式下英雄禁用规则是否应该作用于子任务
 ║   影响: 只影响 team 模式的任务列表加载
-║
 ╠═ 请决定 — AskUserQuestion（选项须与本页完全一致）
 ║   continue: 继续下一阶段
 ║   skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）
 ║   done: 完成——进入收尾（post-game）
 ║   stop: 停止——保留状态退出
-║ nonce 1a2b3c4d · 其余选项（recall / review / 回城目标）回复 more: 翻页 · 验收标准与产物全文见 summoner-status
+║ nonce 1a2b3c4d · 其余选项（recall / review / 回城目标）回复 more: 翻页 · 被截断的结论、验收标准与产物全文见 summoner-status
 ╚════════════════════════════════════
 ```
 
@@ -172,6 +212,14 @@ established:
 - **Display-bound**: the conclusion and outcome are checkpoint content —
   the Stop hook's display binding covers them, so a conclusion edited after
   display never keeps its binding.
+- **Across versions**: a checkpoint that carries neither — every
+  pre-0.7.0 checkpoint, a submission that claimed nothing — hashes exactly
+  as before, so a run parked at a displayed checkpoint survives an upgrade
+  to 0.7.0 and a rollback from it unchanged. A checkpoint whose outcome is
+  not `unclear`, or that carries a conclusion, is decidable under 0.7.x
+  only: rolled back to 0.6.1, no answer lands on it (that reducer never
+  re-binds a display). Reinstall 0.7.x and ask again — the checkpoint is
+  still displayed and its binding still matches — or abandon the run.
 - An outcome outside the three values is a malformed payload: denied,
   naming the legal values.
 
