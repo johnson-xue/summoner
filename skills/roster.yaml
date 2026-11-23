@@ -2,49 +2,54 @@
 # Every capability declares exactly ONE default provider (validate-repo.sh
 # enforces it); alternates are explicit choices for work within the phase,
 # never a chained fallback and never a second generic methodology copy —
-# duplicates of superpowers/built-in methodology have no row here
-# (`../references/capability-map.md` is the authority table). Projects replace
-# these examples with installed inline domain skills.
+# duplicates of bundled methodology have no row here
+# (`../references/capability-map.md` is the authority table). The framework
+# ships NO methodology defaults (0.6.0): bind your project's own skills;
+# an unbound capability runs built-in disclosed defaults
+# (「未配置项目专属能力」). Projects replace these examples with installed
+# inline domain skills.
 # Review describes WHAT to verify; the independent reviewer decides HOW.
 
 phases:
   requirements:
+    # Bind the project's spec/requirements skill (e.g. a grilling/to-spec
+    # style skill); unbound → built-in default, disclosed.
     skill:
-      default: superpowers:brainstorming
+      default: none
 
   plan:
     skill:
-      default: superpowers:writing-plans
+      default: none
 
   implement:
     # Implementation and local tests stay together in the main session.
     skill:
-      default: superpowers:executing-plans
+      default: none
 
   fix:
     skill:
-      default: superpowers:executing-plans
+      default: none
 
   test:
     skill:
-      default: superpowers:test-driven-development
+      default: none
 
   reproduce:
     skill:
-      default: superpowers:test-driven-development
+      default: none
 
   diagnosis:
     # Root cause must be accepted before any repair work starts.
     skill:
-      default: superpowers:systematic-debugging
+      default: none
 
   verify:
     skill:
-      default: superpowers:verification-before-completion
+      default: none
 
   regression:
     skill:
-      default: superpowers:verification-before-completion
+      default: none
 
   ops:
     # No generic deployment provider; configure the project's inline skill.
