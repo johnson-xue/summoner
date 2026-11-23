@@ -56,7 +56,8 @@
 - **需求变更闭环**：`../skills/change/SKILL.md`（open/apply 通道、
   增量恢复、不重跑流水线）。
 - **检查点渲染 / 两轮决策 / 分页菜单 / 预算生命周期**：
-  `checkpoint-protocol.md`（预算 = T18：确认 → 耗尽 → 追加）。
+  `checkpoint-protocol.md`（预算 = T18：清单 suggested_budgets 开跑即生效、
+  不询问 → 耗尽 → 追加）。
 - **post-game 关闭**：`post-game-review.md`（done/stop 落
   POST_GAME_PENDING；问卷 + journal 双全才能 CLOSED）。
 - **Phase 0 记忆**：`memory-chain.md` §Phase 0（Top-5 检索，1500 token

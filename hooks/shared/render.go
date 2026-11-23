@@ -175,15 +175,9 @@ func RenderCheckpointMessage(run *RunState, cp CheckpointState) string {
 	railBlank(&b)
 	railSection(&b, "预算")
 	railf(&b, "  limits %s · counters %s\n", budgetLimitsKey(run.Limits), budgetCountersKey(run.Counters))
-	if cp.BudgetAsk != nil {
-		source := cp.BudgetAsk.Proposal.Source
-		if source == "" {
-			source = "framework"
-		}
-		railf(&b, "  budget ask (%s proposal — rides the decision call): confirm=\"%s\" unlimited=\"%s\" limits %s\n",
-			source, escapeScalar(cp.BudgetAsk.ConfirmLabel), escapeScalar(cp.BudgetAsk.UnlimitedLabel),
-			budgetLimitsKey(cp.BudgetAsk.Proposal.Limits))
-	}
+	// 0.6.1: the run-start budget ask no longer renders — budgets are
+	// manifest-authored (suggested_budgets applies at run start) or
+	// unlimited; the status render's budget line carries the live view.
 	if cp.ExtendAsk != nil {
 		railf(&b, "  extend ask (budget exhausted): extend=\"%s\" hold=\"%s\" delta %s\n",
 			escapeScalar(cp.ExtendAsk.ExtendLabel), escapeScalar(cp.ExtendAsk.HoldLabel),

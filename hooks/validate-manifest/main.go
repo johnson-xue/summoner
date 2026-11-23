@@ -336,7 +336,7 @@ func validateManifest(m manifest, skillsDir string) error {
 			return fmt.Errorf("unknown_budget: suggested_budgets.%s is not a hook-counted limit", key)
 		}
 		if m.SuggestedBudgets[key] <= 0 {
-			return fmt.Errorf("invalid_budget: suggested_budgets.%s must be a positive integer; suggestions require first-checkpoint user confirmation", key)
+			return fmt.Errorf("invalid_budget: suggested_budgets.%s must be a positive integer; it applies as the run-start limit (omit the axis for unlimited)", key)
 		}
 	}
 	return nil

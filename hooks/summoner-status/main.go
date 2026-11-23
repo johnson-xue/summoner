@@ -566,13 +566,13 @@ func budgetLine(run *shared.RunState) string {
 		}
 		return fmt.Sprintf("%d/%d", c, l)
 	}
-	// T18: the settlement state is part of the budget view — 未确认 names the
-	// run whose first checkpoint still owes the budget answer (the post-hoc
-	// rule rejects a budget-less CONTINUE there); extensions count the
-	// applied extension receipts.
-	state := "未确认（首检查点待确认）"
-	if run.BudgetConfirmed {
-		state = "已确认"
+	// T18 (0.6.1): budgets settle at run start — manifest-authored or
+	// unlimited, no confirmation step. 未确认 can only be a pre-0.6.1 run
+	// resumed across the upgrade (its ask is retired, limits apply as-is).
+	// Extensions count the applied extension receipts.
+	state := "run-start 已生效"
+	if !run.BudgetConfirmed {
+		state = "未确认（旧版 run，预算按现状生效）"
 	}
 	if n := len(run.BudgetExtensions); n > 0 {
 		state += fmt.Sprintf(" · extended ×%d", n)

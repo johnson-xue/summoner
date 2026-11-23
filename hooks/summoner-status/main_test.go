@@ -180,7 +180,7 @@ func TestRenderWaitUser(t *testing.T) {
 		"- crit-stale-1 (stale)",
 		"awaiting: user decision at checkpoint cp-2",
 		"default recall: latest → context@v1 (offered: latest, context@v1)",
-		"budget: phase_tool_calls 4/40 · failed_checks 0/3 · run_rework 0/2 · delegations 1/5 · 未确认（首检查点待确认）",
+		"budget: phase_tool_calls 4/40 · failed_checks 0/3 · run_rework 0/2 · delegations 1/5 · run-start 已生效",
 		"sandbox: L1（未配置沙箱）",
 		"⚡ SUMMONER CHECKPOINT cp-2 — nonce " + cp.Nonce + " — PHASE",
 		"phase: diagnosis",
@@ -272,18 +272,22 @@ func TestRenderUnlimitedBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, out, _ := callStatus(t, `{"session_id":"sess-1"}`)
-	if !strings.Contains(out, "budget: phase_tool_calls 0/∞ · failed_checks 0/∞ · run_rework 0/∞ · delegations 0/∞ · 未确认（首检查点待确认）") {
+	if !strings.Contains(out, "budget: phase_tool_calls 0/∞ · failed_checks 0/∞ · run_rework 0/∞ · delegations 0/∞ · run-start 已生效") {
 		t.Fatalf("unlimited budget line missing:\n%s", out)
 	}
 }
 
-// TestRenderBudgetAsks pins the T18 checkpoint additions: the run's unsettled
-// first checkpoint renders its budget ask (proposal + the pointer labels),
-// and a checkpoint opened at exhaustion renders the extension offer — the
-// labels the ride-along questions must equal exactly.
+// TestRenderBudgetAsks pins the T18 (0.6.1) checkpoint render: the FIRST
+// checkpoint renders NO budget ask (budgets settle at run start), and a
+// checkpoint opened at exhaustion renders the extension offer — the labels
+// the extend ride-along must equal exactly.
 func TestRenderBudgetAsks(t *testing.T) {
 	useStatusEnv(t)
-	r := newRun(t)
+	// Limits are run-start configuration since 0.6.1 — seed one directly.
+	r, err := shared.StartRun("run-1", sess, "fix", shared.BudgetLimits{PhaseToolCalls: 1})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatal(err)
 	}
@@ -291,27 +295,17 @@ func TestRenderBudgetAsks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cp.BudgetAsk == nil {
-		t.Fatal("the first checkpoint must carry the persisted budget ask")
+	if cp.BudgetAsk != nil {
+		t.Fatal("the first checkpoint must carry NO budget ask (0.6.1)")
 	}
 	out := renderStatus(r, "L1（未配置沙箱）")
-	// Final-fix §2: the checkpoint-only view renders the persisted ask as one
-	// canonical line (shared/render.go) — the OPTION LABELS are what the
-	// ride-along questions must equal exactly.
-	for _, want := range []string{
-		"budget ask (framework proposal — rides the decision call): confirm=\"budget: 按已显示预算\" unlimited=\"budget: 不设上限\"",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("budget ask render missing %q:\n%s", want, out)
-		}
+	if strings.Contains(out, "budget ask (") || strings.Contains(out, "budget: 按已显示预算") {
+		t.Fatalf("the retired budget ask must not render:\n%s", out)
 	}
 
-	// Settle a real limit (display-verified), decide, and exhaust the next
-	// phase: its checkpoint carries the extension offer.
+	// Decide (display-verified) and exhaust the next phase: its checkpoint
+	// carries the extension offer.
 	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.SetBudgetLimits(shared.BudgetLimits{PhaseToolCalls: 1}, "tu-b"); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.RecordDecision(cp.ID, shared.DecisionContinue, "tu-b"); err != nil {
@@ -332,7 +326,7 @@ func TestRenderBudgetAsks(t *testing.T) {
 	for _, want := range []string{
 		"extend ask (budget exhausted): extend=\"extend: 追加已显示额度\" hold=\"extend: 不追加\"",
 		"delta ",
-		"已确认",
+		"run-start 已生效",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("extend ask render missing %q:\n%s", want, out)

@@ -35,11 +35,10 @@ import (
 // (the run's first checkpoint before settlement, and any checkpoint opened
 // while the budget was exhausted). Their validation precedes EVERY recording
 // effect; when the decision completes, settlement and decision persist in ONE
-// commit (RecordDecisionWithBudget — a failed Save applies neither); when the
-// decision does not complete, a valid budget answer still records through its
-// standalone setter (the T17 partial-answer semantics), and the post-hoc rule
-// (below) rejects a CONTINUE/SKIP at the unsettled first checkpoint with
-// NOTHING recorded.
+// commit (RecordDecisionWithBudget — a failed Save applies neither). Since
+// 0.6.1 budgets settle at run start: the only surviving ride-along is the
+// exhaustion extend (a `budget:` question is rejected outright), so nothing
+// here ever owes a budget answer.
 func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in *hookInput, errW io.Writer) int {
 	reject := func(reason string) int {
 		if err := appendTrace(run, in, shared.TraceEvent{
@@ -170,31 +169,11 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 		}
 	}
 
-	// 4.7 Pre-resolve the decision (pure — nothing recorded) so the post-hoc
-	// rule can fire BEFORE any ride-along effect.
-	var dPre shared.Decision
-	if q != nil {
-		if answer, ok := answers[q.text].(string); ok && answer != "" {
-			if label := matchOfferedLabel(q.options, answer); label != "" {
-				if d, ok := decisionForKeyword(label); ok {
-					dPre = d
-				}
-			}
-		}
-	}
-
-	// 4.8 T18 post-hoc rule: at the run's unsettled FIRST checkpoint (a
-	// persisted BudgetAsk the run never settled), a CONTINUE or SKIP decision
-	// without a same-callback budget answer is rejected with NOTHING recorded
-	// — the run-start budget settles with the same human answer that advances
-	// the run (spec §5 默认值由用户在运行起点确认). STOP/DONE/RECALL/REVIEW are
-	// exempt: terminal exits and replans are never budget hostages.
-	if (dPre == shared.DecisionContinue || dPre == shared.DecisionSkip) &&
-		cp.BudgetAsk != nil && !run.BudgetConfirmed && settle.Confirm == nil {
-		return reject(fmt.Sprintf(
-			"%s at checkpoint %s carries no budget answer — the run-start budget is unsettled: ask the budget question in the SAME call (options %q / %q, nonce-free ride-along); nothing was recorded",
-			dPre, cp.ID, cp.BudgetAsk.ConfirmLabel, cp.BudgetAsk.UnlimitedLabel))
-	}
+	// 4.7+4.8 (T18, 0.6.1 rev): the run-start budget ask no longer exists —
+	// budgets settle at StartRun (manifest-authored or unlimited), so a
+	// CONTINUE or SKIP never owes a budget answer and no pre-resolution is
+	// needed before ride-along effects. Exhaustion still surfaces through the
+	// extend ride-along.
 
 	// 4.9 Record the answered drops (the T17 ordering: drops land before the
 	// decision so an accepting CONTINUE clears them).
@@ -223,11 +202,11 @@ func recordDecisionAttempt(run *shared.RunState, cp *shared.CheckpointState, in 
 	}
 
 	// settleAndReject closes a callback whose budget observation is valid but
-	// whose decision does not complete: the settlement records through its
-	// standalone setter (T17 partial-answer semantics — the checkpoint stays
-	// open and the decision is rejected), then the decision rejection traces.
-	// budget.confirmed / budget.extended trace only when the reducer newly
-	// applied something (replays and already-confirmed no-ops are silent).
+	// whose decision does not complete: settlement records through its
+	// standalone setter (the checkpoint stays open and the decision is
+	// rejected), then the decision rejection traces. Since 0.6.1 only
+	// budget.extended can newly apply here (Confirm payloads are inert);
+	// replays are silent.
 	settleAndReject := func(reason string) int {
 		if !settling {
 			return reject(reason)

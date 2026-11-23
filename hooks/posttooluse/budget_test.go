@@ -1,9 +1,10 @@
 package main
 
-// budget_test.go — T18 posttooluse suite: the budget/extend ride-along
-// settlement (combined commit, post-hoc rule, partial answers, malformed
-// answers) and the post-game observation path (markers, afk guard, journal
-// observation, closure). The exhaustion cycle and the real-binary pins live
+// budget_test.go — T18 posttooluse suite (0.6.1 rev): budgets are
+// manifest-authored — the run-start ask no longer exists, a budget-less
+// CONTINUE records, and `budget:` ride-alongs are rejected at parse level
+// pointing at the manifest. The extend ride-along (exhaustion checkpoints)
+// survives unchanged. The exhaustion cycle and the real-binary pins live
 // in hooks/pretooluse-gate and hooks/contract.
 
 import (
@@ -15,9 +16,10 @@ import (
 	shared "github.com/johnson-xue/summoner/hooks/shared"
 )
 
-// openUnsettledFirstCheckpoint opens and displays the run's FIRST checkpoint
-// WITHOUT settling the budget — the budget-ask fixture.
-func openUnsettledFirstCheckpoint(t *testing.T, r *shared.RunState) *shared.CheckpointState {
+// openFirstCheckpoint opens and displays the run's FIRST checkpoint. Since
+// 0.6.1 it carries NO budget ask — budgets settle from the manifest at run
+// start, never as a checkpoint ride-along.
+func openFirstCheckpoint(t *testing.T, r *shared.RunState) *shared.CheckpointState {
 	t.Helper()
 	if err := r.OpenPhase("context"); err != nil {
 		t.Fatalf("OpenPhase: %v", err)
@@ -26,8 +28,8 @@ func openUnsettledFirstCheckpoint(t *testing.T, r *shared.RunState) *shared.Chec
 	if err != nil {
 		t.Fatalf("SubmitPhase: %v", err)
 	}
-	if cp.BudgetAsk == nil {
-		t.Fatal("the first checkpoint must carry the persisted budget ask")
+	if cp.BudgetAsk != nil {
+		t.Fatal("the first checkpoint must NOT carry a budget ask (0.6.1: budgets are manifest-authored, never asked)")
 	}
 	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatalf("MarkDisplayed: %v", err)
@@ -35,24 +37,24 @@ func openUnsettledFirstCheckpoint(t *testing.T, r *shared.RunState) *shared.Chec
 	return r.CurrentCheckpoint()
 }
 
-// budgetQuestion builds the budget ride-along question (labels straight from
-// the persisted ask) and its text.
-func budgetQuestion(cp *shared.CheckpointState) (map[string]interface{}, string) {
+// budgetRide builds a `budget:`-keyworded ride-along question — the shape the
+// parser must reject outright since 0.6.1.
+func budgetRide() (map[string]interface{}, string) {
 	text := "Budget confirmation: accept the displayed proposal?"
 	return map[string]interface{}{
 		"question": text,
 		"header":   "Budget",
 		"options": []interface{}{
-			map[string]interface{}{"label": cp.BudgetAsk.ConfirmLabel},
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
+			map[string]interface{}{"label": "budget: 按已显示预算"},
+			map[string]interface{}{"label": "budget: 不设上限"},
 		},
 	}, text
 }
 
-// budgetedDecision posts one AskUserQuestion callback whose questions carry
+// ridingDecision posts one AskUserQuestion callback whose questions carry
 // the page-1 decision labels plus the given ride-alongs, with the given
 // answers keyed by question text.
-func budgetedDecision(t *testing.T, toolUseID string, cp *shared.CheckpointState, rides []map[string]interface{}, answers map[string]interface{}) string {
+func ridingDecision(t *testing.T, toolUseID string, cp *shared.CheckpointState, rides []map[string]interface{}, answers map[string]interface{}) string {
 	t.Helper()
 	q, qtext := cpQuestion(cp.Nonce, false, cp.MenuPages[0].Labels...)
 	qs := []interface{}{q}
@@ -72,70 +74,106 @@ func mergeAnswers(base, extra map[string]interface{}) map[string]interface{} {
 	return base
 }
 
-func TestBudgetRideSettlesWithDecision(t *testing.T) {
+func TestBudgetlessContinueRecords(t *testing.T) {
 	useHookEnv(t)
 	r := startRun(t)
-	cp := openUnsettledFirstCheckpoint(t, r)
-	ride, rtext := budgetQuestion(cp)
+	if !r.BudgetConfirmed {
+		t.Fatal("run start must settle the budget (manifest-authored or unlimited) — no unsettled state exists since 0.6.1")
+	}
+	cp := openFirstCheckpoint(t, r)
 
-	// Unlimited choice + CONTINUE: one commit, both effects.
-	if code, stderr := callHook(t, budgetedDecision(t, "tu-1", cp, []map[string]interface{}{ride},
-		map[string]interface{}{rtext: cp.BudgetAsk.UnlimitedLabel})); code != 0 {
-		t.Fatalf("hook exit = %d (stderr %q)", code, stderr)
-	}
-	run := reloadHookRun(t)
-	if !run.BudgetConfirmed || run.Limits != (shared.BudgetLimits{}) {
-		t.Fatalf("settlement = confirmed %v limits %+v, want unlimited applied", run.BudgetConfirmed, run.Limits)
-	}
-	if run.Status != shared.StatusActive || !run.Checkpoints[0].Decided {
-		t.Fatalf("decision must record with the settlement (status %s)", run.Status)
-	}
-	evs := readHookTrace(t, "run-1")
-	if conf := eventsOfType(evs, shared.EventBudgetConfirmed); len(conf) != 1 || conf[0].ToolUseID != "tu-1" {
-		t.Fatalf("budget.confirmed = %+v, want one bound to tu-1", conf)
-	}
-	if decided := eventsOfType(evs, shared.EventCheckpointDecided); len(decided) != 1 {
-		t.Fatalf("checkpoint.decided events = %d, want 1", len(decided))
-	}
-}
-
-func TestPostHocRuleRejectsBudgetlessContinue(t *testing.T) {
-	useHookEnv(t)
-	r := startRun(t)
-	cp := openUnsettledFirstCheckpoint(t, r)
-
-	// CONTINUE with NO budget ride at the unsettled first checkpoint: the
-	// whole callback rejects, NOTHING records.
+	// CONTINUE with NO ride-along: records plainly, no budget ceremony.
 	q, qtext := cpQuestion(cp.Nonce, false, cp.MenuPages[0].Labels...)
 	if code, stderr := callHook(t, askDecision(t, "tu-1", q, qtext, cp.MenuPages[0].Labels[0], nil)); code != 0 {
 		t.Fatalf("hook exit = %d (stderr %q)", code, stderr)
 	}
 	run := reloadHookRun(t)
-	if run.Checkpoints[0].Decided || run.BudgetConfirmed || run.Status != shared.StatusWaitUser {
-		t.Fatalf("the budget-less CONTINUE must record NOTHING (status %s decided %v confirmed %v)",
-			run.Status, run.Checkpoints[0].Decided, run.BudgetConfirmed)
+	if !run.Checkpoints[0].Decided || run.Status != shared.StatusActive {
+		t.Fatalf("budget-less CONTINUE must record (decided %v status %s)", run.Checkpoints[0].Decided, run.Status)
+	}
+	evs := readHookTrace(t, "run-1")
+	if n := len(eventsOfType(evs, shared.EventBudgetConfirmed)); n != 0 {
+		t.Fatalf("budget.confirmed events = %d, want 0 (no settlement ceremony exists)", n)
+	}
+	if n := len(eventsOfType(evs, shared.EventCheckpointDecisionRejected)); n != 0 {
+		t.Fatalf("decision_rejected events = %d, want 0", n)
+	}
+}
+
+func TestBudgetRideKeywordRejected(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp := openFirstCheckpoint(t, r)
+	ride, rtext := budgetRide()
+
+	// A `budget:`-keyworded ride-along is rejected AT PARSE — budgets are
+	// manifest-authored, never checkpoint questions. Nothing records.
+	if code, stderr := callHook(t, ridingDecision(t, "tu-1", cp, []map[string]interface{}{ride},
+		map[string]interface{}{rtext: "budget: 不设上限"})); code != 0 {
+		t.Fatalf("hook exit = %d (stderr %q)", code, stderr)
+	}
+	run := reloadHookRun(t)
+	if run.Checkpoints[0].Decided {
+		t.Fatal("a budget: ride-along must reject the WHOLE callback (nothing recorded)")
 	}
 	evs := readHookTrace(t, "run-1")
 	rejected := eventsOfType(evs, shared.EventCheckpointDecisionRejected)
-	if len(rejected) != 1 || !strings.Contains(rejected[0].Payload["reason"].(string), "budget answer") {
-		t.Fatalf("decision_rejected = %+v, want the post-hoc budget reason", rejected)
+	if len(rejected) != 1 || !strings.Contains(rejected[0].Payload["reason"].(string), "manifest") {
+		t.Fatalf("decision_rejected = %+v, want the manifest-authored budget reason", rejected)
 	}
-	if n := len(eventsOfType(evs, shared.EventCheckpointDecided)); n != 0 {
-		t.Fatalf("checkpoint.decided events = %d, want 0", n)
+	if n := len(eventsOfType(evs, shared.EventBudgetConfirmed)); n != 0 {
+		t.Fatalf("budget.confirmed events = %d, want 0", n)
 	}
+}
 
-	// STOP is exempt (terminal exits are never budget hostages): it records
-	// without a budget answer — and lands POST_GAME_PENDING with the minimal
-	// journal hook-side.
-	cp2 := run.CurrentCheckpoint()
-	if code, stderr := callHook(t, askDecision(t, "tu-2",
-		mustQuestion(t, cp2.Nonce, cp2.MenuPages[0].Labels), questionTextOf(cp2.Nonce),
-		labelByKeyword(t, cp2.MenuPages[0].Labels, "stop"), nil)); code != 0 {
-		t.Fatalf("stop exit = %d (stderr %q)", code, stderr)
+func TestExtendRideAppliesPersistedDelta(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	cp := openFirstCheckpoint(t, r)
+	// Advance past the first checkpoint through the REAL hook (no budget
+	// ceremony — plain CONTINUE records since 0.6.1).
+	if code, stderr := callHook(t, askDecision(t, "tu-1", mustQuestion(t, cp.Nonce, cp.MenuPages[0].Labels), questionTextOf(cp.Nonce), cp.MenuPages[0].Labels[0], nil)); code != 0 {
+		t.Fatalf("continue exit = %d (stderr %q)", code, stderr)
+	}
+	r = reloadHookRun(t)
+	if err := r.OpenPhase("diagnosis"); err != nil {
+		t.Fatal(err)
+	}
+	// Burn to exhaustion through the settled surface (config-set since 0.6.1).
+	run := reloadHookRun(t)
+	run.Limits.PhaseToolCalls = 1
+	run.CountToolCall("")
+	cp2, err := run.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp2.ExtendAsk == nil {
+		t.Fatal("the exhaustion checkpoint must carry the extension offer")
+	}
+	if err := run.MarkDisplayed(cp2.ID, shared.CheckpointContentDigest(cp2, run.RequirementsVersion)); err != nil {
+		t.Fatal(err)
+	}
+	cur := run.CurrentCheckpoint()
+	extendText := "Extend the budget?"
+	extendQ := map[string]interface{}{
+		"question": extendText,
+		"header":   "Extend",
+		"options": []interface{}{
+			map[string]interface{}{"label": cur.ExtendAsk.ExtendLabel},
+			map[string]interface{}{"label": cur.ExtendAsk.HoldLabel},
+		},
+	}
+	if code, stderr := callHook(t, ridingDecision(t, "tu-2", cur, []map[string]interface{}{extendQ},
+		map[string]interface{}{extendText: cur.ExtendAsk.ExtendLabel})); code != 0 {
+		t.Fatalf("extend+decision exit = %d (stderr %q)", code, stderr)
 	}
 	run = reloadHookRun(t)
-	if run.Status != shared.StatusPostGamePending || run.Checkpoints[0].Decision != shared.DecisionStop {
-		t.Fatalf("STOP must record without settlement (status %s)", run.Status)
+	if len(run.BudgetExtensions) != 1 || run.Limits.PhaseToolCalls != 2 || !run.Checkpoints[1].Decided {
+		t.Fatalf("extension result: receipts %d limits %+v decided %v", len(run.BudgetExtensions), run.Limits, run.Checkpoints[1].Decided)
+	}
+	evs := readHookTrace(t, "run-1")
+	if ext := eventsOfType(evs, shared.EventBudgetExtended); len(ext) != 1 || ext[0].ToolUseID != "tu-2" {
+		t.Fatalf("budget.extended = %+v, want one bound to tu-2", ext)
 	}
 }
 
@@ -166,114 +204,7 @@ func questionTextOf(nonce string) string {
 	return text
 }
 
-func TestBudgetRidePartialAnswer(t *testing.T) {
-	useHookEnv(t)
-	r := startRun(t)
-	cp := openUnsettledFirstCheckpoint(t, r)
-	ride, rtext := budgetQuestion(cp)
-
-	// The budget answered, the DECISION question not answered: the settlement
-	// records (T17 partial-answer semantics), the decision rejects, the
-	// checkpoint stays open.
-	rideOnly := postUsePayload(t, "AskUserQuestion", "tu-1",
-		map[string]interface{}{"questions": []interface{}{mustQuestion(t, cp.Nonce, cp.MenuPages[0].Labels), ride}},
-		map[string]interface{}{"answers": map[string]interface{}{rtext: cp.BudgetAsk.ConfirmLabel}})
-	if code, stderr := callHook(t, rideOnly); code != 0 {
-		t.Fatalf("hook exit = %d (stderr %q)", code, stderr)
-	}
-	run := reloadHookRun(t)
-	if !run.BudgetConfirmed || run.Checkpoints[0].Decided || run.Status != shared.StatusWaitUser {
-		t.Fatalf("partial answer: confirmed %v decided %v status %s — settlement records, decision does not",
-			run.BudgetConfirmed, run.Checkpoints[0].Decided, run.Status)
-	}
-	evs := readHookTrace(t, "run-1")
-	if n := len(eventsOfType(evs, shared.EventBudgetConfirmed)); n != 1 {
-		t.Fatalf("budget.confirmed events = %d, want 1", n)
-	}
-	if n := len(eventsOfType(evs, shared.EventCheckpointDecisionRejected)); n != 1 {
-		t.Fatalf("decision_rejected events = %d, want 1", n)
-	}
-}
-
-func TestBudgetRideForeignAnswerRejectsWholeCallback(t *testing.T) {
-	useHookEnv(t)
-	r := startRun(t)
-	cp := openUnsettledFirstCheckpoint(t, r)
-	ride, rtext := budgetQuestion(cp)
-
-	if code, stderr := callHook(t, budgetedDecision(t, "tu-1", cp, []map[string]interface{}{ride},
-		map[string]interface{}{rtext: "budget: 999"})); code != 0 {
-		t.Fatalf("hook exit = %d (stderr %q)", code, stderr)
-	}
-	run := reloadHookRun(t)
-	if run.Checkpoints[0].Decided || run.BudgetConfirmed {
-		t.Fatal("a foreign budget label must reject the WHOLE callback (nothing recorded)")
-	}
-	evs := readHookTrace(t, "run-1")
-	if n := len(eventsOfType(evs, shared.EventBudgetConfirmed)); n != 0 {
-		t.Fatalf("budget.confirmed events = %d, want 0", n)
-	}
-}
-
-func TestExtendRideAppliesPersistedDelta(t *testing.T) {
-	useHookEnv(t)
-	r := startRun(t)
-	cp := openUnsettledFirstCheckpoint(t, r)
-	// Confirm a real limit with the decision.
-	ride, rtext := budgetQuestion(cp)
-	if code, stderr := callHook(t, budgetedDecision(t, "tu-1", cp, []map[string]interface{}{ride},
-		map[string]interface{}{rtext: cp.BudgetAsk.ConfirmLabel})); code != 0 {
-		t.Fatalf("settle exit = %d (stderr %q)", code, stderr)
-	}
-	run := reloadHookRun(t)
-	// The persisted proposal is the framework-unlimited one in this fixture —
-	// set a real limit through the settled surface and burn to exhaustion.
-	if !run.BudgetConfirmed {
-		t.Fatal("fixture must be settled")
-	}
-	if err := run.OpenPhase("diagnosis"); err != nil {
-		t.Fatal(err)
-	}
-	run.Limits.PhaseToolCalls = 1
-	run.CountToolCall("")
-	cp2, err := run.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: "diagnosis"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cp2.ExtendAsk == nil {
-		t.Fatal("the exhaustion checkpoint must carry the extension offer")
-	}
-	if err := run.MarkDisplayed(cp2.ID, shared.CheckpointContentDigest(cp2, run.RequirementsVersion)); err != nil {
-		t.Fatal(err)
-	}
-	cur := run.CurrentCheckpoint()
-	extendText := "Extend the budget?"
-	extendQ := map[string]interface{}{
-		"question": extendText,
-		"header":   "Extend",
-		"options": []interface{}{
-			map[string]interface{}{"label": cur.ExtendAsk.ExtendLabel},
-			map[string]interface{}{"label": cur.ExtendAsk.HoldLabel},
-		},
-	}
-	if code, stderr := callHook(t, budgetedDecision(t, "tu-2", cur, []map[string]interface{}{extendQ},
-		map[string]interface{}{extendText: cur.ExtendAsk.ExtendLabel})); code != 0 {
-		t.Fatalf("extend+decision exit = %d (stderr %q)", code, stderr)
-	}
-	run = reloadHookRun(t)
-	if len(run.BudgetExtensions) != 1 || run.Limits.PhaseToolCalls != 2 || !run.Checkpoints[1].Decided {
-		t.Fatalf("extension result: receipts %d limits %+v decided %v", len(run.BudgetExtensions), run.Limits, run.Checkpoints[1].Decided)
-	}
-	evs := readHookTrace(t, "run-1")
-	if ext := eventsOfType(evs, shared.EventBudgetExtended); len(ext) != 1 || ext[0].ToolUseID != "tu-2" {
-		t.Fatalf("budget.extended = %+v, want one bound to tu-2", ext)
-	}
-}
-
-// --- post-game observations --------------------------------------------------------
-
-// pgAnswers builds a questionnaire response for the given marker→answer map
-// over one question set (texts keyed by marker).
+// pgQuestions builds a questionnaire question set for the given markers.
 func pgQuestions(runID string, markers []string) (qs []interface{}, texts map[string]string) {
 	texts = map[string]string{}
 	for _, m := range markers {
@@ -291,15 +222,14 @@ func pgQuestions(runID string, markers []string) (qs []interface{}, texts map[st
 	return qs, texts
 }
 
-// runIntoPostGame drives the run to POST_GAME_PENDING via DONE.
+// runIntoPostGame drives the run to POST_GAME_PENDING via DONE (no budget
+// ceremony since 0.6.1).
 func runIntoPostGame(t *testing.T) *shared.RunState {
 	t.Helper()
 	r := startRun(t)
-	cp := openUnsettledFirstCheckpoint(t, r)
-	ride, rtext := budgetQuestion(cp)
-	if code, stderr := callHook(t, budgetedDecision(t, "tu-1", cp, []map[string]interface{}{ride},
-		map[string]interface{}{rtext: cp.BudgetAsk.UnlimitedLabel})); code != 0 {
-		t.Fatalf("settle exit = %d (stderr %q)", code, stderr)
+	cp := openFirstCheckpoint(t, r)
+	if code, stderr := callHook(t, askDecision(t, "tu-1", mustQuestion(t, cp.Nonce, cp.MenuPages[0].Labels), questionTextOf(cp.Nonce), cp.MenuPages[0].Labels[0], nil)); code != 0 {
+		t.Fatalf("continue exit = %d (stderr %q)", code, stderr)
 	}
 	r = reloadHookRun(t)
 	if err := r.OpenPhase("diagnosis"); err != nil {

@@ -204,9 +204,10 @@ func TestPostGamePendingBudgetExemptions(t *testing.T) {
 	wantExit2(t, code, stderr, "余量为零")
 }
 
-// TestAskUserBudgetRideValidatedAtDoor: the gate rejects a malformed budget
-// ride-along (foreign pointer labels) while WAIT_USER — the decision channel
-// never launders a stale budget question.
+// TestAskUserBudgetRideValidatedAtDoor (0.6.1): the gate rejects ANY
+// `budget:` ride-along at the door while WAIT_USER — budgets are
+// manifest-authored, so the decision channel never carries a budget
+// question. The plain decision question passes untouched.
 func TestAskUserBudgetRideValidatedAtDoor(t *testing.T) {
 	useGateEnv(t)
 	r := startFixRun(t, shared.BudgetLimits{})
@@ -217,8 +218,8 @@ func TestAskUserBudgetRideValidatedAtDoor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cp.BudgetAsk == nil {
-		t.Fatal("the first checkpoint must carry the budget ask")
+	if cp.BudgetAsk != nil {
+		t.Fatal("the first checkpoint must carry NO budget ask (0.6.1)")
 	}
 	if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
 		t.Fatal(err)
@@ -232,31 +233,28 @@ func TestAskUserBudgetRideValidatedAtDoor(t *testing.T) {
 		"question": "Checkpoint decision (nonce " + cp.Nonce + "): how?",
 		"options":  pageOpts,
 	}
-	badRide := map[string]interface{}{
-		"question": "Budget?",
-		"options": []interface{}{
-			map[string]interface{}{"label": "budget: 50"}, // a label-parsed number
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
-		},
+	// Both the old canonical pair and a label-parsed number reject alike.
+	for _, ride := range []map[string]interface{}{
+		{"question": "Budget?", "options": []interface{}{
+			map[string]interface{}{"label": shared.BudgetConfirmLabel},
+			map[string]interface{}{"label": shared.BudgetUnlimitedLabel},
+		}},
+		{"question": "Budget?", "options": []interface{}{
+			map[string]interface{}{"label": "budget: 50"},
+			map[string]interface{}{"label": shared.BudgetUnlimitedLabel},
+		}},
+	} {
+		code, stderr := callGate(t, toolPayload(t, "AskUserQuestion", map[string]interface{}{"questions": []interface{}{
+			decisionQ,
+			ride,
+		}}))
+		wantExit2(t, code, stderr, "manifest")
 	}
-	code, stderr := callGate(t, toolPayload(t, "AskUserQuestion", map[string]interface{}{"questions": []interface{}{
-		decisionQ,
-		badRide,
-	}}))
-	wantExit2(t, code, stderr, "persisted pointer labels")
 
-	// The well-formed ride passes the door untouched.
-	goodRide := map[string]interface{}{
-		"question": "Budget?",
-		"options": []interface{}{
-			map[string]interface{}{"label": cp.BudgetAsk.ConfirmLabel},
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
-		},
-	}
+	// The plain decision question passes the door.
 	if code, stderr := callGate(t, toolPayload(t, "AskUserQuestion", map[string]interface{}{"questions": []interface{}{
 		decisionQ,
-		goodRide,
 	}})); code != 0 {
-		t.Fatalf("well-formed budget ride: exit %d stderr %q", code, stderr)
+		t.Fatalf("plain decision ask: exit %d stderr %q", code, stderr)
 	}
 }

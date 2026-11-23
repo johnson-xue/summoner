@@ -368,9 +368,10 @@ type CheckpointState struct {
 	// render shows the FULL menu plus a paging note; the gate pins any
 	// nonce-carrying question's offered labels to one page exactly.
 	MenuPages []MenuPage `json:"menu_pages,omitempty"`
-	// BudgetAsk (T18) persists the first-checkpoint budget question: the
-	// displayed proposal (digest-bound content) and its pointer labels. Set
-	// when the run's FIRST checkpoint opens before any budget settlement.
+	// BudgetAsk (T18, retired 0.6.1) is inert legacy state: the run-start
+	// budget question no longer exists (budgets settle at StartRun), no new
+	// ask is ever persisted, and nothing renders or settles one. The struct
+	// survives only to parse pre-0.6.1 run state.
 	BudgetAsk *BudgetAsk `json:"budget_ask,omitempty"`
 	// ExtendAsk (T18) persists the extension question of a checkpoint opened
 	// while the budget is exhausted: the offered delta (digest-bound content)
@@ -516,11 +517,9 @@ type BudgetProposal struct {
 	Source string       `json:"source,omitempty"` // manifest | framework
 }
 
-// BudgetAsk persists the first-checkpoint budget question (T18): the displayed
-// proposal plus the two POINTER labels the question's options must equal
-// exactly. Labels never carry numbers — the recorder applies the PERSISTED
-// proposal, never label-parsed values (panel TQ3 redesign: budget rides a
-// nonce-free non-decision question, no Decision enum addition).
+// BudgetAsk is the RETIRED (0.6.1) first-checkpoint budget question — kept
+// only so pre-0.6.1 run state parses. No writer, no renderer, no settlement
+// reads it.
 type BudgetAsk struct {
 	Proposal       BudgetProposal `json:"proposal"`
 	ConfirmLabel   string         `json:"confirm_label"`
@@ -637,10 +636,10 @@ type RunState struct {
 	// call ids (one call charges exactly once, hook replay included).
 	UpcomingVisit     bool     `json:"upcoming_visit,omitempty"`
 	ChargedToolUseIDs []string `json:"charged_tool_use_ids,omitempty"`
-	// BudgetConfirmed (T18) marks the run-start budget settlement observed at
-	// the first checkpoint (budget.confirmed); BudgetSettledBy binds it to the
-	// answering AskUserQuestion call; BudgetExtensions are the append-only
-	// receipts of applied extensions (budget.extended).
+	// BudgetConfirmed (T18) is TRUE from run start since 0.6.1 — the budget
+	// settled as configuration (BudgetSettledBy = "run-start"; pre-0.6.1
+	// state may carry an answering tool_use_id instead). BudgetExtensions
+	// are the append-only receipts of applied extensions (budget.extended).
 	BudgetConfirmed  bool              `json:"budget_confirmed,omitempty"`
 	BudgetSettledBy  string            `json:"budget_settled_by,omitempty"`
 	BudgetExtensions []BudgetExtension `json:"budget_extensions,omitempty"`

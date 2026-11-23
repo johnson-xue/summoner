@@ -331,7 +331,12 @@ func StartRun(runID, sessionID, workflow string, limits BudgetLimits) (*RunState
 		UpcomingVisit:       true,
 		RequirementsVersion: 1,
 		Limits:              limits,
-		StartedAt:           nowUTC(),
+		// T18 (0.6.1): budgets settle HERE — the manifest's suggested_budgets
+		// (resolved by the caller) applies as configuration, else unlimited.
+		// No run-start ask exists; exhaustion still offers extensions.
+		BudgetConfirmed: true,
+		BudgetSettledBy: "run-start",
+		StartedAt:       nowUTC(),
 	}
 	// Persisted through commit like every mutator (M9): on failure the run
 	// simply does not exist yet.
@@ -433,19 +438,12 @@ func (r *RunState) addCheckpoint(kind CheckpointKind, phaseID, note string, arti
 		CriteriaIDs:      append([]string(nil), criteria...),
 		MenuPages:        MenuProjection(kind),
 	}
-	// T18: the run's FIRST checkpoint carries the persisted budget ask (the
-	// run-start proposal the user confirms — spec §5 默认值由用户在运行起点确
-	// 认), and any checkpoint opened while the budget is EXHAUSTED carries the
-	// persisted extension offer (余量为零 → 检查点呈现追加额度). Both are
-	// digest-bound content: the render displays them and a later offer change
-	// invalidates the display binding.
-	if len(r.Checkpoints) == 0 && !r.BudgetConfirmed {
-		ask, err := r.newBudgetAsk()
-		if err != nil {
-			return CheckpointState{}, err
-		}
-		cp.BudgetAsk = ask
-	}
+	// T18 (0.6.1 rev): the run-start budget ask is GONE — budgets are
+	// manifest-authored (suggested_budgets applies at StartRun) or unlimited;
+	// no checkpoint ever carries a budget question. The EXTENSION offer
+	// survives: any checkpoint opened while the budget is EXHAUSTED carries
+	// the persisted extension offer (余量为零 → 检查点呈现追加额度) —
+	// digest-bound content whose later change invalidates the display binding.
 	if exhausted, _ := r.BudgetExhausted(); exhausted {
 		cp.ExtendAsk = r.newExtendAsk()
 	}
@@ -508,27 +506,6 @@ func (r *RunState) addCheckpoint(kind CheckpointKind, phaseID, note string, arti
 	}
 	r.Checkpoints = append(r.Checkpoints, cp)
 	return cp, nil
-}
-
-// newBudgetAsk builds the first-checkpoint budget ask: the manifest's
-// suggested_budgets projection when the project declares one (a corrupt
-// manifest fails CLOSED — the suggestion is consumed as authority here, the
-// loader's standing rule), else the framework default — unlimited, the
-// explicit 不设上限 offer (never article-derived numbers; spec §5).
-func (r *RunState) newBudgetAsk() (*BudgetAsk, error) {
-	ask := &BudgetAsk{
-		Proposal:       BudgetProposal{Limits: BudgetLimits{}, Source: "framework"},
-		ConfirmLabel:   BudgetConfirmLabel,
-		UnlimitedLabel: BudgetUnlimitedLabel,
-	}
-	m, err := LoadRuntimeManifest()
-	if err != nil {
-		return nil, fmt.Errorf("budget proposal: project manifest unreadable: %w", err)
-	}
-	if m != nil && m.SuggestedBudgets != nil {
-		ask.Proposal = BudgetProposal{Limits: *m.SuggestedBudgets, Source: "manifest"}
-	}
-	return ask, nil
 }
 
 // newExtendAsk builds the exhaustion checkpoint's extension offer: per SET
@@ -1757,9 +1734,10 @@ func (r *RunState) rerenderCheckpoint() bool {
 		CriteriaIDs:      append([]string(nil), src.CriteriaIDs...),
 		MenuPages:        MenuProjection(src.Kind),
 	}
-	// T18: the superseded checkpoint's budget asks ride onto the re-rendered
-	// successor — the settlement surface must survive the change loop (the
-	// successor is the checkpoint the user actually answers).
+	// T18 (0.6.1): a superseded checkpoint's budget ask is INERT legacy state —
+	// no new ask is ever created, and the render no longer displays one. The
+	// carry keeps pre-0.6.1 state byte-stable across a supersede (digest
+	// continuity) and nothing reads it.
 	if src.BudgetAsk != nil && !r.BudgetConfirmed {
 		cp.BudgetAsk = src.BudgetAsk
 	}
@@ -2789,12 +2767,11 @@ func (r *RunState) BudgetExhausted() (bool, string) {
 
 // --- budget settlement (T18: SetBudgetLimits / ExtendBudget) -----------------------
 
-// SetBudgetLimits is the SOLE writer of Limits (T18): it applies the observed
-// first-checkpoint budget confirmation. Legal only in WAIT_USER at the
-// current DISPLAYED checkpoint that carries the persisted BudgetAsk (the
-// budget question rides a display-verified ask, exactly like drops); one
-// settlement per run — already confirmed is an idempotent no-op (the first
-// human answer governs). A replay of the settling call is silent.
+// SetBudgetLimits is INERT since 0.6.1 (T18 rev): budgets settle at StartRun
+// (manifest-authored or unlimited). It validates its input (negatives are
+// corruption) and then no-ops — Confirm payloads probing the retired
+// run-start ask are ignored, never applied. Kept for pre-0.6.1 replay
+// tolerance; ExtendBudget is the sole surviving limit raiser.
 func (r *RunState) SetBudgetLimits(limits BudgetLimits, toolUseID string) (applied bool, err error) {
 	if err := validateBudgetLimits(limits, "SetBudgetLimits"); err != nil {
 		return false, err
@@ -2847,31 +2824,10 @@ func (s *RunState) applyBudgetSettlement(settle *BudgetSettlement) (bool, error)
 		return false, errors.New("budget settlement requires the answering call's tool_use_id")
 	}
 	applied := false
-	if settle.Confirm != nil {
-		if err := validateBudgetLimits(*settle.Confirm, "SetBudgetLimits"); err != nil {
-			return false, err
-		}
-		if !s.BudgetConfirmed {
-			if err := s.requireStatus(StatusWaitUser, "SetBudgetLimits"); err != nil {
-				return false, err
-			}
-			cp := s.CurrentCheckpoint()
-			if cp == nil {
-				return false, errors.New("SetBudgetLimits: no open checkpoint")
-			}
-			if !cp.Displayed {
-				return false, fmt.Errorf("SetBudgetLimits: checkpoint %s is not displayed (the budget question rides a display-verified ask)", cp.ID)
-			}
-			if cp.BudgetAsk == nil {
-				return false, fmt.Errorf("SetBudgetLimits: checkpoint %s carries no persisted budget ask (settlement belongs to the run's unsettled first checkpoint)", cp.ID)
-			}
-			s.Limits = *settle.Confirm
-			s.BudgetConfirmed = true
-			s.BudgetSettledBy = settle.ToolUseID
-			applied = true
-		}
-		// Already confirmed: the first human answer governs — no-op.
-	}
+	// 0.6.1: checkpoint budget settlement is inert — budgets settle at
+	// StartRun (manifest-authored or unlimited) and the parser rejects
+	// `budget:` ride-alongs outright, so a Confirm payload can only come
+	// from a pre-0.6.1 trace replay; nothing to apply.
 	if settle.Extend {
 		for _, x := range s.BudgetExtensions {
 			if x.ToolUseID == settle.ToolUseID {

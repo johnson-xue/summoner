@@ -57,9 +57,9 @@ type RuntimeManifest struct {
 	// is built on it here.
 	Phases map[string]SkillBinding
 	// SuggestedBudgets is the manifest's suggested_budgets projection (T18):
-	// the run-start budget SUGGESTION displayed at the first checkpoint for
-	// user confirmation — never a pre-authorized limit (references/
-	// manifest-spec.md). Nil = no suggestion (the framework default render).
+	// since 0.6.1 the RUN-START LIMITS — applied directly at StartRun with no
+	// confirmation question (the manifest author is the user; ruling
+	// 2026-11-23). Nil = no suggestion (the run starts unlimited).
 	SuggestedBudgets *BudgetLimits
 }
 

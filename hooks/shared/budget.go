@@ -17,11 +17,27 @@ import (
 // The canonical pointer labels (single source: the render prints them, the
 // gate pins offered sets to them, the recorder maps answers by them).
 const (
-	BudgetConfirmLabel   = "budget: 按已显示预算"
-	BudgetUnlimitedLabel = "budget: 不设上限"
+	BudgetConfirmLabel   = "budget: 按已显示预算" // retired 0.6.1: kept for pre-0.6.1 trace replay tolerance
+	BudgetUnlimitedLabel = "budget: 不设上限"   // retired 0.6.1: kept for pre-0.6.1 trace replay tolerance
 	BudgetExtendLabel    = "extend: 追加已显示额度"
 	BudgetHoldLabel      = "extend: 不追加"
 )
+
+// ResolveStartLimits returns the run-start limits (T18, 0.6.1): budgets are
+// manifest-authored — the manifest's suggested_budgets projection applies as
+// configuration with NO runtime ask; absent manifest → unlimited (zero
+// limits). A corrupt manifest fails CLOSED (the loader's standing rule: the
+// suggestion is consumed as authority).
+func ResolveStartLimits() (BudgetLimits, error) {
+	m, err := LoadRuntimeManifest()
+	if err != nil {
+		return BudgetLimits{}, fmt.Errorf("budget resolution: project manifest unreadable: %w", err)
+	}
+	if m == nil || m.SuggestedBudgets == nil {
+		return BudgetLimits{}, nil
+	}
+	return *m.SuggestedBudgets, nil
+}
 
 // budgetRideAlongKind names the two ride-along question kinds.
 const (
@@ -93,10 +109,10 @@ func ParseBudgetRideAlongs(cp *CheckpointState, questions []interface{}) ([]Budg
 		}
 		var want [2]string
 		if kind == rideAlongBudget {
-			if cp.BudgetAsk == nil {
-				return nil, fmt.Sprintf("budget question %q rides at a checkpoint with no persisted budget ask — budget settlement belongs to the run's first checkpoint before confirmation", budgetTruncate(text))
-			}
-			want = [2]string{cp.BudgetAsk.ConfirmLabel, cp.BudgetAsk.UnlimitedLabel}
+			// 0.6.1: the run-start budget ask is retired — budgets are
+			// manifest-authored (suggested_budgets applies at StartRun) or
+			// unlimited; a budget question is never valid at any checkpoint.
+			return nil, fmt.Sprintf("budget question %q is not a checkpoint question — budgets are manifest-authored: declare suggested_budgets in summoner.yaml (applied at run start) or run unlimited; only extend: rides a checkpoint, at exhaustion", budgetTruncate(text))
 		} else {
 			if cp.ExtendAsk == nil {
 				return nil, fmt.Sprintf("extend question %q rides at a checkpoint with no persisted extension offer — extension questions exist only at checkpoints opened while the budget was exhausted", budgetTruncate(text))
@@ -132,11 +148,11 @@ func budgetTruncate(s string) string {
 	return s[:n] + "…"
 }
 
-// BudgetSettlement is the observed budget answer of ONE decision callback
-// (T18): what the hook derived from the answers against the checkpoint's
-// PERSISTED asks — the confirm question's numbers (the persisted proposal, or
-// the zero/unlimited choice; never label-parsed values) and/or an extend
-// answer (the delta comes from the persisted ExtendAsk inside the reducer).
+// BudgetSettlement is the observed budget ride-along answer of ONE decision
+// callback (T18): since 0.6.1 only the EXTEND answer carries meaning (the
+// delta comes from the persisted ExtendAsk inside the reducer); a Confirm
+// payload is inert (budgets settle at StartRun — manifest-authored or
+// unlimited) and survives only for pre-0.6.1 trace replay tolerance.
 // It persists only WITH the decision (RecordDecisionWithBudget, one commit)
 // or through the standalone setters (partial-answer semantics).
 type BudgetSettlement struct {

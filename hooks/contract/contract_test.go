@@ -185,10 +185,16 @@ func runBinary(t *testing.T, name, payload string, extraEnv map[string]string) (
 const contractSession = "sess-contract"
 
 // seedLiveRun starts one live run in the temp state dir (test process, same
-// env overrides the subprocesses get).
+// env overrides the subprocesses get). Mirrors the userpromptsubmit hook:
+// budgets are manifest-authored — suggested_budgets applies at run start,
+// else unlimited (0.6.1, no run-start ask).
 func seedLiveRun(t *testing.T, runID, workflow string) *shared.RunState {
 	t.Helper()
-	r, err := shared.StartRun(runID, contractSession, workflow, shared.BudgetLimits{})
+	limits, err := shared.ResolveStartLimits()
+	if err != nil {
+		t.Fatalf("seed ResolveStartLimits(%s): %v", runID, err)
+	}
+	r, err := shared.StartRun(runID, contractSession, workflow, limits)
 	if err != nil {
 		t.Fatalf("seed StartRun(%s, %s): %v", runID, workflow, err)
 	}
@@ -2038,77 +2044,40 @@ func TestEndToEndBudgetCycleExhaustExtend(t *testing.T) {
 		t.Fatal(err)
 	}
 	cp := run.CurrentCheckpoint()
-	if cp == nil || cp.BudgetAsk == nil {
-		t.Fatalf("the first checkpoint must carry the persisted budget ask: %+v", cp)
+	if cp == nil {
+		t.Fatalf("the first checkpoint must exist: %+v", cp)
 	}
-	if cp.BudgetAsk.Proposal.Source != "manifest" || cp.BudgetAsk.Proposal.Limits.PhaseToolCalls != 2 {
-		t.Fatalf("proposal = %+v, want manifest-suggested phase_tool_calls=2", cp.BudgetAsk.Proposal)
+	if cp.BudgetAsk != nil {
+		t.Fatalf("the first checkpoint must carry NO budget ask (0.6.1): %+v", cp.BudgetAsk)
+	}
+	// 0.6.1: budgets are manifest-authored — the run-start ask is gone and
+	// the suggested_budgets projection applied at run start.
+	if !run.BudgetConfirmed || run.BudgetSettledBy != "run-start" || run.Limits.PhaseToolCalls != 2 {
+		t.Fatalf("run-start budget = confirmed %v settledBy %q limits %+v, want settled run-start with phase_tool_calls=2", run.BudgetConfirmed, run.BudgetSettledBy, run.Limits)
 	}
 
-	// Post-hoc twin: display the checkpoint, then CONTINUE without a budget
-	// answer — rejected with NOTHING recorded (no decision, no settlement).
+	// A budget-less CONTINUE records plainly (no settlement ceremony exists).
 	if code, _, stderr := runBinary(t, "stop", stopRenderPayload(t, renderMessageFor(run, cp)), nil); code != 0 {
 		t.Fatalf("stop render exit = %d, want 0 (stderr: %q)", code, stderr)
 	}
 	run, _ = shared.LoadRun(runID)
 	cp = run.CurrentCheckpoint()
-	page := cp.MenuPages[0]
-	qtext := askQuestionText(cp.Nonce)
-	pageOpts := make([]interface{}, 0, len(page.Labels))
-	for _, l := range page.Labels {
-		pageOpts = append(pageOpts, map[string]interface{}{"label": l, "description": "decision option"})
-	}
-	if code, _, _ := runBinary(t, "pretooluse-gate",
-		askQuestionPayload(t, "tu-ask-x", cp.Nonce, page.Labels), nil); code != 0 {
-		t.Fatalf("page-pinned ask exit = %d, want 0", code)
-	}
-	if code, _, stderr := runBinary(t, "posttooluse", mustJSON(t, map[string]interface{}{
-		"hook_event_name": "PostToolUse",
-		"session_id":      contractSession,
-		"tool_name":       "AskUserQuestion",
-		"tool_use_id":     "tu-ask-x",
-		"tool_input": map[string]interface{}{"questions": []interface{}{map[string]interface{}{
-			"question": qtext, "header": "Checkpoint", "options": pageOpts, "multiSelect": false,
-		}}},
-		"tool_response": map[string]interface{}{
-			"answers": map[string]interface{}{qtext: firstLabelWithKeyword(page.Labels, "continue")},
-		},
-	}), nil); code != 0 {
-		t.Fatalf("posttooluse exit = %d, want 0 (stderr: %q)", code, stderr)
-	}
+	renderAndDecideSettle(t, runID, "tu-ask-1", cp, 0, func(labels []string) string {
+		return firstLabelWithKeyword(labels, "continue")
+	}, "", "")
 	run, err = shared.LoadRun(runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Checkpoints[0].Decided || run.BudgetConfirmed {
-		t.Fatalf("the budget-less CONTINUE must record NOTHING (decided=%v confirmed=%v)", run.Checkpoints[0].Decided, run.BudgetConfirmed)
+	if !run.Checkpoints[0].Decided || run.Status != shared.StatusActive {
+		t.Fatalf("budget-less CONTINUE must record (decided=%v status %s)", run.Checkpoints[0].Decided, run.Status)
 	}
 	evs := allTraceEvents(t)
 	if n := len(eventsOfType(evs, shared.EventBudgetConfirmed)); n != 0 {
-		t.Fatalf("budget.confirmed events = %d, want 0 before any settlement", n)
+		t.Fatalf("budget.confirmed events = %d, want 0 (no settlement ceremony exists)", n)
 	}
-	rejected := eventsOfType(evs, shared.EventCheckpointDecisionRejected)
-	if len(rejected) != 1 || !strings.Contains(rejected[0].Payload["reason"].(string), "budget answer") {
-		t.Fatalf("decision_rejected events = %+v, want one naming the missing budget answer", rejected)
-	}
-
-	// The real settle: confirm the displayed proposal + CONTINUE in one call.
-	renderAndDecideSettle(t, runID, "tu-ask-1", cp, 0, func(labels []string) string {
-		return firstLabelWithKeyword(labels, "continue")
-	}, "confirm", "")
-	run, err = shared.LoadRun(runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !run.BudgetConfirmed || run.Limits.PhaseToolCalls != 2 {
-		t.Fatalf("settlement = confirmed %v limits %+v, want confirmed with phase_tool_calls=2", run.BudgetConfirmed, run.Limits)
-	}
-	if run.Status != shared.StatusActive || !run.Checkpoints[0].Decided {
-		t.Fatalf("after settle+continue: status %s decided %v", run.Status, run.Checkpoints[0].Decided)
-	}
-	evs = allTraceEvents(t)
-	if conf := eventsOfType(evs, shared.EventBudgetConfirmed); len(conf) != 1 || conf[0].ToolUseID != "tu-ask-1" {
-		t.Fatalf("budget.confirmed events = %+v, want one bound to tu-ask-1", conf)
+	if n := len(eventsOfType(evs, shared.EventCheckpointDecisionRejected)); n != 0 {
+		t.Fatalf("decision_rejected events = %d, want 0", n)
 	}
 
 	// Phase work until exhaustion: the skill call opens diagnosis (1/2), one

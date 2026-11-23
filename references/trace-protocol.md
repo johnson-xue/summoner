@@ -61,7 +61,7 @@ The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 | `checkpoint.decided` | `{"checkpoint_id", "tool_use_id"}` — **tool_use_id must be a recorded AskUserQuestion call** (decision binding) |
 | `checkpoint.decision_rejected` | `{"checkpoint_id", "reason"}` — a failed decision attempt; the answer is never recorded |
 | `criterion.dropped` | `{"checkpoint_id", "criterion_id"}` — per-id user drop; rides the same AskUserQuestion call as the decision |
-| `budget.confirmed` / `budget.extended` | `{"checkpoint_id", "limits"|"delta"}` — bind the answering `tool_use_id`; confirmed applies once per run |
+| `budget.confirmed` / `budget.extended` | `{"checkpoint_id", "limits"|"delta"}` — bind the answering `tool_use_id`. Since 0.6.1 budgets settle at run start with no event — `budget.confirmed` appears only in pre-0.6.1 traces (where it applied once per run); `budget.extended` stays live |
 | `recall.applied` | `{"from_phase_id", "target_phase_id", "newly_stale"?}` — target must be real history; a new visit follows |
 | `change.opened` / `change.delta_applied` / `change.resumed` | change loop (§1): frozen position / `{"requirements_version", "newly_stale"?, "preserved"?}` / `{"checkpoint_id"}` |
 | `tool.started` | `{"tool_name", "read_class"?, "sandbox_probe"?, "l2_check"?}` — the pre-execution intent record |

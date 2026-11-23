@@ -26,7 +26,7 @@ selection, registry references and recomputed check-definition digests.
 | `phases` | yes | Non-empty map of phase id to capability. |
 | `check_registry` | no | Array of registered mechanical check definitions. |
 | `tool_scope` | no | Declared read-only tool bounds; `allowed_tools` names tools the gate admits as reads (below). |
-| `suggested_budgets` | no | Positive-integer suggestions presented at the first checkpoint for user confirmation. |
+| `suggested_budgets` | no | Positive-integer run limits, applied at run start without a confirmation question (0.6.1); omitted → unlimited. |
 
 Unknown fields are errors at every level. YAML must be one JSON-compatible
 object: string keys, no duplicate keys, aliases, merges, nulls or custom tags.
@@ -318,13 +318,14 @@ declarations the runtime does not act on; native permissions and sandbox
 restrictions are never bypassed.
 
 `suggested_budgets` accepts optional positive integers for `phase_tool_calls`,
-`failed_checks`, `run_rework`, `delegations`, `check_timeout_seconds`. These are
-**suggestions, surfaced at the first checkpoint for user confirmation**, not
-pre-authorized limits or recommended research-derived numbers. Omit the object
-to make no suggestion. No token budget is supported. This manifest migration
-does not activate them: run-start limits stay zero/unlimited until the separate
-runtime confirmation wiring applies user choices (T10+). It also does not
-implement check execution or new tool-permission plumbing.
+`failed_checks`, `run_rework`, `delegations`, `check_timeout_seconds`. Since
+0.6.1 these **apply as run-start configuration** — each run starts with
+exactly these limits, with no confirmation question (the manifest author is
+the user; ruling 2026-11-23). Omit the object to run unlimited. They are not
+recommended research-derived numbers. No token budget is supported.
+Exhaustion still surfaces an extend offer at the next checkpoint
+(`checkpoint-protocol.md` T18). The field does not implement check execution
+or new tool-permission plumbing.
 
 ## Setup and validation
 

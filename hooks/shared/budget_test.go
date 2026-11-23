@@ -14,15 +14,15 @@ import (
 	"testing"
 )
 
-// budgetAskQuestions builds the two budget ride-along question shapes against
-// a checkpoint's persisted asks (order-free variants included).
-func budgetAskQuestions(cp CheckpointState) []interface{} {
+// budgetRideQuestions builds the retired budget ride-along shape from the
+// canonical pointer labels (order-free variants included).
+func budgetRideQuestions() []interface{} {
 	return []interface{}{
 		map[string]interface{}{
 			"question": "Budget confirmation for this run?",
 			"options": []interface{}{
-				map[string]interface{}{"label": cp.BudgetAsk.ConfirmLabel},
-				map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
+				map[string]interface{}{"label": BudgetConfirmLabel},
+				map[string]interface{}{"label": BudgetUnlimitedLabel},
 			},
 		},
 	}
@@ -43,8 +43,8 @@ func extendAskQuestions(cp CheckpointState) []interface{} {
 func TestParseBudgetRideAlongsShape(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	cp := openAndSubmit(t, r, "context")
-	if cp.BudgetAsk == nil {
-		t.Fatal("the first checkpoint must carry the persisted budget ask")
+	if cp.BudgetAsk != nil {
+		t.Fatal("the first checkpoint must carry NO budget ask (0.6.1: budgets are manifest-authored)")
 	}
 
 	// No budget questions → nil, no problem.
@@ -62,70 +62,33 @@ func TestParseBudgetRideAlongsShape(t *testing.T) {
 		t.Fatalf("ordinary questions: (%v, %q), want (nil, \"\")", rides, problem)
 	}
 
-	// Well-formed budget ride (either label order).
-	rides, problem := ParseBudgetRideAlongs(&cp, budgetAskQuestions(cp))
-	if problem != "" || len(rides) != 1 || rides[0].Kind != "budget" {
-		t.Fatalf("well-formed budget ride: (%+v, %q)", rides, problem)
+	// 0.6.1: a budget: ride-along ALWAYS rejects at parse level — budgets
+	// are manifest-authored, never checkpoint questions.
+	if _, problem := ParseBudgetRideAlongs(&cp, budgetRideQuestions()); problem == "" || !strings.Contains(problem, "manifest") {
+		t.Fatalf("budget ride must reject with the manifest-authored reason, got %q", problem)
 	}
+	// Swapped label order: same parse-level rejection.
 	swapped := []interface{}{map[string]interface{}{
 		"question": "Budget confirmation for this run?",
 		"options": []interface{}{
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
-			map[string]interface{}{"label": cp.BudgetAsk.ConfirmLabel},
+			map[string]interface{}{"label": BudgetUnlimitedLabel},
+			map[string]interface{}{"label": BudgetConfirmLabel},
 		},
 	}}
-	if _, problem := ParseBudgetRideAlongs(&cp, swapped); problem != "" {
-		t.Fatalf("swapped label order must pass (set-equal pair): %q", problem)
+	if _, problem := ParseBudgetRideAlongs(&cp, swapped); problem == "" || !strings.Contains(problem, "manifest") {
+		t.Fatalf("swapped budget ride must reject the same way, got %q", problem)
 	}
-
-	// Foreign labels — a label-parsed number must never launder through.
-	foreign := []interface{}{map[string]interface{}{
-		"question": "Budget?",
-		"options": []interface{}{
-			map[string]interface{}{"label": "budget: 50"},
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
-		},
-	}}
-	if _, problem := ParseBudgetRideAlongs(&cp, foreign); problem == "" || !strings.Contains(problem, "persisted pointer labels") {
-		t.Fatalf("foreign label pair must reject with the pointer-label rule, got %q", problem)
-	}
-
-	// Nonce-carrying ride: the nonce binds the DECISION question.
+	// A nonce-carrying budget ride: still the manifest rejection (parse-level
+	// retirement precedes every shape concern).
 	withNonce := []interface{}{map[string]interface{}{
 		"question": "Budget? nonce " + cp.Nonce,
 		"options": []interface{}{
-			map[string]interface{}{"label": cp.BudgetAsk.ConfirmLabel},
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
+			map[string]interface{}{"label": BudgetConfirmLabel},
+			map[string]interface{}{"label": BudgetUnlimitedLabel},
 		},
 	}}
-	if _, problem := ParseBudgetRideAlongs(&cp, withNonce); problem == "" || !strings.Contains(problem, "nonce") {
+	if _, problem := ParseBudgetRideAlongs(&cp, withNonce); problem == "" || !strings.Contains(problem, "manifest") {
 		t.Fatalf("nonce-carrying budget question must reject, got %q", problem)
-	}
-
-	// Two budget questions in one call.
-	doubled := append(budgetAskQuestions(cp), budgetAskQuestions(cp)...)
-	if _, problem := ParseBudgetRideAlongs(&cp, doubled); problem == "" || !strings.Contains(problem, "two budget questions") {
-		t.Fatalf("two budget questions must reject, got %q", problem)
-	}
-
-	// Three options on the ride.
-	three := []interface{}{map[string]interface{}{
-		"question": "Budget?",
-		"options": []interface{}{
-			map[string]interface{}{"label": cp.BudgetAsk.ConfirmLabel},
-			map[string]interface{}{"label": cp.BudgetAsk.UnlimitedLabel},
-			map[string]interface{}{"label": "budget: other"},
-		},
-	}}
-	if _, problem := ParseBudgetRideAlongs(&cp, three); problem == "" || !strings.Contains(problem, "exactly two options") {
-		t.Fatalf("three options must reject, got %q", problem)
-	}
-
-	// A budget ride at a checkpoint with NO persisted ask (already settled).
-	noAsk := cp
-	noAsk.BudgetAsk = nil
-	if _, problem := ParseBudgetRideAlongs(&noAsk, budgetAskQuestions(cp)); problem == "" || !strings.Contains(problem, "no persisted budget ask") {
-		t.Fatalf("ride without a persisted ask must reject, got %q", problem)
 	}
 
 	// An extend ride with a persisted offer passes; without one it rejects.
@@ -141,9 +104,9 @@ func TestParseBudgetRideAlongsShape(t *testing.T) {
 	}
 }
 
-// firstDisplayedCheckpoint settles nothing: the run starts, its first
-// checkpoint opens (framework unlimited ask — no manifest in the temp dir)
-// and the display is bound.
+// firstDisplayedCheckpoint: the run starts (budget settled at run start —
+// manifest-authored or unlimited; no ask exists since 0.6.1), its first
+// checkpoint opens and the display is bound.
 func firstDisplayedCheckpoint(t *testing.T, r *RunState) *CheckpointState {
 	t.Helper()
 	openAndSubmit(t, r, "context")
@@ -155,74 +118,35 @@ func firstDisplayedCheckpoint(t *testing.T, r *RunState) *CheckpointState {
 	return cp
 }
 
-func TestSetBudgetLimitsSoleWriter(t *testing.T) {
+func TestSetBudgetLimitsInertAfterRunStart(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
-	cp := firstDisplayedCheckpoint(t, r)
+	firstDisplayedCheckpoint(t, r)
 
-	// Negative values are corruption.
+	// Negative values are still corruption — the validator stays.
 	if _, err := r.SetBudgetLimits(BudgetLimits{PhaseToolCalls: -1}, "tu-1"); err == nil || !strings.Contains(err.Error(), "negative") {
 		t.Fatalf("negative limits must reject, got %v", err)
 	}
 
-	// Not displayed → refuse (the budget question rides a display-verified ask).
-	rUndisplayed := startFreshUndisplayed(t)
-	if _, err := rUndisplayed.SetBudgetLimits(BudgetLimits{}, "tu-x"); err == nil || !strings.Contains(err.Error(), "not displayed") {
-		t.Fatalf("undisplayed checkpoint must refuse settlement, got %v", err)
-	}
-
-	// The real settlement.
+	// 0.6.1: budgets settle at StartRun — a later SetBudgetLimits call is a
+	// silent no-op that never rewrites the run's configuration.
 	applied, err := r.SetBudgetLimits(BudgetLimits{PhaseToolCalls: 3}, "tu-1")
-	if err != nil || !applied {
-		t.Fatalf("SetBudgetLimits: applied=%v err=%v", applied, err)
-	}
-	if !r.BudgetConfirmed || r.BudgetSettledBy != "tu-1" || r.Limits.PhaseToolCalls != 3 {
-		t.Fatalf("settlement state: confirmed=%v by=%q limits=%+v", r.BudgetConfirmed, r.BudgetSettledBy, r.Limits)
-	}
-	// Idempotent: the FIRST human answer governs — a later call never rewrites.
-	applied, err = r.SetBudgetLimits(BudgetLimits{Delegations: 9}, "tu-2")
 	if err != nil || applied {
-		t.Fatalf("second settlement must be a silent no-op: applied=%v err=%v", applied, err)
+		t.Fatalf("SetBudgetLimits must be inert after run start: applied=%v err=%v", applied, err)
 	}
-	if r.Limits.PhaseToolCalls != 3 || r.Limits.Delegations != 0 {
-		t.Fatalf("limits rewritten after confirmation: %+v", r.Limits)
+	if !r.BudgetConfirmed || r.BudgetSettledBy != "run-start" || r.Limits.PhaseToolCalls != 0 {
+		t.Fatalf("run-start state must be untouched: confirmed=%v by=%q limits=%+v", r.BudgetConfirmed, r.BudgetSettledBy, r.Limits)
 	}
-	// Replay of the settling call: silent.
-	if applied, err := r.SetBudgetLimits(BudgetLimits{PhaseToolCalls: 3}, "tu-1"); err != nil || applied {
-		t.Fatalf("replay must be a no-op: applied=%v err=%v", applied, err)
+	// Replays are equally inert.
+	if applied, err := r.SetBudgetLimits(BudgetLimits{Delegations: 9}, "tu-2"); err != nil || applied || r.Limits.Delegations != 0 {
+		t.Fatalf("second call must stay inert: applied=%v err=%v limits=%+v", applied, err, r.Limits)
 	}
-	_ = cp
 }
 
-// startFreshUndisplayed opens the first checkpoint WITHOUT binding display.
-func startFreshUndisplayed(t *testing.T) *RunState {
-	t.Helper()
-	r := startTestRun(t, BudgetLimits{})
-	openAndSubmit(t, r, "context")
-	return r
-}
-
-func TestSetBudgetLimitsRequiresPersistedAsk(t *testing.T) {
-	r := startTestRun(t, BudgetLimits{})
-	firstDisplayedCheckpoint(t, r)
-	// Leave the budget UNSETTLED (the reducer itself does not enforce the
-	// post-hoc rule — that is the hook's job) and reach the second checkpoint:
-	// no BudgetAsk persists there, so settlement has no surface.
-	if err := r.RecordDecision(r.CurrentCheckpoint().ID, DecisionContinue, "tu-1"); err != nil {
-		t.Fatal(err)
-	}
-	openAndSubmit(t, r, "diagnosis")
-	displayCurrent(t, r)
-	if _, err := r.SetBudgetLimits(BudgetLimits{}, "tu-2"); err == nil || !strings.Contains(err.Error(), "no persisted budget ask") {
-		t.Fatalf("settlement at a non-first checkpoint must reject, got %v", err)
-	}
-}
 
 func TestExtendBudgetAppliesPersistedDelta(t *testing.T) {
-	r := startTestRun(t, BudgetLimits{})
+	// 0.6.1: limits are run-start configuration — seed them directly.
+	r := startTestRun(t, BudgetLimits{PhaseToolCalls: 2, Delegations: 1})
 	firstDisplayedCheckpoint(t, r)
-	if _, err := r.SetBudgetLimits(BudgetLimits{PhaseToolCalls: 2, Delegations: 1}, "tu-b"); err != nil {
-		t.Fatal(err)
-	}
 	if err := r.RecordDecision(r.CurrentCheckpoint().ID, DecisionContinue, "tu-b"); err != nil {
 		t.Fatal(err)
 	}
@@ -288,8 +212,9 @@ func TestRecordDecisionWithBudgetAtomicOnSaveFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("RecordDecisionWithBudget must surface the Save failure")
 	}
-	// Repair and reload: NEITHER the decision NOR the settlement persisted —
-	// state authority never half-applies one human callback.
+	// Repair and reload: the DECISION never persisted — state authority never
+	// half-applies one human callback (settlements are inert since 0.6.1, so
+	// only the decision is at stake).
 	if err := os.Chmod(sessDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -297,8 +222,8 @@ func TestRecordDecisionWithBudgetAtomicOnSaveFailure(t *testing.T) {
 	if derr != nil {
 		t.Fatal(derr)
 	}
-	if disk.Status != StatusWaitUser || disk.Checkpoints[0].Decided || disk.BudgetConfirmed {
-		t.Fatalf("half-applied callback on disk: status %s decided %v confirmed %v", disk.Status, disk.Checkpoints[0].Decided, disk.BudgetConfirmed)
+	if disk.Status != StatusWaitUser || disk.Checkpoints[0].Decided {
+		t.Fatalf("half-applied callback on disk: status %s decided %v", disk.Status, disk.Checkpoints[0].Decided)
 	}
 }
 
@@ -306,32 +231,24 @@ func TestRecordDecisionWithBudgetValidatesBeforeRecording(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	cp := firstDisplayedCheckpoint(t, r)
 
-	// A settlement without a tool_use_id is malformed: nothing records.
-	if err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-1", &BudgetSettlement{Confirm: &BudgetLimits{}}); err == nil {
-		t.Fatal("settlement without tool_use_id must reject")
-	}
-	// A negative settlement value: nothing records, the checkpoint stays open.
+	// 0.6.1: settlement payloads are inert (budgets settle at run start) —
+	// malformed Confirm data no longer vetoes the DECISION.
 	neg := BudgetLimits{RunRework: -3}
-	if err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-1", &BudgetSettlement{ToolUseID: "tu-1", Confirm: &neg}); err == nil {
-		t.Fatal("negative settlement must reject")
+	if err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-1", &BudgetSettlement{ToolUseID: "tu-1", Confirm: &neg}); err != nil {
+		t.Fatalf("an inert settlement must not veto the decision: %v", err)
 	}
-	if r.Checkpoints[0].Decided || r.BudgetConfirmed {
-		t.Fatal("a rejected combined callback must leave nothing recorded")
+	if r.Status != StatusActive || !r.Checkpoints[0].Decided {
+		t.Fatalf("decision must record with an ignored settlement: status %s decided %v", r.Status, r.Checkpoints[0].Decided)
 	}
-
-	// The happy path: settlement + decision in one commit.
-	lim := BudgetLimits{FailedChecks: 2}
-	if err := r.RecordDecisionWithBudget(cp.ID, DecisionContinue, "tu-1", &BudgetSettlement{ToolUseID: "tu-1", Confirm: &lim}); err != nil {
-		t.Fatalf("combined settlement+decision: %v", err)
-	}
-	if r.Status != StatusActive || !r.BudgetConfirmed || r.Limits.FailedChecks != 2 {
-		t.Fatalf("combined result: status %s confirmed %v limits %+v", r.Status, r.BudgetConfirmed, r.Limits)
+	if r.Limits.RunRework != 0 {
+		t.Fatalf("inert settlement must not rewrite limits: %+v", r.Limits)
 	}
 }
 
-// The OFFER is digest-bound content; the APPLIED limits/counters are not
-// (controller clarification 2): settling the budget must never invalidate the
-// display binding, but changing the persisted offer after display must.
+// The persisted EXTEND OFFER is digest-bound content; the APPLIED
+// limits/counters are not (controller clarification 2): extensions and
+// counter ticks must never invalidate the display binding, but changing the
+// persisted offer after display must (offers are frozen content).
 func TestBudgetOfferDigestBoundAppliedLimitsNot(t *testing.T) {
 	r := startTestRun(t, BudgetLimits{})
 	cp := *firstDisplayedCheckpoint(t, r)
@@ -344,38 +261,12 @@ func TestBudgetOfferDigestBoundAppliedLimitsNot(t *testing.T) {
 		t.Fatal("applied Limits/Counters must NOT be digest-bound checkpoint content")
 	}
 
-	// A changed OFFER (proposal or source) invalidates the binding.
+	// A changed EXTEND offer invalidates the binding (offers are frozen
+	// content; only exhaustion checkpoints carry one).
 	changed := cp
-	changed.BudgetAsk.Proposal.Limits.PhaseToolCalls = 4
+	changed.ExtendAsk = &ExtendAsk{Delta: BudgetLimits{PhaseToolCalls: 4}, ExtendLabel: BudgetExtendLabel, HoldLabel: BudgetHoldLabel}
 	if got := CheckpointContentDigest(changed, r.RequirementsVersion); got == digest {
-		t.Fatal("a changed budget proposal must change the digest (stale offer → re-render)")
-	}
-	changed = cp
-	changed.BudgetAsk.Proposal.Source = "manifest"
-	if got := CheckpointContentDigest(changed, r.RequirementsVersion); got == digest {
-		t.Fatal("a changed proposal source must change the digest")
-	}
-
-	// The stale-offer twin end-to-end: display binds, the offer changes, the
-	// combined callback rolls back WHOLLY (decision AND settlement).
-	r2 := startTestRun(t, BudgetLimits{})
-	cp2 := firstDisplayedCheckpoint(t, r2)
-	// Simulate an offer change after display (a rewrite of persisted content).
-	cur := r2.CurrentCheckpoint()
-	cur.BudgetAsk.Proposal.Limits.PhaseToolCalls = 12
-	if err := r2.Save(); err != nil {
-		t.Fatal(err)
-	}
-	lim := BudgetLimits{}
-	if err := r2.RecordDecisionWithBudget(cp2.ID, DecisionContinue, "tu-1", &BudgetSettlement{ToolUseID: "tu-1", Confirm: &lim}); err == nil || !strings.Contains(err.Error(), "content changed since display") {
-		t.Fatalf("stale offer must refuse the decision, got %v", err)
-	}
-	disk, err := LoadRun("run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if disk.Status != StatusWaitUser || disk.BudgetConfirmed || disk.Checkpoints[0].Decided {
-		t.Fatalf("stale-offer callback half-applied: status %s confirmed %v decided %v", disk.Status, disk.BudgetConfirmed, disk.Checkpoints[0].Decided)
+		t.Fatal("a persisted extend offer must change the digest (offer appears → re-render)")
 	}
 }
 

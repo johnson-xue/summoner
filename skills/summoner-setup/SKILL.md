@@ -93,8 +93,9 @@ dry-run flag. Field reference: `../../references/manifest-spec.md`.
   reviewer team.
 - `check_registry` uses the shipped CheckDef fields and verified definition
   digests. Mechanical envelope references freeze `check_id@digest`.
-- Tool scope never grants permissions. Suggested budgets require user
-  confirmation at the first checkpoint; setup does not activate limits.
+- Tool scope never grants permissions. A written `suggested_budgets`
+  applies as each run's starting limits (no confirmation question since
+  0.6.1); omitting it runs unlimited.
 - Project checks may honestly be `BLOCKED` when the required sandbox is
   absent. A successfully written manifest is not proof of runtime isolation.
 - Restart is needed only if the plugin/hooks themselves were installed or

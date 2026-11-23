@@ -188,7 +188,12 @@ func runHook(stdin io.Reader, errW io.Writer) int {
 		fmt.Fprintf(errW, "summoner userpromptsubmit: minting run id failed — fail-closed: %v\n", err)
 		return 2
 	}
-	if _, err := shared.StartRun(runID, in.SessionID, workflow, shared.BudgetLimits{}); err != nil {
+	limits, err := shared.ResolveStartLimits()
+	if err != nil {
+		fmt.Fprintf(errW, "summoner userpromptsubmit: resolving run-start budget failed — fail-closed: %v\n", err)
+		return 2
+	}
+	if _, err := shared.StartRun(runID, in.SessionID, workflow, limits); err != nil {
 		fmt.Fprintf(errW, "summoner userpromptsubmit: starting run failed — fail-closed: %v\n", err)
 		return 2
 	}

@@ -183,8 +183,6 @@ func TestRenderLayoutKeepsEveryField(t *testing.T) {
 		"tier=L2 os=darwin arch=amd64 runtime=go1.16",
 		"limits phase_tool_calls=40,failed_checks=3,run_rework=2,delegations=5",
 		"counters phase_tool_calls=4,failed_checks=0,run_rework=0,delegations=1",
-		`confirm="budget: 按已显示预算"`,
-		`unlimited="budget: 不设上限"`,
 		`extend="extend: 追加已显示额度"`,
 		"continue: 继续下一阶段",
 		"skip: 跳过该阶段（标 UNVERIFIED / UNREVIEWED，不能伪造 PASS）",

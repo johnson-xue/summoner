@@ -42,7 +42,7 @@
     "suggested_budgets": {
       "type": "object",
       "additionalProperties": false,
-      "description": "SUGGESTIONS ONLY: surface at the first checkpoint for user confirmation. These are not active limits or pre-authorization; runtime consumption is wired separately. Omit to make no suggestion.",
+      "description": "Run-start limits: applied at run start with no confirmation question (0.6.1). Omit to run unlimited. Exhaustion offers an extension at the next checkpoint.",
       "properties": {
         "phase_tool_calls": { "type": "integer", "minimum": 1 },
         "failed_checks": { "type": "integer", "minimum": 1 },
