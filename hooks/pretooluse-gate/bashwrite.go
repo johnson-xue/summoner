@@ -206,7 +206,7 @@ var (
 	pipNameRe    = regexp.MustCompile(`^pip[0-9.]*$`)
 	awkSystemRe  = regexp.MustCompile(`system\s*\(`)
 	awkPipeCmdRe = regexp.MustCompile(`\|\s*["']`)
-	sedWriteRe   = regexp.MustCompile(`(?:^|[;{}]|\n)\s*(?:[0-9]+|\$|/(?:\\.|[^/\\\n;])*/[IgMm]*|\\[0-9]+)?(?:,(?:[0-9]+|\$|/(?:\\.|[^/\\\n;])*/[IgMm]*))?\s*w\s+[^\s;{}]`)
+	sedWriteRe   = regexp.MustCompile(`(?:^|[;{}]|\n)\s*(?:[0-9]+|\$|/(?:\\.|[^/\\\n;])*/[IgMm]*|\\[0-9]+)?(?:,(?:[0-9]+|\$|/(?:\\.|[^/\\\n;])*/[IgMm]*))?\s*(?:!\s*)?w\s+[^\s;{}]`)
 
 	// shellReservedWords may precede the verb of a command: `then rm x`,
 	// `time make`, `! rm`, `{ rm; }`, `coproc rm`, `function f {…}`. They
@@ -588,17 +588,24 @@ func commandRule(words []shTok, stdinLive bool) string {
 	if words[0].text == "case" {
 		return "" // the words up to `)` are the case subject, not a command
 	}
-	// The empty word a closing quote leaves after an assignment's
-	// expansion is the assignment's value, not a program (`X="$(pwd)" rm`,
-	// `X="$((1))" git`): drop it before the command word is resolved.
+	// `env -S '<words>'`: the string holds options, assignments and the
+	// command — judged as a command of its own.
+	for k, w := range words {
+		if (w.text == "-S" || w.text == "--split-string") && k+1 < len(words) && strings.ContainsAny(words[k+1].text, " \t") {
+			if rule := ruleFor(lexShell(words[k+1].text)); rule != "" {
+				return rule
+			}
+		}
+	}
+	// An empty word names no program (the lexer keeps a word that holds a
+	// substitution together, so an assignment's value never poses as the
+	// command).
 	if n := len(words); n > 1 && words[0].text == "" && words[0].expanded && strings.HasPrefix(words[1].text, "/") {
 		// `$(git rev-parse --show-toplevel)/bin/tool status`: the
 		// substitution is the DIRECTORY, the next word the program path.
 		words = append([]shTok{words[1]}, words[2:]...)
 	} else if n > 1 && words[0].text == "" && !words[0].expanded {
 		words = words[1:]
-	} else if n > 1 && envAssign.MatchString(words[0].text) && words[0].expanded && words[1].text == "" {
-		words = append([]shTok{words[0]}, words[2:]...)
 	}
 	for len(words) > 0 && (shellReservedWords[words[0].text] || envAssign.MatchString(words[0].text)) {
 		if words[0].text == "function" && len(words) > 1 {
@@ -688,16 +695,50 @@ var wrapperValueOptions = map[string]map[string]bool{
 	"doas":       {"-u": true, "-C": true, "-L": true},
 	"strace":     {"-o": true, "-e": true, "-p": true, "-u": true, "-b": true, "-D": true, "-I": true, "-k": true},
 	"ltrace":     {"-o": true, "-e": true, "-p": true, "-u": true},
-	"xcrun":      {"--sdk": true, "--run": true, "--target": true, "--arch": true, "--find": true},
+	"xcrun":      {"--sdk": true, "-sdk": true, "--target": true, "--arch": true, "-arch": true, "-f": true, "-F": true},
+	"arch":       {"-arch": true},
 	"caffeinate": {"-t": true, "-w": true, "-u": true},
 	"stdbuf":     {"-i": true, "-o": true, "-e": true},
-	"parallel":   {"-j": true, "--jobs": true},
+	"parallel":   {"-j": true, "--jobs": true, "-a": true, "--arg-file": true},
 	"taskset":    {"-c": true, "--cpu-list": true, "-p": true},
 	"ionice":     {"-c": true, "-n": true, "-p": true, "-u": true},
 	"chrt":       {"-p": true, "-a": true},
 	"prlimit":    {"-p": true, "--pid": true, "-c": true, "--cmd": true},
 	"script":     {"-c": true, "--command": true, "-t": true, "-f": true, "-a": true, "-F": true, "-T": true, "-e": true, "-O": true},
-	"setsid":     {"-w": true, "-P": true},
+	"setsid":     {},
+}
+
+// infoOnly: the first argument asks for the program's version or help.
+func infoOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "--version", "-v", "-V", "--help", "-h", "version":
+		return true
+	}
+	return false
+}
+
+// rtkWriters: rtk's subcommands that change configuration or project files.
+var rtkWriters = map[string]bool{"init": true, "config": true, "trust": true, "lint": true, "pint": true, "ecs": true,
+	"install": true, "uninstall": true, "setup": true, "telemetry": true}
+
+// wrapperTakesValue: the option is in the wrapper's arity table, also in its
+// ATTACHED spelling (`xcrun -sdkmacosx`, `flock -w5`).
+// wrapperTakesValue: the option is in the wrapper's arity table — exactly
+// (`flock -w 5`) or with its value ATTACHED to a short option (`xcrun
+// -sdkmacosx`, `ionice -c2`).
+func wrapperTakesValue(table map[string]bool, a string) bool {
+	if table[a] {
+		return true
+	}
+	return len(a) > 2 && a[0] == '-' && a[1] != '-' && table[a[:2]]
+}
+
+// wrapperValueIsNext: the option's value is the NEXT word (skip it).
+func wrapperValueIsNext(table map[string]bool, a string) bool {
+	return table[a]
 }
 
 // wrapperOperandsBeforeCommand: wrappers whose wrapped command is NOT the
@@ -719,8 +760,10 @@ func wrapperRunsComputedCommand(verb string, args []shTok) bool {
 		if a == "--" || (strings.HasPrefix(a, "--") && strings.Contains(a, "=")) {
 			continue
 		}
-		if valueOpts[a] {
-			k++ // the option's value
+		if wrapperTakesValue(valueOpts, a) {
+			if wrapperValueIsNext(valueOpts, a) {
+				k++ // the option's value
+			}
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
@@ -806,6 +849,9 @@ func verbTableRule(verb string, args []string, stdinLive bool, expanded []bool) 
 			return "" // -n parses without running anything; --version / --help print
 		}
 	}
+	if !shellNames[verb] && infoOnly(args) {
+		return "" // --version / --help: the program is asked about itself
+	}
 	if writeClassVerbs[verb] {
 		if verb == "source" || verb == "." {
 			return "source (runs a script file)"
@@ -840,14 +886,14 @@ func formatterRule(verb string, args []string) string {
 			return "prettier --write (rewrites files)"
 		}
 	case "eslint":
-		if has("--fix", "--fix-to-stdin") && !has("--fix-dry-run") {
+		if has("--fix") && !has("--fix-dry-run") {
 			return "eslint --fix (rewrites files)"
 		}
 	case "ruff":
 		if len(args) > 0 && args[0] == "format" && !has("--check", "--diff") {
 			return "ruff format (rewrites files)"
 		}
-		if len(args) > 0 && args[0] == "check" && has("--fix", "--unsafe-fixes", "--add-noqa") {
+		if len(args) > 0 && args[0] == "check" && has("--fix") && !has("--diff") {
 			return "ruff check --fix (rewrites files)"
 		}
 	case "black":
@@ -859,8 +905,8 @@ func formatterRule(verb string, args []string) string {
 			return "golangci-lint --fix (rewrites files)"
 		}
 	case "isort":
-		if !has("--check", "--diff", "--version", "--help") {
-			return "isort (rewrites imports unless --check / --diff)"
+		if !has("--check-only", "-c", "--diff", "-df", "--df", "--version", "-h", "--help", "--show-config", "--show-files", "--show-diff") {
+			return "isort (rewrites imports unless --check-only / --diff)"
 		}
 	case "tsc":
 		if !has("--noEmit", "--version", "--help", "--showConfig", "--listFilesOnly", "--clean") {
@@ -903,11 +949,17 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 		// `hook check '<command>'` (a command STRING). Unmodelled, the whole
 		// freeze was void behind it: `rtk rm -rf x` read as an unknown verb
 		// (posture panel, diagnosis-flow lens).
-		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || args[0] == "bypass") {
+		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || args[0] == "bypass" || args[0] == "proxy" ||
+			args[0] == "err" || args[0] == "summary" || args[0] == "test" || args[0] == "run") {
+			// proxy = bypass; err / summary / test / run wrap the command that
+			// follows (round 5).
 			args = args[1:]
 		}
 		if len(args) >= 2 && args[0] == "hook" && args[1] == "check" {
 			args = args[2:]
+		}
+		if len(args) > 0 && rtkWriters[args[0]] {
+			return "rtk " + args[0] + " (changes rtk's configuration or project files)"
 		}
 		if len(args) == 0 {
 			return ""
@@ -930,15 +982,17 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 	valueOpts, before := wrapperValueOptions[verb], wrapperOperandsBeforeCommand[verb]
 	for k := 0; k < len(args); k++ {
 		w := args[k]
-		if valueOpts[w] {
+		if wrapperTakesValue(valueOpts, w) {
 			// The option and its value: neither is the command — except for
 			// a command-string wrapper, whose -c VALUE is the command.
-			if commandStringWrappers[verb] && k+1 < len(args) {
-				if rule := ruleFor(lexShell(args[k+1])); rule != "" {
-					return verb + " … " + rule
+			if wrapperValueIsNext(valueOpts, w) {
+				if commandStringWrappers[verb] && k+1 < len(args) {
+					if rule := ruleFor(lexShell(args[k+1])); rule != "" {
+						return verb + " … " + rule
+					}
 				}
+				k++
 			}
-			k++
 			continue
 		}
 		if w == "--" || (strings.HasPrefix(w, "--") && strings.Contains(w, "=")) {
@@ -1037,6 +1091,9 @@ func gitRule(args []string, expanded []bool) string {
 				return "" // documentation: whatever the subcommand is
 			}
 		}
+		if a == "difftool" {
+			return "" // opens a viewer: a read
+		}
 		for _, flag := range rest {
 			if strings.HasPrefix(flag, "--output=") || flag == "--output" {
 				return "git " + a + " --output (writes the output to a file)"
@@ -1064,6 +1121,11 @@ func gitRule(args []string, expanded []bool) string {
 				return ""
 			}
 		case "apply":
+			for _, flag := range rest {
+				if flag == "--apply" {
+					return "git apply --apply (applies the patch)"
+				}
+			}
 			for _, flag := range rest {
 				if flag == "--check" || flag == "--stat" || flag == "--numstat" || flag == "--summary" {
 					return ""
@@ -1111,8 +1173,16 @@ func gitRule(args []string, expanded []bool) string {
 			}
 			return "git remote " + rest[0]
 		case "reflog":
-			if len(rest) > 0 && (rest[0] == "expire" || rest[0] == "delete") {
-				return "git reflog " + rest[0]
+			if len(rest) > 0 && rest[0] == "expire" {
+				for _, flag := range rest[1:] {
+					if flag == "--dry-run" || flag == "-n" {
+						return "" // reports what would be pruned
+					}
+				}
+				return "git reflog expire"
+			}
+			if len(rest) > 0 && rest[0] == "delete" {
+				return "git reflog delete"
 			}
 			return "" // show, a count, a ref, --date=…: all reads
 		case "archive":
@@ -1348,23 +1418,39 @@ func awkOutput(s string) bool {
 
 // sedRule: -i edits in place; a `w file` command writes a file.
 func sedRule(args []string) string {
+	// Which word is the script: the word after a bare -e / --expression, an
+	// attached -e… / --expression=…; otherwise the FIRST operand — every
+	// later operand is an input file (`sed -n 1p e2e.log`). -f anywhere is a
+	// program from a file.
+	viaOption, scriptSeen, expectScript := false, false, false
+	for _, a := range args {
+		if a == "-e" || a == "--expression" {
+			viaOption = true
+		}
+	}
 	for _, a := range args {
 		switch {
+		case a == "-e" || a == "--expression":
+			expectScript = true
+			continue
 		case strings.HasPrefix(a, "-i") || strings.Contains(a, "--in-place"):
 			return "sed -i (in-place edit)"
 		case a == "-f" || a == "--file" || strings.HasPrefix(a, "-f") && len(a) > 2 || strings.HasPrefix(a, "--file="):
 			return "sed -f (program from a file the gate cannot see)"
 		}
-		// Every word may carry the script: a bare operand, an attached -e
-		// (`-e'1e rm'`), or --expression=…
 		script := ""
 		switch {
+		case expectScript:
+			script, expectScript = a, false
 		case strings.HasPrefix(a, "--expression="):
 			script = a[len("--expression="):]
-		case strings.HasPrefix(a, "-e"):
+		case strings.HasPrefix(a, "-e") && len(a) > 2:
 			script = a[2:]
 		case !strings.HasPrefix(a, "-"):
-			script = a
+			if viaOption || scriptSeen {
+				continue // an input file
+			}
+			script, scriptSeen = a, true
 		default:
 			continue // an option whose script is another word
 		}
@@ -1686,6 +1772,9 @@ func goRule(args []string) string {
 					if (args[1] == "cover" && (a == "-o" || strings.HasPrefix(a, "-o="))) || a == "--output" || strings.HasPrefix(a, "--output=") {
 						return "go tool " + args[1] + " -o (writes a file)"
 					}
+					if args[1] == "pprof" && (a == "-output" || strings.HasPrefix(a, "-output=") || a == "-png" || a == "-svg" || a == "-pdf" || a == "--png" || a == "--svg" || a == "--pdf") {
+						return "go tool pprof " + a + " (writes a file)"
+					}
 				}
 			}
 			return ""
@@ -1839,6 +1928,9 @@ func pythonModuleRule(verb, module string, rest []string) string {
 			return ""
 		}
 	}
+	if infoOnly(rest) {
+		return "" // `python3 -m venv --help`, `-m pytest --version`
+	}
 	return verb + " -m <module> (runs a module)"
 }
 
@@ -1906,12 +1998,16 @@ func unzipRule(args []string) string {
 
 // shellInfoOnly: the shell is asked about itself (`bash --version`,
 // `zsh --help`, `sh -v`): the first option is an information flag.
+// shellInfoOnly: the shell is asked about itself and runs nothing
+// (`bash --version`, `zsh --help`, `sh -?`). The short -h / -v / -V are
+// OPTIONS (-h hashall, -v verbose) — `bash -h -c 'rm -rf x'` runs the code
+// (ship review round 5).
 func shellInfoOnly(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
 	switch args[0] {
-	case "--version", "-v", "-V", "--help", "-h", "-?":
+	case "--version", "--help", "-?":
 		return true
 	}
 	return false
@@ -2160,12 +2256,10 @@ func resolveVerbTok(words []shTok) (int, string) {
 			i++
 			continue
 		}
-		if words[i].text == "" && (!words[i].expanded || i > 0 && envAssign.MatchString(words[i-1].text) && words[i-1].expanded) {
-			// The empty word a closing quote leaves after an assignment's
-			// substitution (`X="$(pwd)" rm -rf x`, `X="$((1))" git status`)
-			// names no program — the next word is the command. A computed
-			// word after a COMPLETE assignment (`X=1 "$(echo rm)" -rf x`)
-			// still is the command (ship review round 4, C1).
+		if words[i].text == "" && !words[i].expanded {
+			// The empty word a closing quote leaves names no program. (A
+			// COMPUTED empty word is the command — `X=1 "$(echo rm)" -rf x`,
+			// `X="$Y" "$(echo rm)" -rf x`.)
 			i++
 			continue
 		}
@@ -2188,6 +2282,19 @@ func resolveVerbTok(words []shTok) (int, string) {
 				}
 				if a == "" && !words[i].expanded {
 					i++ // the empty word a closing quote leaves: not the command
+					continue
+				}
+				if a == "-" {
+					// Ends env's own options (`env - NODE_ENV=test node x.js`);
+					// alone it names nothing — an ambiguous wrapper.
+					if i+1 >= len(words) {
+						return i, "__ambiguous_wrapper__"
+					}
+					i++
+					continue
+				}
+				if a == "-S" || a == "--split-string" {
+					i += 2 // the option and its argument string
 					continue
 				}
 				if a == "-u" || a == "--unset" || a == "-C" || a == "--chdir" {

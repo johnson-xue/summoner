@@ -290,11 +290,72 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"write", "golangci-lint run --fix"},
 		{"read", "golangci-lint run ./..."},
 		{"write", "isort ."},
-		{"read", "isort --check ."},
 		{"write", "tsc"},
 		{"write", "tsc -p tsconfig.json"},
 		{"read", "tsc --noEmit"},
 		{"read", "tsc --version"},
+		// ---- ship review round 5 (final): holes and denials inside the round-4 diff ----
+		{"write", `bash -h -c "rm -rf x"`}, // -h / -v / -V are shell OPTIONS, not information
+		{"write", `sh -h -c "rm -rf x"`},
+		{"write", `zsh -h -c "rm -rf x"`},
+		{"write", `ksh -h -c "rm -rf x"`},
+		{"write", "bash -v x.sh"},
+		{"write", `sh -v -c "rm -rf x"`},
+		{"write", "bash -v -c 'rm -rf x'"},
+		{"write", "zsh -v x.zsh"},
+		{"write", "dash -v x.sh"},
+		{"write", "ksh -v x.ksh"},
+		{`write`, `X="$Y" "$(echo rm)" -rf x`}, // a COMPLETE assignment, then a computed command
+		{"write", `X="$Y" $(echo rm) -rf x`},
+		{"write", "xcrun -sdk macosx rm -rf x"}, // attached / short option values
+		{"write", "xcrun -arch arm64 rm -rf x"},
+		{"write", "arch -arch arm64 rm -rf x"},
+		{"write", "arch -arch x86_64 rm -rf x"},
+		{"write", "setsid -w rm -rf x"}, // -w is a flag
+		{"write", "setsid rm -rf x"},
+		{"write", "parallel -a list.txt rm -rf x"},
+		{"write", "sed '$!w /tmp/out' f"},                // a negated address before w
+		{"write", "git apply --summary --apply x.patch"}, // --apply re-enables applying
+		{"write", "go tool pprof -png cpu.prof"},
+		{"write", "go tool pprof -svg cpu.prof"},
+		{"write", "go tool pprof -pdf cpu.prof"},
+		{"write", "go tool pprof -top -output=out cpu.prof"},
+		{"write", "time --output=/tmp/t ls"},
+		{"write", "rtk proxy rm -rf x"}, // rtk's own front words and writers
+		{"write", "rtk err rm -rf x"},
+		{"write", "rtk summary make test"},
+		{"write", "rtk test make test"},
+		{"write", "rtk run 'rm -rf x'"},
+		{"write", "rtk init"},
+		{"write", "rtk init -g"},
+		{"write", "rtk lint --fix src/"},
+		{"write", "rtk config set x y"},
+		{"write", "rtk trust x"},
+		{"write", "rtk pint x"},
+		{"write", "rtk ecs x"},
+		{"read", "rtk err git status"},
+		{"read", "isort --check-only ."}, // isort's real check flags
+		{"read", "isort -c ."},
+		{"read", "isort --df ."},
+		{"read", "isort --diff ."},
+		{"read", "sed -n 1p e2e.log"}, // later operands are input files
+		{"read", "sed 's/a/b/' e2e.log"},
+		{"write", "sed 's/a/b/' -e '1e rm -rf x' f"},
+		{"read", "eslint --fix-to-stdin x.js"}, // writes stdout, not the file
+		{"read", "ruff check --unsafe-fixes src/"},
+		{"read", "ruff check --add-noqa src/"},
+		{"read", `X="$(pwd)y" git status`}, // the value's literal tail is not the command
+		{"read", "env - NODE_ENV=test node tools/x.js"},
+		{"read", "env -S 'FOO=1' git status"},
+		{"read", "git reflog expire --dry-run --all"},
+		{"read", "git difftool --tool-help"},
+		{"read", "git commit -m x --help"},
+		{"read", "git push -h"},
+		{"read", "make --version"},
+		{"read", "make -v"},
+		{"read", "python3 -m pytest --version"},
+		{"read", "python3 -m venv --help"},
+		{"write", "python3 -m venv .venv"},
 		// ---- controls: forms that already work must keep working ----
 		{"write", `git -C "$(pwd)" push`},
 		{"write", `env -u "$(echo FOO)" rm x`},

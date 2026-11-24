@@ -8,6 +8,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -378,4 +380,108 @@ func TestDebtContinueOnAnIncompleteRouteResumesTheRoute(t *testing.T) {
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("an ordinary recorded decision writes nothing, got %q", out)
 	}
+}
+
+// settleTheReview concludes the run's default review with a covering PASS
+// (the reducer's own API — the reviewer transcript join is other tests').
+func settleTheReview(t *testing.T, r *shared.RunState) {
+	t.Helper()
+	if _, err := r.RequestReview(shared.Envelope{SchemaVersion: "2", RunID: r.RunID, ReviewID: "rev-1"}, nil); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if err := r.MarkReviewRunning("rev-1"); err != nil {
+		t.Fatal(err)
+	}
+	res := shared.ReviewResult{ReviewID: "rev-1", ArtifactDigest: r.Reviews[0].ArtifactDigest,
+		RunStatus: shared.ReviewRunCompleted, Verdict: shared.VerdictPass, EvidenceToolCallIDs: []string{"toolu-rev-1"}}
+	for _, c := range r.Reviews[0].Envelope.ExitCriteria {
+		res.CriterionVerdicts = append(res.CriterionVerdicts, shared.CriterionVerdict{
+			CriterionID: c.ID, Status: "pass", Evidence: []shared.EvidenceAnchor{{ToolUseID: "toolu-rev-1"}}})
+	}
+	if err := r.RecordReviewResult(res); err != nil {
+		t.Fatalf("RecordReviewResult: %v", err)
+	}
+}
+
+// TestResultContinueAfterASettledPassIsTheFinish — through the RECORDER: at
+// the terminal REVIEW_RESULT of a settled review, `continue:` with a
+// complete route is the finish, never a recall (round 5, test gap D2/R2:
+// each half of the condition survived mutation alone).
+func TestResultContinueAfterASettledPassIsTheFinish(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	// The review mints an envelope over the accepted artifacts: the files
+	// must exist with the digests the submissions carried.
+	for _, ph := range []string{"context", "diagnosis", "reproduce", "fix", "regression", "review"} {
+		path := ph + ".md"
+		if err := os.WriteFile(filepath.Join(shared.ProjectDir(), path), []byte(ph+" done\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		digest, err := shared.HashArtifactFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.OpenPhase(ph); err != nil {
+			t.Fatalf("OpenPhase(%s): %v", ph, err)
+		}
+		cp, err := r.SubmitPhaseUnstaged(shared.PhaseSubmission{PhaseID: ph, Summary: ph + " done",
+			Artifacts: []shared.ArtifactRef{{Path: path, Digest: digest, Kind: "doc"}}})
+		if err != nil {
+			t.Fatalf("SubmitPhase(%s): %v", ph, err)
+		}
+		if err := r.MarkDisplayed(cp.ID, shared.CheckpointContentDigest(cp, r.RequirementsVersion)); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.RecordDecision(cp.ID, shared.DecisionContinue, ""); err != nil {
+			t.Fatalf("continue at %s: %v", ph, err)
+		}
+	}
+	settleTheReview(t, reloadRun(t, "run-1"))
+	result := display(t, reloadRun(t, "run-1"))
+	if result.Kind != shared.CheckpointReviewResult || !reloadRun(t, "run-1").TerminalReviewSettled() {
+		t.Fatalf("fixture: want a settled REVIEW_RESULT on a complete route, got %+v", result)
+	}
+	before := len(reloadRun(t, "run-1").Recalls)
+	code, out, stderr := callHookOut(t, continueAnswerPayload(t, result, "toolu-ask-cont"))
+	if code != 0 {
+		t.Fatalf("continue: exit = %d (stderr %q)", code, stderr)
+	}
+	after := reloadRun(t, "run-1")
+	if after.Status != shared.StatusPostGamePending || len(after.Recalls) != before {
+		t.Fatalf("continue after a settled PASS: status %s recalls %d→%d, want POST_GAME_PENDING and no recall", after.Status, before, len(after.Recalls))
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("an ordinary recorded decision writes nothing, got %q", out)
+	}
+}
+
+// TestDebtContinueSkipsVisitsThatWereNotAccepted — the re-entry target is
+// the last phase that was ACCEPTED: a skipped development visit is not
+// re-entered (round 5, test gap D5).
+func TestDebtContinueSkipsVisitsThatWereNotAccepted(t *testing.T) {
+	useHookEnv(t)
+	r := startRun(t)
+	for i, ph := range []string{"context", "diagnosis", "reproduce", "fix", "regression"} {
+		cp := openDisplayedCheckpoint(t, r, ph)
+		decision := shared.DecisionContinue
+		if i == 4 { // regression: skipped
+			decision = shared.DecisionSkip
+		}
+		if err := r.RecordDecision(cp.ID, decision, ""); err != nil {
+			t.Fatalf("%s at %s: %v", decision, ph, err)
+		}
+	}
+	reviewCp := openDisplayedCheckpoint(t, r, "review")
+	if err := r.RecordDecision(reviewCp.ID, shared.DecisionDone, ""); err != nil {
+		t.Fatalf("done at the review checkpoint: %v", err)
+	}
+	debt := display(t, reloadRun(t, "run-1"))
+	if debt.Kind != shared.CheckpointReviewDebt {
+		t.Fatalf("fixture: want REVIEW_DEBT, got %+v", debt)
+	}
+	code, out, stderr := callHookOut(t, continueAnswerPayload(t, debt, "toolu-ask-cont"))
+	if code != 0 {
+		t.Fatalf("continue: exit = %d (stderr %q)", code, stderr)
+	}
+	assertReenteredByContinue(t, out, "fix@v2", "REVIEW_DEBT")
 }
