@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -214,7 +215,8 @@ func TestRenderWaitUser(t *testing.T) {
 		"crit-evid [judgment · required]",
 		"artifacts (frozen versions, 1):",
 		"docs/diag.md @ a1b2c3d4e5f6a7b8",
-		"environment: tier=framework os=darwin",
+		// The environment line reports the HOST (CI runs this suite on Linux).
+		"environment: tier=framework os=" + runtime.GOOS,
 		"menu pages (3):",
 		"page 2/3:",
 		"recall targets:",
