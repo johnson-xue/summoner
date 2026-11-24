@@ -1,9 +1,9 @@
 # 自适应检查点 — 设计（0.7.0 第一部分）
 
-- 状态: rev13（S0–S6 已实现；ship 审查第 1–5 轮的发现均已修复，见
-  §9–§13；分类器缺省策略已由对抗小组裁决为 A（未知动词判读 + 诚实的范围
-  声明），树变更检测与 OS 级隔离排入 0.7.x，见 §12 末。rev5 = 评审闭合 +
-  D5.5 已裁决）
+- 状态: rev14（S0–S6 已实现；ship 审查第 1–5 轮的发现均已修复、第 5 轮复核
+  的五项亦已修复，见 §9–§14；分类器缺省策略已由对抗小组裁决为 A（未知动词
+  判读 + 诚实的范围声明），树变更检测与 OS 级隔离排入 0.7.x，见 §12 末。
+  rev5 = 评审闭合 + D5.5 已裁决）
 - 日期: 2026-11-23
 - 裁决: 用户 2026-11-23 — ①结论必须详细；②一轮问完，不再让用户打
   continue；③明确的环节不要公式化地问，效率要提高。
@@ -619,3 +619,20 @@ black、golangci-lint --fix、isort、tsc）判写——三路都认定它们是
 `xargs`/`find -exec`/`make -n`/`python3 -m pytest --version`… 中 `make --version`
 与 `-m <模块> --version/--help` 已放开，其余不变。
 
+### 第 5 轮复核（rev14）
+
+终审员在 `1b1f058` 上逐条复核：第 5 轮 A–G 全部闭合；但它又以 `f9ff5d0` 为
+基线重做了 1,484 行判定差异，指出本轮修复自己带出的五个小回归（规模已收敛：
+全部是几行的事）：
+
+| 复核发现 | 修法 |
+|---|---|
+| 3.1 第一人称放宽不分时态——「I stopped the old service before the upgrade.」等 25/26 条过去时描述又成了裸停止（未展示检查点上会无对话地结束回合） | 只认现在时（I'll / I'm / we'll / we're / I will / we will）——正是复核给出的验证过的规则；被恢复的确认一条不少 |
+| 3.2 `rtk lint src/`、`rtk config get/list/show`、`rtk ecs check` 被拒（这台机器上命令都经 rtk 到达） | `lint` 走 ESLint 的格式器规则；`config`/`ecs` 的读子命令放行 |
+| 3.3 sed 选项簇以 e 结尾时取下一个词为脚本（`sed -ne 'w …' -e 'p'`）；`-l/--line-length` 取值（`sed -l 72 'w …'`） | sedRule 改为按选项簇逐字母的解析状态机 |
+| 3.4 `git difftool -x|--extcmd` 运行任意命令；`env -S make test`（拆开的词就是命令）；`ruff check --add-noqa` 自身写 noqa；pprof `-gif` | 均修 |
+| 3.5 `rtk err --shell /bin/sh 'rm -rf x'` 判读 | rtk 余下部分里每个「命令字符串」都判定；`--shell/-s/--interp` 的值是 shell 名不是命令 |
+
+修完提交 a084aca（+ 重建二进制），车道上 CI 再次全绿（run 45298489391）。
+复核员正在 `a084aca` 上做最终 GO 检查（只查这五项 + 以上一轮树为基线的
+判定差异，目标仍是零新增误拒）。回归矩阵 365 行。
