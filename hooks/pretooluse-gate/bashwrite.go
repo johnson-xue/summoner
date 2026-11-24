@@ -893,8 +893,8 @@ func formatterRule(verb string, args []string) string {
 		if len(args) > 0 && args[0] == "format" && !has("--check", "--diff") {
 			return "ruff format (rewrites files)"
 		}
-		if len(args) > 0 && args[0] == "check" && has("--fix") && !has("--diff") {
-			return "ruff check --fix (rewrites files)"
+		if len(args) > 0 && args[0] == "check" && (has("--fix") || has("--add-noqa")) && !has("--diff") {
+			return "ruff check --fix / --add-noqa (rewrites files)"
 		}
 	case "black":
 		if !has("--check", "--diff", "--version", "--help") {
@@ -952,23 +952,50 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || args[0] == "bypass" || args[0] == "proxy" ||
 			args[0] == "err" || args[0] == "summary" || args[0] == "test" || args[0] == "run") {
 			// proxy = bypass; err / summary / test / run wrap the command that
-			// follows (round 5).
+			// follows (round 5). --shell / -s / --interp name the shell it
+			// runs: their VALUE is not the command (round 5 re-verification).
+			if args[0] == "--shell" || args[0] == "-s" || args[0] == "--interp" {
+				if len(args) > 1 {
+					args = args[2:]
+				} else {
+					args = args[1:]
+				}
+				continue
+			}
 			args = args[1:]
 		}
 		if len(args) >= 2 && args[0] == "hook" && args[1] == "check" {
 			args = args[2:]
 		}
-		if len(args) > 0 && rtkWriters[args[0]] {
-			return "rtk " + args[0] + " (changes rtk's configuration or project files)"
+		if len(args) > 0 {
+			switch args[0] {
+			case "lint":
+				return formatterRule("eslint", args[1:]) // ESLint through rtk
+			case "config":
+				if len(args) > 1 && (args[1] == "get" || args[1] == "list" || args[1] == "show" || args[1] == "show-origin") {
+					return ""
+				}
+				return "rtk config (changes rtk's configuration)"
+			case "ecs":
+				if len(args) > 1 && args[1] == "check" {
+					return ""
+				}
+			}
+			if rtkWriters[args[0]] {
+				return "rtk " + args[0] + " (changes rtk's configuration or project files)"
+			}
+		}
+		// Every command STRING in what rtk wraps is judged as a command —
+		// `rtk err --shell /bin/sh 'rm -rf x'` (round 5 re-verification).
+		for _, w := range args {
+			if strings.ContainsAny(w, " \t") {
+				if rule := ruleFor(lexShell(w)); rule != "" {
+					return "rtk … " + rule
+				}
+			}
 		}
 		if len(args) == 0 {
 			return ""
-		}
-		if len(args) == 1 && strings.ContainsAny(args[0], " \t") {
-			// What follows is ONE word: a command string.
-			if rule := ruleFor(lexShell(args[0])); rule != "" {
-				return "rtk … " + rule
-			}
 		}
 		name := strings.ToLower(args[0])
 		if scanningWrapper(name) {
@@ -1092,6 +1119,11 @@ func gitRule(args []string, expanded []bool) string {
 			}
 		}
 		if a == "difftool" {
+			for _, flag := range rest {
+				if flag == "-x" || strings.HasPrefix(flag, "--extcmd") {
+					return "git difftool -x (runs an external command)"
+				}
+			}
 			return "" // opens a viewer: a read
 		}
 		for _, flag := range rest {
@@ -1418,43 +1450,86 @@ func awkOutput(s string) bool {
 
 // sedRule: -i edits in place; a `w file` command writes a file.
 func sedRule(args []string) string {
-	// Which word is the script: the word after a bare -e / --expression, an
-	// attached -e… / --expression=…; otherwise the FIRST operand — every
-	// later operand is an input file (`sed -n 1p e2e.log`). -f anywhere is a
-	// program from a file.
-	viaOption, scriptSeen, expectScript := false, false, false
+	// sed's word grammar, enough to find the script(s):
+	//   -e / --expression: the script is the rest of the cluster, or the
+	//   next word; -f / --file: a program from a file (write);
+	//   -i: in place (write); -l / --line-length: a value.
+	// Otherwise the FIRST operand is the script (later operands are files).
+	expectScript, scriptSeen, viaOption, skipValue := false, false, false, false
 	for _, a := range args {
-		if a == "-e" || a == "--expression" {
-			viaOption = true
-		}
-	}
-	for _, a := range args {
-		switch {
-		case a == "-e" || a == "--expression":
-			expectScript = true
+		if skipValue {
+			skipValue = false
 			continue
+		}
+		switch {
 		case strings.HasPrefix(a, "-i") || strings.Contains(a, "--in-place"):
 			return "sed -i (in-place edit)"
-		case a == "-f" || a == "--file" || strings.HasPrefix(a, "-f") && len(a) > 2 || strings.HasPrefix(a, "--file="):
+		case a == "-f" || a == "--file" || strings.HasPrefix(a, "--file=") || strings.HasPrefix(a, "-f") && len(a) > 2:
 			return "sed -f (program from a file the gate cannot see)"
+		case a == "-l" || a == "--line-length":
+			skipValue = true
+			continue
+		case strings.HasPrefix(a, "--line-length="):
+			continue
 		}
-		script := ""
-		switch {
-		case expectScript:
-			script, expectScript = a, false
-		case strings.HasPrefix(a, "--expression="):
-			script = a[len("--expression="):]
-		case strings.HasPrefix(a, "-e") && len(a) > 2:
-			script = a[2:]
-		case !strings.HasPrefix(a, "-"):
-			if viaOption || scriptSeen {
-				continue // an input file
+		if expectScript {
+			expectScript = false
+			if rule := sedScriptRule(a); rule != "" {
+				return rule
 			}
-			script, scriptSeen = a, true
-		default:
-			continue // an option whose script is another word
+			viaOption = true
+			continue
 		}
-		if rule := sedScriptRule(script); rule != "" {
+		if a == "-e" || a == "--expression" {
+			expectScript, viaOption = true, true
+			continue
+		}
+		if strings.HasPrefix(a, "--expression=") {
+			viaOption = true
+			if rule := sedScriptRule(a[len("--expression="):]); rule != "" {
+				return rule
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "-") && len(a) > 1 && a[1] != '-' {
+			// A short cluster: walk its letters. 'e' takes the rest of the
+			// cluster as its script, or the next word when nothing follows;
+			// 'l' takes a value the same way; 'i' / 'f' are writes.
+			letters := a[1:]
+			for j := 0; j < len(letters); j++ {
+				switch letters[j] {
+				case 'i':
+					return "sed -i (in-place edit)"
+				case 'f':
+					return "sed -f (program from a file the gate cannot see)"
+				case 'l':
+					if j+1 < len(letters) {
+						j = len(letters) // attached value: nothing follows
+					} else {
+						skipValue = true
+					}
+				case 'e':
+					viaOption = true
+					if j+1 < len(letters) {
+						if rule := sedScriptRule(letters[j+1:]); rule != "" {
+							return rule
+						}
+					} else {
+						expectScript = true
+					}
+					j = len(letters)
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue // a long flag
+		}
+		if viaOption || scriptSeen {
+			continue // an input file
+		}
+		scriptSeen = true
+		if rule := sedScriptRule(a); rule != "" {
 			return rule
 		}
 	}
@@ -1772,7 +1847,7 @@ func goRule(args []string) string {
 					if (args[1] == "cover" && (a == "-o" || strings.HasPrefix(a, "-o="))) || a == "--output" || strings.HasPrefix(a, "--output=") {
 						return "go tool " + args[1] + " -o (writes a file)"
 					}
-					if args[1] == "pprof" && (a == "-output" || strings.HasPrefix(a, "-output=") || a == "-png" || a == "-svg" || a == "-pdf" || a == "--png" || a == "--svg" || a == "--pdf") {
+					if args[1] == "pprof" && (a == "-output" || strings.HasPrefix(a, "-output=") || a == "-png" || a == "-svg" || a == "-pdf" || a == "-gif" || a == "--png" || a == "--svg" || a == "--pdf" || a == "--gif") {
 						return "go tool pprof " + a + " (writes a file)"
 					}
 				}
@@ -2294,7 +2369,14 @@ func resolveVerbTok(words []shTok) (int, string) {
 					continue
 				}
 				if a == "-S" || a == "--split-string" {
-					i += 2 // the option and its argument string
+					// The split string is one word: an option / assignment
+					// (skip it) or the COMMAND itself (`env -S make test`
+					// runs make — round 5 re-verification).
+					if i+1 < len(words) && !strings.HasPrefix(words[i+1].text, "-") && !envAssign.MatchString(words[i+1].text) {
+						i++ // the loop judges the split word as the command
+						continue
+					}
+					i += 2
 					continue
 				}
 				if a == "-u" || a == "--unset" || a == "-C" || a == "--chdir" {

@@ -302,6 +302,9 @@ func TestStopAcknowledgmentAfterRound5(t *testing.T) {
 		"I'll stop here and wait for your decision.",
 		"好的，已停止了，状态已保留。",
 		"Stopped. The run state is kept.",
+		"I'm stopping the service now and keeping the state.",
+		"We'll halt the run here and wait for your decision.",
+		"I will stop the run now.",
 	}
 	for _, msg := range bareHits {
 		if !IsStopAcknowledgment(run, nil, msg, false) {
@@ -315,7 +318,12 @@ func TestStopAcknowledgmentAfterRound5(t *testing.T) {
 		"停止响应你的要求的问题已定位。",
 		// first person + a participle: a description, not a stop
 		"I stopped responding after the upgrade.",
-		"I'm halting the forwarding of traffic until the cache warms.",
+		// first person in the PAST tense: a description of what was stopped
+		// (round 5 re-verification 3.1)
+		"I stopped the old service before the upgrade.",
+		"I halted the forwarding of traffic to the cache.",
+		"I aborted the build after the third failure.",
+		"I stopped the container and removed its network.",
 	}
 	for _, msg := range prose {
 		if IsStopAcknowledgment(run, nil, msg, true) || IsStopAcknowledgment(run, nil, msg, false) {

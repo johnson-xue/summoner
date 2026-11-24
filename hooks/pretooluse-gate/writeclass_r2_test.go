@@ -343,8 +343,8 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"write", "sed 's/a/b/' -e '1e rm -rf x' f"},
 		{"read", "eslint --fix-to-stdin x.js"}, // writes stdout, not the file
 		{"read", "ruff check --unsafe-fixes src/"},
-		{"read", "ruff check --add-noqa src/"},
-		{"read", `X="$(pwd)y" git status`}, // the value's literal tail is not the command
+		{"write", "ruff check --add-noqa src/"}, // writes noqa comments by itself
+		{"read", `X="$(pwd)y" git status`},      // the value's literal tail is not the command
 		{"read", "env - NODE_ENV=test node tools/x.js"},
 		{"read", "env -S 'FOO=1' git status"},
 		{"read", "git reflog expire --dry-run --all"},
@@ -356,6 +356,33 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"read", "python3 -m pytest --version"},
 		{"read", "python3 -m venv --help"},
 		{"write", "python3 -m venv .venv"},
+		// ---- round 5 re-verification: what the round-5 fixes opened ----
+		{"write", `sed -ne 'w /tmp/out' -e 'p' f`}, // a cluster ENDING in e takes the next word as its script
+		{"write", `sed -Ee 's/a/b/w /tmp/o' -e 'p' f`},
+		{"write", "sed -n '$!{w /tmp/o' -e '}' f"},
+		{"write", "sed -l 72 'w /tmp/o' f"}, // -l takes a value: the next word is not the script
+		{"write", "sed --line-length 72 'w /tmp/o' f"},
+		{"write", "sed -l72 'w /tmp/o' f"},
+		{"read", "sed -l 72 's/a/b/' f"},
+		{"read", `sed -ne 's/a/b/' -e 'p' f`},
+		{"read", "sed -Es 's/a/b/' f"},
+		{"write", `git difftool -x 'rm -rf x' f`}, // an external command
+		{"write", "git difftool --extcmd=cmd f"},
+		{"write", "env -S make test"}, // the split word IS the command
+		{"write", "env -S git push"},
+		{"read", "env -S echo X"},
+		{"write", "ruff check --add-noqa src/"}, // writes noqa comments by itself
+		{"write", "go tool pprof -gif cpu.prof"},
+		{"write", "rtk err --shell /bin/sh 'rm -rf x'"}, // rtk front words with options
+		{"write", "rtk err --shell zsh 'rm -rf x'"},
+		{"write", "rtk lint --fix src/"},
+		{"write", "rtk config set x y"},
+		{"write", "rtk ecs x"},
+		{"read", "rtk lint src/"}, // ESLint through rtk
+		{"read", "rtk ecs check src"},
+		{"read", "rtk config get x"},
+		{"read", "rtk config list"},
+		{"read", "rtk err --shell zsh 'git status'"},
 		// ---- controls: forms that already work must keep working ----
 		{"write", `git -C "$(pwd)" push`},
 		{"write", `env -u "$(echo FOO)" rm x`},
