@@ -124,6 +124,7 @@ type lexer struct {
 	wordHasLiteral bool            // a literal character (not a quote) is in the current word
 	wordExpanded   bool            // the word's value is computed when it runs
 	pendingClose   int             // token index of the current word's last "$)" marker, -1 if none
+	pendingPrefix  int             // token index of the word flushed before a substitution it continues, -1 if none
 	awaitDelim     *pendingHeredoc // the next word is this heredoc's delimiter
 	pending        []pendingHeredoc
 	depth          int  // nesting level of this text (see maxLexDepth)
@@ -166,6 +167,25 @@ func (l *lexer) op(text string) { l.toks = append(l.toks, shTok{kind: shOp, text
 func (l *lexer) flush() {
 	if l.wordOpen {
 		text := l.word.String()
+		if l.pendingClose >= 0 && l.pendingPrefix >= 0 && l.pendingPrefix < len(l.toks) &&
+			l.toks[l.pendingPrefix].kind == shWord && l.pendingPrefix+1 < len(l.toks) &&
+			(l.toks[l.pendingPrefix+1].text == opSubstOpen || l.toks[l.pendingPrefix+1].text == opArithOpen) {
+			// The word continues the one flushed before its substitution:
+			// bash sees ONE word (`X="$(pwd)y"` is `X=…`, not `X=` + `y`).
+			// Two tokens let the assignment's value tail pose as the command
+			// (ship review round 5).
+			l.toks[l.pendingPrefix].text += text
+			l.toks[l.pendingPrefix].expanded = l.toks[l.pendingPrefix].expanded || l.wordExpanded
+			l.awaitDelim = nil
+			l.openedByQuote = false
+			l.word.Reset()
+			l.wordOpen = false
+			l.wordHasLiteral = false
+			l.wordExpanded = false
+			l.pendingClose = -1
+			l.pendingPrefix = -1
+			return
+		}
 		l.toks = append(l.toks, shTok{kind: shWord, text: text, expanded: l.wordExpanded})
 		if l.awaitDelim != nil {
 			l.awaitDelim.delim = text
@@ -179,6 +199,7 @@ func (l *lexer) flush() {
 	l.wordHasLiteral = false
 	l.wordExpanded = false
 	l.pendingClose = -1
+	l.pendingPrefix = -1
 }
 
 // put appends literal text to the current word. Text that spells an
@@ -552,6 +573,7 @@ func (l *lexer) splice(inner string, attachedBefore, attachedAfter bool) {
 	default:
 		l.wordExpanded = true // the prefix of a word that continues with the substitution
 		l.flush()
+		l.pendingPrefix = len(l.toks) - 1
 	}
 	l.toks = append(l.toks,
 		shTok{kind: shOp, text: opSubstOpen, attachedBefore: attachedBefore, attachedAfter: attachedAfter},
@@ -576,9 +598,11 @@ func (l *lexer) arithmetic(inner string, attachedBefore, attachedAfter bool) {
 	openedByQuote := l.wordOpen && !l.wordHasLiteral
 	l.wordExpanded = true // the prefix of a word that continues with the arithmetic is computed
 	l.flush()
+	l.pendingPrefix = len(l.toks) - 1
 	l.toks = append(l.toks, shTok{kind: shOp, text: opArithOpen}, shTok{kind: shOp, text: ";"})
 	l.toks = append(l.toks, lexShellCtx(inner, l.depth+1, true)...)
 	l.toks = append(l.toks, shTok{kind: shOp, text: ";"}, shTok{kind: shOp, text: opArithClose})
+	l.pendingClose = len(l.toks) - 1
 	l.wordOpen = attachedAfter || openedByQuote
 	l.wordHasLiteral = false
 	l.wordExpanded = true
