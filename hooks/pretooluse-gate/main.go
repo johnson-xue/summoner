@@ -7,9 +7,14 @@
 // it with a human-readable reason on stderr. Fail-closed everywhere: unreadable
 // or malformed input denies (exit 2) — the old fail-open behavior is gone.
 //
-// Non-Summoner sessions stay untouched: with zero non-CLOSED runs for the
-// session the gate is a pure pass-through (exit 0, no state change, no trace).
-// The un-brick path is SUMMONER_HOOKS_DISABLE (any non-empty value): enforce
+// DORMANT BY DEFAULT (0.7.1): unless the project opted in with
+// SUMMONER_HOOKS_ENFORCE=1 the gate reads no input, touches no state, appends
+// no trace and denies nothing (shared.HooksDormant). Incident 2026-11-24: an
+// always-on gate denied a session's everyday tools for as long as one of its
+// runs stayed non-CLOSED. Under the opt-in, non-Summoner sessions stay
+// untouched: with zero non-CLOSED runs for the session the gate is a pure
+// pass-through (exit 0, no state change, no trace).
+// The un-brick path is SUMMONER_HOOKS_DISABLE == "1" exactly: enforce
 // nothing, exit 0 — but using it while exactly one run is live appends one
 // hooks.disabled event first (a recorded contract violation).
 package main
@@ -68,6 +73,11 @@ func parseInput(r io.Reader) (*gateInput, error) {
 
 // runGate is the whole hook. Returns the process exit code: 0 allow, 2 deny.
 func runGate(stdin io.Reader, errW io.Writer) int {
+	// Opt-in default: a dormant gate reads nothing and denies nothing — not
+	// even unreadable input, which the enforcing path below fails closed on.
+	if shared.HooksDormant() {
+		return 0
+	}
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner gate: unreadable hook input — denying (fail-closed): %v\n", err)

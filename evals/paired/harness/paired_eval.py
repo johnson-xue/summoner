@@ -101,6 +101,7 @@ FIXTURE_COMMIT_MSG = "pristine fixture (pre-patch, harness-prepared)"
 ENV_STATE = "SUMMONER_STATE_DIR"
 ENV_TRACE = "SUMMONER_TRACE_DIR"
 ENV_MEMORY = "SUMMONER_MEMORY_DIR"
+ENV_ENFORCE = "SUMMONER_HOOKS_ENFORCE"
 
 # ---------------------------------------------------------------------------
 # Group / arm table (adjudicated wiring). Every case has exactly two arms in
@@ -1102,6 +1103,12 @@ def run_host_probes(case, arm, run_dir, control_dir, tier, plugin_dir, template_
                                   "prompt": "/summoner:fix probe"})
             before = set(os.listdir(state_s)) if os.path.isdir(state_s) else set()
             if os.path.isfile(ups):  # candidate: env override honored natively
+                # Enforcement is opt-in (0.7.1): the dormant default records
+                # nothing. This probe verifies the hook's per-run state
+                # CAPABILITY, so it arms the hook for this one call — a
+                # dormant candidate would write nothing and fall through to
+                # the baseline branch below.
+                env[ENV_ENFORCE] = "1"
                 run_cmd([ups], cwd=repo, env=env, stdin_data=payload, check=False)
                 after = set(os.listdir(state_s)) if os.path.isdir(state_s) else set()
                 fresh = sorted(after - before)

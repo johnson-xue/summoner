@@ -95,6 +95,17 @@ func parseInput(r io.Reader) (*statusInput, error) {
 
 // runStatus is the whole viewer. Returns the process exit code.
 func runStatus(stdin io.Reader, outW, errW io.Writer) int {
+	// Opt-in default (0.7.1): with the hooks dormant no run is recorded and
+	// nothing is gated, so there is nothing live to render — and a run an
+	// earlier version left non-CLOSED must not read as an open checkpoint,
+	// because its decisions can no longer be recorded. Say so and stop. The
+	// hatch (SUMMONER_HOOKS_DISABLE=1) is NOT dormancy: a wedged session that
+	// opted in keeps its viewer (commands/status.md).
+	if shared.HooksDormant() {
+		fmt.Fprintln(outW, "Summoner hooks are dormant — enforcement is opt-in: no run is recorded in this session and nothing is gated.")
+		fmt.Fprintln(outW, `To enable runs, checkpoints and gates set SUMMONER_HOOKS_ENFORCE=1 in the environment Claude Code starts with (settings.json "env"), then restart.`)
+		return 0
+	}
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner-status: unreadable input — %v\n", err)

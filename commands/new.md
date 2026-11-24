@@ -51,6 +51,8 @@ restart of the pipeline.
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
 2. requirements/plan are not skippable (没 spec 不动工，没 plan 不写码).
 3. Direction wrong after acceptance → `recall:` to the phase's history label
    (downstream accepted criteria go stale). Baseline moved → change loop.

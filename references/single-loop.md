@@ -30,6 +30,12 @@
 
 ## 2. 单循环六步（骨架；细节见各步指针）
 
+**执法是 opt-in（0.7.1）**：钩子默认**休眠**——环境里没有
+`SUMMONER_HOOKS_ENFORCE=1` 时，不记录 run、不渲染二进制检查点、不拦截任何
+工具、不注入上下文。此时套件按技能散文执行：阶段边界用普通
+AskUserQuestion 做检查点（结论先行、本段范围、下一步），不调 phase-submit、
+不跑 summoner-status。以下六步描述的机制只在 opt-in 后成立。
+
 1. **Run start** — 用户提交 `/summoner:<套件>`；UserPromptSubmit hook
    记录 run（唯一 run 启动者，你无需也无权开 run）。一个会话至多一个
    活 run。
@@ -57,7 +63,8 @@
   auto-skip 表是权威 — 跳过的阶段标 UNVERIFIED/UNREVIEWED，永不装 PASS）。
 - **recall**（回城重做）：`workflow-reference.md`。
 - **停止 / 急停 / 恢复**：`workflow-reference.md`（停止永远可行，推进
-  永远难；`SUMMONER_HOOKS_DISABLE=1` 仅解砖，用于活 run 记违约）。
+  永远难；`SUMMONER_HOOKS_DISABLE=1` 解砖——优先于 opt-in，用于活 run 记
+  违约；`SUMMONER_HOOKS_ENFORCE=1` 是启用执法的唯一开关）。
 - **需求变更闭环**：`../skills/change/SKILL.md`（open/apply 通道、
   增量恢复、不重跑流水线）。
 - **检查点渲染 / 两轮决策 / 分页菜单 / 自适应停问 / 预算生命周期**：

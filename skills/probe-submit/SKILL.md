@@ -9,6 +9,10 @@ when_to_use:
 
 # probe-submit — the ONLY OUTCOME_UNKNOWN resolution channel
 
+Enforcement is opt-in (`SUMMONER_HOOKS_ENFORCE=1`, 0.7.1): while the hooks
+are dormant this skill is a no-op — no episode can exist to resolve, because
+the crash scan that marks one is dormant too.
+
 Zero logic lives here. This skill exists so the PreToolUse gate can observe
 and validate the resolution batch (spec §5 OUTCOME_UNKNOWN 与副作用恢复): the
 main session MUST resolve every episode through `Skill(summoner:probe-submit,

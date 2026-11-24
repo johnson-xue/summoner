@@ -104,6 +104,11 @@ func main() {
 // runSubagentStop is the whole hook. Returns the process exit code: 0 for
 // every outcome, 2 only for unparseable input.
 func runSubagentStop(stdin io.Reader, errW io.Writer) int {
+	// Opt-in default: a dormant hook settles no delegation. Checked before
+	// the input is read — see shared.HooksDormant.
+	if shared.HooksDormant() {
+		return 0
+	}
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner subagentstop: unreadable hook input — fail-closed: %v\n", err)

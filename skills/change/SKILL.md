@@ -10,6 +10,10 @@ when_to_use:
 
 # change — the ONLY requirement-change channel
 
+Enforcement is opt-in (`SUMMONER_HOOKS_ENFORCE=1`, 0.7.1): while the hooks
+are dormant this skill is a no-op and the phase advances per the command's
+dormant clause.
+
 Zero logic lives here. This skill exists so the PreToolUse gate can observe
 and validate the requirement-change loop's two transitions (spec §1
 需求变更闭环): a free-text change request is CONTENT, not an advancement

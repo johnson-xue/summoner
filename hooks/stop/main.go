@@ -99,6 +99,11 @@ func main() {
 // blocked (a block is a stdout JSON decision, never an error), 2 only for
 // unparseable input.
 func runStop(stdin io.Reader, outW, errW io.Writer) int {
+	// Opt-in default: a dormant hook hands back no question and blocks no
+	// stop. Checked before the input is read — see shared.HooksDormant.
+	if shared.HooksDormant() {
+		return 0
+	}
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner stop: unreadable hook input — fail-closed: %v\n", err)

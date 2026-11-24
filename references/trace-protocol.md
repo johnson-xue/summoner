@@ -79,7 +79,7 @@ The single sanctioned set, mirrored 1:1 from `hooks/shared/trace.go`
 | `agent.telemetry` | `{"final_request_tokens"…}` — proxy metric only; V5 口径 declared, no total-token budget |
 | `post_game.started` | `{"kind": "normal|emergency_minimal"}` — emergency = minimal journal + POST_GAME_PENDING |
 | `post_game.completed` | `{"kind"}` — emitted exactly once, immediately before `workflow.ended`, by the CLOSED writer |
-| `hooks.disabled` | the `SUMMONER_HOOKS_DISABLE` escape hatch used on a live run — a recorded contract violation, never a silent bypass |
+| `hooks.disabled` | the `SUMMONER_HOOKS_DISABLE` escape hatch used on a live run — a recorded contract violation, never a silent bypass. The hooks themselves emit nothing unless `SUMMONER_HOOKS_ENFORCE=1` opts the project in (0.7.1) |
 
 ### Positional contract
 

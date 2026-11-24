@@ -30,8 +30,11 @@ context → diagnosis → 检查点（结束）
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
-2. NO code changes, no test files — the write gate enforces this until
-   diagnosis is accepted, and the workflow ends there anyway.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
+2. NO code changes, no test files — under enforcement the write gate upholds
+   this; while dormant it is the contract you keep. The workflow ends at the
+   diagnosis checkpoint anyway.
 3. 诊断报告 = 根因、影响范围、修复建议（给用户的输入，不是修复承诺）。
 4. "问题很简单，顺手修了吧" → 不行。合约是只诊断；要修用 `/summoner:fix`
    （recall/新开 run 由用户决定）。

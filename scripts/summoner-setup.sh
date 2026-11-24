@@ -47,5 +47,6 @@ fi
 "$SCRIPT_DIR/init-memory-db.sh" "$PROJECT_NAME"
 printf '\n%s\n' 'Setup complete: v2 capabilities validated and memory initialized.' \
     'Use a Summoner command to enter the same checkpoint reducer.' \
+    'Hooks enforce nothing until SUMMONER_HOOKS_ENFORCE=1 is set in the client environment (opt-in).' \
     'Project checks remain BLOCKED unless the required sandbox is active.' \
     'Restart the client only if the plugin/hooks were just installed or changed.'

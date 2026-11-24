@@ -122,6 +122,11 @@ func parseInput(r io.Reader) (*hookInput, error) {
 // runHook is the whole hook. Returns the process exit code: 0 recorded (or
 // pass-through), 2 fail-closed error surfaced to the platform.
 func runHook(stdin io.Reader, outW, errW io.Writer) int {
+	// Opt-in default: a dormant hook records no outcome and answers no
+	// decision. Checked before the input is read — see shared.HooksDormant.
+	if shared.HooksDormant() {
+		return 0
+	}
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner posttooluse: unreadable hook input — fail-closed: %v\n", err)

@@ -393,8 +393,11 @@ fi
 # 2026-11-23 (0.6.1): skills 13632→7680 — the binding object (the deleted
 # multi-suite router skill) is gone; largest is summoner-setup at 6084B
 # (79%). A ceiling with nothing near it bounds nothing.
+# 2026-11-24 (0.7.1): commands 3200→3520 — every suite command carries the
+# dormancy qualifier on its Loop rule (hooks enforcement is opt-in); binds
+# at new.md 3325B (94%).
 CEIL_SKILL=7680
-CEIL_CMD=3200
+CEIL_CMD=3520
 OVER=0
 while IFS= read -r f; do
   size=$(wc -c < "$f" | tr -d ' ')

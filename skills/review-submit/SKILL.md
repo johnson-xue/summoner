@@ -10,6 +10,10 @@ when_to_use:
 
 # review-submit — the ONLY review-registration (and wedged-attempt recovery) channel
 
+Enforcement is opt-in (`SUMMONER_HOOKS_ENFORCE=1`, 0.7.1): while the hooks
+are dormant this skill is a no-op and the phase advances per the command's
+dormant clause.
+
 Zero logic lives here. This skill exists so the PreToolUse gate can observe
 the registration (spec §3 ⑤ 审查信封): the main session MUST register every
 review through `Skill(summoner:review-submit, args=<JSON>)`. The gate decodes

@@ -26,6 +26,12 @@ func main() {
 // died on "Hook output looks like a JSON object but is not valid JSON"
 // (user report 2026-11-20).
 func runSessionStart(in io.Reader, outW, errW io.Writer) int {
+	// Opt-in default (0.7.1): a dormant hook injects no context, exports no
+	// session id and runs no crash scan — the "not initialized" notice is
+	// gone with it. Checked before the input is read — see shared.HooksDormant.
+	if shared.HooksDormant() {
+		return 0
+	}
 	sessionID := parseSessionID(in)
 	var blocks []string
 	if ctx := renderContext(shared.PluginRoot(), shared.ProjectDir()); ctx != "" {

@@ -9,6 +9,10 @@ when_to_use:
 
 # phase-submit — the ONLY phase-submission channel
 
+Enforcement is opt-in (`SUMMONER_HOOKS_ENFORCE=1`, 0.7.1): while the hooks
+are dormant this skill is a no-op and the phase advances per the command's
+dormant clause.
+
 Zero logic lives here. This skill exists so the PreToolUse gate can observe and
 validate one structured submission event per phase (spec §1 阶段提交): the main
 session MUST submit every completed phase through `Skill(summoner:phase-submit,

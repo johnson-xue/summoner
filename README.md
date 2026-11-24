@@ -23,7 +23,7 @@
 
 ---
 
-AI coding agents skip diagnosis, forget reviews, and repeat mistakes. **Summoner adds a process layer** — checkpoints between phases, post-game reviews, and a memory chain that auto-recalls past fixes.
+AI coding agents skip diagnosis, forget reviews, and repeat mistakes. **Summoner adds a process layer** — checkpoints between phases, post-game reviews, and a memory chain that auto-recalls past fixes. Enforcement is opt-in (see Quick Start).
 
 ---
 
@@ -38,7 +38,7 @@ In Claude Code:
 /plugin install summoner@summoner-marketplace
 ```
 
-Then in your project (hooks work immediately — pre-compiled for macOS/Linux):
+Then in your project (binaries come pre-compiled for macOS/Linux):
 
 ```bash
 cd your-project
@@ -47,7 +47,13 @@ cd your-project
 
 **Or** simply say in Claude Code: `setup summoner`
 
-**Restart Claude Code** — hooks activate on the next session start.
+**Restart Claude Code**, then opt in to enforcement. Hooks are **dormant by default** (0.7.1): until you opt in, Summoner records no runs, renders no binary checkpoints and gates no tools — `/summoner:*` runs as plain skill guidance. Add this to your user or project `.claude/settings.json` and restart:
+
+```json
+{ "env": { "SUMMONER_HOOKS_ENFORCE": "1" } }
+```
+
+Opting in restores the full denial surface — tools the gate has no model of are refused again — and runs left non-CLOSED by earlier versions come back into force for their sessions; finish or remove them first (`~/.summoner/state-v2`).
 
 > **Note:** The new `summoner-setup.sh` combines init + memory DB setup into one command. For quick mode (all defaults): `summoner-setup.sh --quick`
 
