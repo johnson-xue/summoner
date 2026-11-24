@@ -1,5 +1,71 @@
 # Summoner Changelog
 
+## [0.7.0] - 2026-11-24
+
+### 🐛 Bug Fixes
+- fix(stop,gate): the reviewer's two GO conditions — the participle guard is back; rtk ecs check --fix writes (16add4d)
+- fix(stop,gate): the re-verification's five — present-tense relax, sed clusters, difftool -x, env -S words, rtk's own reads (round 5 re-verify) (a13f636)
+- fix(gate): a word that holds a substitution stays one word; the in-diff holes and denials of round 5 (ship round 5) (3fc1287)
+- fix(stop): an acknowledgment is read clause by clause — a period ends a clause, a stop word's tail ends with its own (ship round 5) (f72ecd2)
+- fix(gate): rtk is a transparent wrapper; formatters and fixers write; the freeze states what it is (posture panel ruling) (6a355b9)
+- fix(gate): the wrapper scan judges the wrapped command only; shells asked about themselves read (posture panel, diagnosis-flow lens) (8c316df)
+- fix(gate): assignments before the verb, multi-line substitutions, stdin as the script, wrapper arity, sed's e with any delimiter (ship round 4, classifier) (d1419c9)
+- fix(gate): tar -O reads in any position; docs name the continue-as-recall rules (ship round 4, closure N6/N7) (b573672)
+- fix(decision): continue at a terminal checkpoint is never a dead end; its recall is traceable and told (ship round 4, closure N2/N3/N4/N9) (d8cb747)
+- fix(stop): diagnosis prose never ends the turn — the request tie gets boundaries and a negation guard (ship round 4, closure N1/N5/N8) (f9f8d89)
+- fix(stop,decision): a bare stop is narrow again; review-debt continue re-enters the latest phase (ship round 3, closure) (7d5de01)
+- fix(gate): option arity, computed values, process-substitution programs and the category-complete verb table (ship round 3, classifier) (8b395fd)
+- fix(reducer): a skip of the route's last unsettled phase finishes the run (ship round 2, interaction F3) (e957b78)
+- fix(render): the detail view carries the settled conclusions; empty sections and the model line leave the user's view (ship round 2, interaction F2/F8-F14) (6cba031)
+- fix(checkpoint): every decision that resumes the run nudges once; a PASS review discharges the terminal debt (ship round 2) (eb795cc)
+- fix(gate): the classifier judges stdin programs, live substitutions and the modelled read forms (ship round 2) (a3ed6cf)
+- fix(gate): write-class classifier closes the round-1 bypasses and false denials (ship round 1) (46c1b81)
+- fix(render,posttooluse): clipped conclusions point to the full text; paging answers navigate; status explains a non-taken auto-pass (ship round 1) (31d14e8)
+- fix(checkpoint): auto-pass guards, digest default, nudge after human decisions (ship round 1) (aa9e314)
+- fix(stop): framework text is never a stop acknowledgment (ship round 1) (0a36363)
+- fix(gate): shell-aware write-class classifier; freeze covers builds, remote and unknown git (0.7.0 S5: D5.3 + D5.5) (38678dc)
+- fix(hooks): reviewer enums by meaning; summoner-status scopes to its own session (0.7.0 S5: D5.1 + D5.2) (9cbb7c6)
+
+### 📝 Documentation
+- docs(design): the round-5 re-verification and its five fixes (rev14) (ba06049)
+- docs(design): round 5 — the final closure review and its fixes (rev13) (0a46420)
+- docs(design): round 4 classifier verdict and the pending posture panel (rev11) (e4511ef)
+- docs(protocol,design): the write class as the classifier now judges it; review-debt continue; round 3 recorded (3c0fba5)
+- docs(checkpoint): 经过 carries titles; the rollback path is described as the lossy one it is (ship round 2) (7d390c6)
+- docs(checkpoint): the canonical template is the render, held to the binary by a test (ship round 1 L3-F7) (44b0655)
+- docs(design): 0.7.0 implementation record (rev6) (31c8481)
+- docs: sync the protocol surface to 0.7.0 (S6) (cfdc199)
+- docs(design): D5.5 decided — diagnosis-phase write freeze covers interpreters, build/run, remote/copy, download, unpack, out-of-table git writes, find -exec (f6e9977)
+- docs(design): adaptive checkpoints rev4 — close the round-2 review list (ec87ffc)
+- docs(design): adaptive checkpoints rev3 — fold the six review findings (13a4136)
+- docs(design): adaptive checkpoints (0.7.0 part 1) rev2 (eb58d03)
+
+### Other
+- build(hooks): rebuild binaries for the round-5 re-verification fixes (0cd2307)
+- build(hooks): rebuild binaries for the ship round-5 fixes (89e90eb)
+- build(hooks): rebuild binaries for the rtk wrapper, formatter rules and docs (3fd01ba)
+- build(hooks): rebuild binaries for the panel-found classifier fixes (a779605)
+- build(hooks): rebuild binaries for the ship round-4 classifier fixes (e9222fa)
+- build(hooks): rebuild binaries for the ship round-4 fixes (00ff790)
+- build(hooks): rebuild binaries for the ship round-3 fixes (06aabe4)
+- build(hooks): rebuild binaries for the ship round-2 fixes (17f22fc)
+- build(hooks): rebuild binaries for the ship-review round-1 fixes (548fdee)
+- build(hooks): rebuild binaries for 0.7.0 S4–S5 (1e18d5a)
+- build(hooks): rebuild binaries for 0.7.0 S0–S3 (ef687ae)
+
+### ✅ Tests
+- test(status): the environment line reports the host, not always darwin (lane CI) (4625b79)
+- test(scorers): an auto-pass after a FAIL check, a decision, an extension or a replay is caught (ship round 2, protocol F2/F5) (c23faec)
+- test(contract): pin the 0.7.0 guards at the hook-binary seam (ship round 1 L4-F4) (9ef8099)
+- test(scorers): the gate scorer checks an auto-pass's whole shape; 6 new trace fixtures (ship round 1 L1-F4) (53343ab)
+
+### ✨ Features
+- feat(posttooluse): a rejected decision is answered to the model (0.7.0 S4) (38fd85a)
+- feat(checkpoint): adaptive auto-pass with a one-shot continuation nudge (0.7.0 S3) (a0c2584)
+- feat(stop): bind the pasted checkpoint, then hand back the question (0.7.0 S2) (d9f3a1d)
+- feat(checkpoint): conclusion-first render + structured conclusion (0.7.0 S1) (f06beb8)
+- feat(trace): allow-list checkpoint.auto (0.7.0 S0) (03893b9)
+
 ## [0.6.1] - 2026-11-23
 
 ### 🐛 Bug Fixes
