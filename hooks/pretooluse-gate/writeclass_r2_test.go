@@ -380,6 +380,7 @@ func TestWriteClassRound2Matrix(t *testing.T) {
 		{"write", "rtk ecs x"},
 		{"read", "rtk lint src/"}, // ESLint through rtk
 		{"read", "rtk ecs check src"},
+		{"write", "rtk ecs check --fix src"},
 		{"read", "rtk config get x"},
 		{"read", "rtk config list"},
 		{"read", "rtk err --shell zsh 'git status'"},
