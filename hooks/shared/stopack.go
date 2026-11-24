@@ -236,7 +236,7 @@ func stopWordAtEdge(s string) bool {
 			// bounded (boundedStopTail); a FIRST-PERSON statement may run
 			// on ("I'll stop here and wait for your decision.") as long as
 			// nothing in it is something being described (a participle).
-			if boundedStopTail(after) || firstPersonLeadIn(before) && !hasParticiple(after) {
+			if boundedStopTail(after) || firstPersonLeadIn(before) {
 				return true
 			}
 		}
@@ -329,14 +329,19 @@ func hasParticiple(s string) bool {
 
 // firstPersonLeadIn: nothing or "I"/"we" with an auxiliary — the statement is
 // the model's own act, not a description.
+// firstPersonLeadIn: "I'll / I'm / we'll / we're / I will / we will" — a
+// statement of what the model is doing now. The past tense ("I stopped the
+// old service before the upgrade.") describes something that was stopped.
 func firstPersonLeadIn(before string) bool {
 	words := strings.Fields(strings.ToLower(strings.Trim(strings.TrimSpace(before), ",.!?:;")))
 	if len(words) == 0 {
 		return false
 	}
 	switch words[0] {
-	case "i", "i'll", "i've", "i'm", "we", "we'll", "we've":
+	case "i'll", "i'm", "we'll", "we're":
 		return true
+	case "i", "we":
+		return len(words) > 1 && (words[1] == "will" || words[1] == "am" || words[1] == "are" || words[1] == "shall")
 	}
 	return false
 }
