@@ -271,3 +271,66 @@ func TestStopAcknowledgmentGuards(t *testing.T) {
 		t.Error("a pasted checkpoint plus a bare stop word is not a stop")
 	}
 }
+
+// TestStopAcknowledgmentAfterRound5 — the round-5 closure review found two
+// regressions of the round-4 fixes and an unpinned boundary:
+//   - an ASCII period was not a clause separator, so the "not" of the
+//     PREVIOUS sentence negated a real acknowledgment ("It's not
+//     reproducible. Stopping as you asked.");
+//   - the tail after an opening stop word ran to the end of the MESSAGE, so
+//     "好的，已停止，状态已保留。" was no longer a bare stop (41 of 50
+//     natural acknowledgments regressed);
+//   - 应 / 依 behind no boundary (inside 响应) after a stop word.
+func TestStopAcknowledgmentAfterRound5(t *testing.T) {
+	run := &RunState{RunID: "run-1", Workflow: "fix"}
+	strictHits := []string{
+		"It's not reproducible. Stopping as you asked.",
+		"No files changed. Stopping as you asked.",
+		"The build did not pass. Stopping as you asked.",
+		"Understood. No files changed. Stopping as you asked.",
+		"No issues found. Stopped as you requested.",
+	}
+	for _, msg := range strictHits {
+		if !IsStopAcknowledgment(run, nil, msg, true) {
+			t.Errorf("strict: a real acknowledgment must end the turn: %q", msg)
+		}
+	}
+	bareHits := []string{
+		"好的，已停止，状态已保留。",
+		"已停止。状态已保留，之后可以用 /summoner:status 恢复。",
+		"Stopping here. I won't make any further changes.",
+		"I'll stop here and wait for your decision.",
+		"好的，已停止了，状态已保留。",
+		"Stopped. The run state is kept.",
+	}
+	for _, msg := range bareHits {
+		if !IsStopAcknowledgment(run, nil, msg, false) {
+			t.Errorf("lenient: a real bare stop must end the turn: %q", msg)
+		}
+	}
+	prose := []string{
+		"服务响应你的要求后停止了。",
+		"系统已响应你的要求并停止重启。",
+		"为响应你的要求，服务已停止。",
+		"停止响应你的要求的问题已定位。",
+		// first person + a participle: a description, not a stop
+		"I stopped responding after the upgrade.",
+		"I'm halting the forwarding of traffic until the cache warms.",
+	}
+	for _, msg := range prose {
+		if IsStopAcknowledgment(run, nil, msg, true) || IsStopAcknowledgment(run, nil, msg, false) {
+			t.Errorf("prose must NOT end the turn (either strength): %q", msg)
+		}
+	}
+}
+
+// TestStopStripsTheContinueAsRecallBlock — the block PostToolUse answers a
+// mapped continue with is framework text: a model that echoes it is not
+// stopping (round 5, test gap S4).
+func TestStopStripsTheContinueAsRecallBlock(t *testing.T) {
+	run, cp := stopWordState()
+	block := MappedContinueReason(RecallRecord{TargetPhaseID: "review", TargetVisitID: "review@v1"}, "review@v2")
+	if AuthoredText(run, &cp, "照办。\n"+block, block) != "照办。" {
+		t.Fatalf("the continue-as-recall block must be stripped as framework text, got %q", AuthoredText(run, &cp, "照办。\n"+block, block))
+	}
+}
