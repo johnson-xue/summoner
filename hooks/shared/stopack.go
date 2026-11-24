@@ -197,7 +197,9 @@ func negatedStop(authored string, loc []int) bool {
 	if stopNegationInRe.MatchString(authored[loc[0]:loc[1]]) {
 		return true
 	}
-	clauseStart := strings.LastIndexAny(authored[:loc[0]], "。！？!?；;\n") + 1
+	// A period ends a clause too: the "not" of the PREVIOUS sentence does
+	// not negate this one ("It's not reproducible. Stopping as you asked.").
+	clauseStart := strings.LastIndexAny(authored[:loc[0]], "。！？!?；;\n.") + 1
 	before := strings.TrimSpace(authored[clauseStart:loc[0]])
 	if isASCII(before) {
 		return stopNegationEnRe.MatchString(before)
@@ -229,8 +231,14 @@ func lastRunes(s string, n int) string {
 func stopWordAtEdge(s string) bool {
 	for _, loc := range bareStopWordRe.FindAllStringIndex(s, -1) {
 		before, after := s[:loc[0]], s[loc[1]:]
-		if isInterjectionLeadIn(before) && boundedStopTail(after) {
-			return true
+		if isInterjectionLeadIn(before) {
+			// The stop word opens the statement. Its own clause must be
+			// bounded (boundedStopTail); a FIRST-PERSON statement may run
+			// on ("I'll stop here and wait for your decision.") as long as
+			// nothing in it is something being described (a participle).
+			if boundedStopTail(after) || firstPersonLeadIn(before) && !hasParticiple(after) {
+				return true
+			}
 		}
 		if tail(after) && utf8.RuneCountInString(before) <= 10 {
 			return true
@@ -242,7 +250,7 @@ func stopWordAtEdge(s string) bool {
 var (
 	// zhStopTailRe: what may follow an opening Chinese stop word — the
 	// aspect particle 了 and sentence punctuation, nothing else.
-	zhStopTailRe = regexp.MustCompile(`^了?[。．.!！?？…~～]*$`)
+	zhStopTailRe = regexp.MustCompile(`^了?[。．.!！?？…~～，,；;]*$`)
 	// enInterjections / zhInterjections: the only words that may stand
 	// between the start of the statement and an opening stop word.
 	enInterjections = map[string]bool{"i": true, "i'll": true, "i've": true, "i'm": true, "i'd": true, "will": true,
@@ -279,9 +287,15 @@ func isInterjectionLeadIn(before string) bool {
 	return true
 }
 
+// boundedStopTail reports whether an OPENING stop word ends cleanly within
+// its own clause or sentence — what comes after the next boundary is another
+// sentence ("Stopping here. I won't make any further changes."). In Chinese
+// only 了 and clause punctuation may follow before the boundary; in English
+// at most three short words that are not a participle.
 func boundedStopTail(after string) bool {
 	if isASCII(after) {
-		trimmed := strings.TrimSpace(strings.TrimRight(after, " .!"))
+		clause := cutAtAny(after, ".!?;\n")
+		trimmed := strings.TrimSpace(strings.TrimRight(clause, " .!;"))
 		if trimmed == "" {
 			return true
 		}
@@ -289,14 +303,42 @@ func boundedStopTail(after string) bool {
 		if len(words) > 3 || utf8.RuneCountInString(trimmed) > 20 {
 			return false
 		}
-		for _, w := range words {
-			if strings.HasSuffix(strings.ToLower(w), "ing") {
-				return false // "responding", "forwarding": something described
-			}
+		return !hasParticiple(trimmed)
+	}
+	return zhStopTailRe.MatchString(cutAtAny(after, "，,。！？!?；;\n"))
+}
+
+// cutAtAny returns s up to (excluding) its first character from set.
+func cutAtAny(s, set string) string {
+	if i := strings.IndexAny(s, set); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// hasParticiple: an English word ending in "ing" — "responding",
+// "forwarding": something described, not a stop.
+func hasParticiple(s string) bool {
+	for _, w := range strings.Fields(s) {
+		if strings.HasSuffix(strings.ToLower(strings.Trim(w, ",.!;")), "ing") {
+			return true
 		}
+	}
+	return false
+}
+
+// firstPersonLeadIn: nothing or "I"/"we" with an auxiliary — the statement is
+// the model's own act, not a description.
+func firstPersonLeadIn(before string) bool {
+	words := strings.Fields(strings.ToLower(strings.Trim(strings.TrimSpace(before), ",.!?:;")))
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "i", "i'll", "i've", "i'm", "we", "we'll", "we've":
 		return true
 	}
-	return zhStopTailRe.MatchString(after)
+	return false
 }
 
 func tail(after string) bool {
