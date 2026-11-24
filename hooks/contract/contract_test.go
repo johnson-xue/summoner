@@ -107,9 +107,10 @@ func TestMain(m *testing.M) {
 }
 
 // binRunsOnThisPlatform execs the gate binary with an empty-identity payload:
-// ANY exit code proves the binary runs here (it exits 2 — the empty session
-// id is rejected before any filesystem access); an exec error means the
-// binary is missing or built for another platform.
+// ANY exit code proves the binary runs here — a clean 0 from the dormant
+// default (the outer shell carries no opt-in) as much as the enforcing
+// path's exit 2 — and no code touches the filesystem before returning. An
+// exec error means the binary is missing or built for another platform.
 func binRunsOnThisPlatform() bool {
 	cmd := exec.Command(filepath.Join("..", "bin", "pretooluse-gate"))
 	cmd.Stdin = strings.NewReader("{}")
@@ -137,10 +138,11 @@ func rebuildBinaries() (string, error) {
 
 func binPath(name string) string { return filepath.Join(binDir, name) }
 
-// hookSubprocessEnv builds the subprocess environment: the parent's env
-// minus every Summoner/project override (hermetic regardless of the outer
-// shell), plus this test's temp dirs, plus any extra (e.g. the hatch).
-func hookSubprocessEnv(t *testing.T, extra map[string]string) []string {
+// hermeticEnv is the parent's env minus every Summoner/project override
+// (hermetic regardless of the outer shell), plus this test's temp dirs. No
+// enforcement switch is in it — that IS the production default (0.7.1);
+// hookSubprocessEnv adds the opt-in on top.
+func hermeticEnv(t *testing.T) []string {
 	t.Helper()
 	var env []string
 	for _, kv := range os.Environ() {
@@ -149,24 +151,47 @@ func hookSubprocessEnv(t *testing.T, extra map[string]string) []string {
 		}
 		env = append(env, kv)
 	}
-	env = append(env,
+	return append(env,
 		"SUMMONER_STATE_DIR="+os.Getenv("SUMMONER_STATE_DIR"),
 		"SUMMONER_TRACE_DIR="+os.Getenv("SUMMONER_TRACE_DIR"),
 		"CLAUDE_PROJECT_DIR="+os.Getenv("CLAUDE_PROJECT_DIR"),
 	)
+}
+
+// dormantSubprocessEnv is the production DEFAULT: the hermetic environment
+// with no opt-in and no hatch anywhere.
+func dormantSubprocessEnv(t *testing.T) []string {
+	t.Helper()
+	return hermeticEnv(t)
+}
+
+// hookSubprocessEnv builds the ENFORCING subprocess environment: the
+// hermetic one, plus the opt-in every contract but the dormant default is
+// written against, plus any extra (e.g. the hatch — it outranks the opt-in).
+func hookSubprocessEnv(t *testing.T, extra map[string]string) []string {
+	t.Helper()
+	env := append(hermeticEnv(t), shared.EnvHooksEnforce+"=1")
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
 	return env
 }
 
-// runBinary executes one hook binary with payload on stdin; returns
-// (exit code, stdout, stderr). A failure to exec at all is fatal to the test.
+// runBinary executes one hook binary with payload on stdin in the ENFORCING
+// environment; returns (exit code, stdout, stderr). A failure to exec at all
+// is fatal to the test.
 func runBinary(t *testing.T, name, payload string, extraEnv map[string]string) (int, string, string) {
+	t.Helper()
+	return runBinaryEnv(t, name, payload, hookSubprocessEnv(t, extraEnv))
+}
+
+// runBinaryEnv executes one hook binary with payload on stdin and an
+// environment the caller built — the enforcing one or the dormant default.
+func runBinaryEnv(t *testing.T, name, payload string, env []string) (int, string, string) {
 	t.Helper()
 	cmd := exec.Command(binPath(name))
 	cmd.Stdin = strings.NewReader(payload)
-	cmd.Env = hookSubprocessEnv(t, extraEnv)
+	cmd.Env = env
 	var out, errB bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errB
 	err := cmd.Run()

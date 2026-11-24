@@ -123,6 +123,11 @@ func parseInput(r io.Reader) (*hookInput, error) {
 // no-op), 2 fail-closed error surfaced to the platform (never a blocked
 // prompt — no onFailure is wired).
 func runHook(stdin io.Reader, errW io.Writer) int {
+	// Opt-in default: a dormant hook records no run, so nothing is ever
+	// gated. Checked before the input is read — see shared.HooksDormant.
+	if shared.HooksDormant() {
+		return 0
+	}
 	in, err := parseInput(stdin)
 	if err != nil {
 		fmt.Fprintf(errW, "summoner userpromptsubmit: unreadable hook input — fail-closed: %v\n", err)

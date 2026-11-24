@@ -37,6 +37,7 @@ This is the Summoner orchestration framework. It is a Claude Code plugin designe
 - Validate manifest: `scripts/validate-manifest.sh <path-to-summoner.yaml>`
 - Before any commit: `make -C hooks build` → `cd hooks && go vet ./... && go test -count=1 ./...` → `bash scripts/validate-repo.sh` → `bash scripts/run-trace-fixtures.sh`. Always `-count=1`: tests exec scripts and fixtures the Go test cache does not track.
 - `hooks/contract` executes the compiled `hooks/bin/*`: rebuild first, and commit the rebuilt binaries with any hook source change (they are tracked).
+- Hook in-process tests run ENFORCING: each hook package's `TestMain` is `os.Exit(hooktest.Run(m))` (`hooks/hooktest`). Enforcement is opt-in (`SUMMONER_HOOKS_ENFORCE=1`, 0.7.1) and the hooks are dormant by default (`shared.HooksDormant`); that default is pinned by each package's `dormant_test.go` and by `hooks/contract/dormant_test.go` at the binary seam.
 - After changing `scorers/` or adding a trace fixture, add its row to `scripts/run-trace-fixtures.sh`.
 - Manual: invoke each `/summoner:*` command and verify checkpoint output
 - Check that interrupting at each checkpoint type works correctly

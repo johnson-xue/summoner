@@ -36,12 +36,18 @@ AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查�
 /plugin install summoner@summoner-marketplace
 ```
 
-然后在你的项目中（hooks 开箱即用——预编译了 macOS/Linux 二进制）：
+然后在你的项目中（二进制已为 macOS/Linux 预编译）：
 
 ```bash
 cd your-project
 ~/.claude/plugins/summoner/scripts/summoner-init.sh
 ~/.claude/plugins/summoner/scripts/init-memory-db.sh $(grep -A2 '^project:' summoner.yaml | grep 'name:' | head -1 | awk '{print $2}')
+```
+
+**重启 Claude Code**，然后开启执法。钩子**默认休眠**（0.7.1）：未开启时不记录 run、不渲染二进制检查点、不拦截任何工具，`/summoner:*` 按技能散文执行。在用户级或项目级 `.claude/settings.json` 中加入并重启：
+
+```json
+{ "env": { "SUMMONER_HOOKS_ENFORCE": "1" } }
 ```
 
 > **替代方式：** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — 效果相同，无需 marketplace。非主流平台需编译：`cd ~/.claude/plugins/summoner/hooks && make build`。

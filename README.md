@@ -38,7 +38,7 @@ In Claude Code:
 /plugin install summoner@summoner-marketplace
 ```
 
-Then in your project (hooks work immediately — pre-compiled for macOS/Linux):
+Then in your project (binaries come pre-compiled for macOS/Linux):
 
 ```bash
 cd your-project
@@ -47,7 +47,11 @@ cd your-project
 
 **Or** simply say in Claude Code: `setup summoner`
 
-**Restart Claude Code** — hooks activate on the next session start.
+**Restart Claude Code**, then opt in to enforcement. Hooks are **dormant by default** (0.7.1): until you opt in, Summoner records no runs, renders no binary checkpoints and gates no tools — `/summoner:*` runs as plain skill guidance. Add this to your user or project `.claude/settings.json` and restart:
+
+```json
+{ "env": { "SUMMONER_HOOKS_ENFORCE": "1" } }
+```
 
 > **Note:** The new `summoner-setup.sh` combines init + memory DB setup into one command. For quick mode (all defaults): `summoner-setup.sh --quick`
 

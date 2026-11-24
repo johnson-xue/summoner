@@ -110,8 +110,11 @@ effect.
 
 - Setup errors: read the wizard's own output — it names the failing step
   (manifest format, validation, memory init).
-- Hooks inactive after restart: verify the plugin is installed/enabled; the
-  `hooks/bin/` binaries ship with it (no manual build).
+- Hooks inactive: enforcement is **opt-in** (0.7.1) — set
+  `SUMMONER_HOOKS_ENFORCE=1` in the environment Claude Code starts with (the
+  `env` block of the user or project settings) and restart. Then verify the
+  plugin is installed/enabled; the `hooks/bin/` binaries ship with it (no
+  manual build).
 - If manifest validation succeeds but memory initialization fails, report
   the separate failure and rerun `../../scripts/init-memory-db.sh` with the
   validated namespace after addressing the cause. A failing memory DB is NOT

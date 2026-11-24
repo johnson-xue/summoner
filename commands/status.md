@@ -39,6 +39,9 @@ AskUserQuestion at a rendered checkpoint.
    budget remaining. If the output names multiple live runs, relay all names —
    the viewer refuses to guess, and so must you.
 
+Hooks are dormant unless `SUMMONER_HOOKS_ENFORCE=1` is set (0.7.1): the
+viewer then says so and renders no run — relay that, never work around it.
+
 Exit 2 from the binary means unreadable input only; any state problem is
 printed in the output itself. The viewer still renders under
 `SUMMONER_HOOKS_DISABLE=1` — the hatch disables the enforcement hooks, not
