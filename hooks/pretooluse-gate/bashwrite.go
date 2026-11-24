@@ -978,6 +978,11 @@ func scanningWrapperRule(verb string, args []string, stdinLive bool) string {
 				return "rtk config (changes rtk's configuration)"
 			case "ecs":
 				if len(args) > 1 && args[1] == "check" {
+					for _, a := range args[2:] {
+						if a == "--fix" {
+							return "rtk ecs check --fix (rewrites files)"
+						}
+					}
 					return ""
 				}
 			}

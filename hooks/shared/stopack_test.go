@@ -302,9 +302,11 @@ func TestStopAcknowledgmentAfterRound5(t *testing.T) {
 		"I'll stop here and wait for your decision.",
 		"好的，已停止了，状态已保留。",
 		"Stopped. The run state is kept.",
-		"I'm stopping the service now and keeping the state.",
 		"We'll halt the run here and wait for your decision.",
 		"I will stop the run now.",
+		"I'm stopping the service.", // a short object: bounded, a real stop
+		// The participle guard costs "I'm halting here and keeping the state
+		// as is." a click (accepted: a description must never end the turn).
 	}
 	for _, msg := range bareHits {
 		if !IsStopAcknowledgment(run, nil, msg, false) {
@@ -324,6 +326,7 @@ func TestStopAcknowledgmentAfterRound5(t *testing.T) {
 		"I halted the forwarding of traffic to the cache.",
 		"I aborted the build after the third failure.",
 		"I stopped the container and removed its network.",
+		"I'm halting the forwarding of traffic to the old pool.",
 	}
 	for _, msg := range prose {
 		if IsStopAcknowledgment(run, nil, msg, true) || IsStopAcknowledgment(run, nil, msg, false) {

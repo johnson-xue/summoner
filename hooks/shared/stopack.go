@@ -236,7 +236,7 @@ func stopWordAtEdge(s string) bool {
 			// bounded (boundedStopTail); a FIRST-PERSON statement may run
 			// on ("I'll stop here and wait for your decision.") as long as
 			// nothing in it is something being described (a participle).
-			if boundedStopTail(after) || firstPersonLeadIn(before) {
+			if boundedStopTail(after) || firstPersonLeadIn(before) && !hasParticiple(after) {
 				return true
 			}
 		}
