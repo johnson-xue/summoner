@@ -34,6 +34,8 @@ and post-game flow through the same reducer as every workflow.
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
 2. One typed `reviewer` Agent (non-fork, tool-restricted, no project memory):
    the gate binds the delegation to the PREPARED review id — build and
    register the envelope first. Every mechanical criterion's envelope entry

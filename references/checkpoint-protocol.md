@@ -1,5 +1,9 @@
 # Summoner Checkpoint Protocol (single-loop v2)
 
+> Everything below — the reducer, the gates, the checkpoints — exists only
+> when the project opted in: `SUMMONER_HOOKS_ENFORCE=1` (0.7.1). The default
+> is dormant; `single-loop.md` §2 governs that mode.
+
 ## Purpose
 
 Every phase ends at a checkpoint — the run's ONLY advancement surface.

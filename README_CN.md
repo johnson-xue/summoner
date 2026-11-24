@@ -23,7 +23,7 @@
 
 ---
 
-AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查、重复犯错。**Summoner 加上流程层**：Phase 间强制暂停（checkpoint）、赛后复盘（post-game review）、自动检索历史经验的记忆链（Memory Chain）。
+AI coding agent 能力很强，但缺乏纪律——跳过诊断、忘记审查、重复犯错。**Summoner 加上流程层**：Phase 间强制暂停（checkpoint）、赛后复盘（post-game review）、自动检索历史经验的记忆链（Memory Chain）——执法为 opt-in，默认休眠（见快速开始）。
 
 ---
 
@@ -49,6 +49,8 @@ cd your-project
 ```json
 { "env": { "SUMMONER_HOOKS_ENFORCE": "1" } }
 ```
+
+开启执法后完整拦截面恢复——门禁没有建模的工具会再次被拒；旧版本遗留的非终态 run 也会对其会话重新生效，可先完成或清理它们（`~/.summoner/state-v2`）。
 
 > **替代方式：** `git clone https://github.com/johnson-xue/summoner.git ~/.claude/plugins/summoner/` — 效果相同，无需 marketplace。非主流平台需编译：`cd ~/.claude/plugins/summoner/hooks && make build`。
 

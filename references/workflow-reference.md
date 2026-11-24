@@ -1,6 +1,10 @@
 # Summoner Workflow Reference
 
 > Loaded on-demand during workflow execution. Not loaded at startup.
+>
+> Enforcement semantics in this file hold when the hooks are opted in
+> (`SUMMONER_HOOKS_ENFORCE=1`, 0.7.1); the default is dormant — `single-loop.md`
+> §2 governs that mode.
 
 ## Workflow Definitions (single-loop phase routes)
 

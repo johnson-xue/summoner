@@ -35,6 +35,8 @@ context → diagnosis(M) → reproduce → fix → regression → review → pos
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
 2. Skips are proposed at the checkpoint against the auto-skip table
    (`${CLAUDE_PLUGIN_ROOT}/references/workflow-reference.md`) — only the user confirms; skipped
    phases are marked UNVERIFIED/UNREVIEWED.

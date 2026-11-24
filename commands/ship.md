@@ -43,6 +43,8 @@ four phases). The manifest maps CAPABILITIES, never topology. In practice:
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
 2. Cite existing review/verification evidence instead of re-running it —
    same-digest artifacts with a still-valid result reuse once.
 3. Rollback plan is MANDATORY before any GO.

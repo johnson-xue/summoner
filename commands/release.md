@@ -32,6 +32,8 @@ options `--major/--minor/--patch/--version X.Y.Z/--dry-run/--no-push/
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
 2. **对账探针是 publish 的准入条件** — publish mutates (version writes,
    commit, tag, push), so the capability list must declare the read-only
    reconciliation probe set (tag-已存在 / 版本-已一致) BEFORE the release

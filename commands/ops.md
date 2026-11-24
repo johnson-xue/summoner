@@ -33,6 +33,8 @@ post-game run through the same single-loop reducer as every workflow
    with a conclusion (the only submission channel) → paste the checkpoint and end
    the turn → the Stop hook hands back the question → AskUserQuestion. An auto-passed
    phase shows no checkpoint: go straight on.
+   Hooks dormant (no `SUMMONER_HOOKS_ENFORCE=1`)? Replace this loop with
+   plain AskUserQuestion checkpoints — single-loop.md §2 (0.7.1).
 2. The ops skill's internal staging (e.g. its own 5-step run) is the skill's
    business — Summoner does not re-orchestrate it. The framework loop wraps
    it: the operate phase closes ONCE at its checkpoint (single acceptance
